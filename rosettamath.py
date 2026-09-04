@@ -1,327 +1,658 @@
 #!/usr/bin/env python3
-import os, sys, ast, subprocess
+r"""RosettaMath -- a tiny, self-hosting LaTeX -> Python translator.
 
-__doc__ = '''
+Design
+------
+Only a small subset of LaTeX is understood, chosen so that translation is
+nearly one-to-one with Python.  Everything not listed is ignored (\begin,
+\end, \caption, % comments) or passed through.
 
-Design Goals:
+  algorithmic (algpseudocode) .......... statements and control flow
+      \Function{name}{$args$} .. \EndFunction   def name(args):
+      \State $stmt$                             stmt
+      \If{$c$} \ElsIf{$c$} \Else \EndIf         if / elif / else
+      \For{$x \in xs$} .. \EndFor               for x in xs:
+      \For{$i = a$ to $b$} .. \EndFor           for i in range(a, b + 1):
+      \While{$c$} .. \EndWhile                  while c:
+      \Return $expr$                            return expr
+      \Comment{text}                            # text
+      Text outside $..$ in a \State is already Python ("break", "is None").
 
-    Support a minimal subset of LaTeX, that can be transformed into Python.
-    Small, and self-contained, no external libraries, or programs.  
-    The exception is pdflatex and evince in a subprocess, this is just for testing.
+  math mode ($..$) ..................... expressions
+      \gets   =           \geq \leq \neq      >=  <=  !=
+      =       ==          \land \lor \lnot    and  or  not
+      ^       **          \in \notin          in  /  not in
+      {..}    (..)        \times \cdot        *
+      \{ \}   { }         \frac{a}{b}         (a)/(b)
+      2x  2\pi            2*x  2*pi           (a number touching a name)
+      \texttt{..}         '..'                (\textbackslash \{ \$ \_ unescaped)
+      \anything           anything            (\rho -> rho, resolved in the scope)
 
-Bootstrapping Notes:
+  equations ............................ one-liners
+      $f(x) = 2x + 1$                          def f(x): return 2*x + 1
+      $f(x) = \begin{cases} a & \text{if } c \\ .. \end{cases}$
+                                               def f(x): if c: return a ..
 
-    Our goal is to first write the basic translator in Python (latex2py),
-    Then we redefine latex2py in LaTex, and use latex2py to define a new latex2py function,
-    the tricky part, LaTex can not easily express everything that Python can do, we need
-    some kind of hybrid.
-    In theory, once we have bootstrapped latex2py, we should be able to continue to expand
-    this script using mostly LaTeX and only use Python where we need to.
+Bootstrap
+---------
+The translator exists twice: in plain Python (stage 0, below) and in the
+LaTeX subset above (NEOMATH_TEX).  Stage 0 turns NEOMATH_TEX into Python
+(stage 1).  Stage 1 then translates NEOMATH_TEX again; if the output is
+byte-for-byte what stage 0 produced we have a fixed point, and the LaTeX
+version takes over.  From then on the translator can be extended in LaTeX
+(add an OPS line, add a branch to math2py, ...) and the Python copy is only
+a bootstrap that could be regenerated from the LaTeX.
 
-Python Notes:
+No external libraries.   python3 rosettamath.py          runs the self test
+                         python3 rosettamath.py --pdf    also typesets NEOMATH_TEX
+"""
+import sys, subprocess
 
-    Note the use of old style string formatting, "foo %s bar" % "hello",
-    we avoid using the new f"{}" format strings, because LaTeX uses "{}",
-    and this makes things confusing.
+INDENT = chr(32) * 4
+NL = chr(10)
 
-LaTex Notes:
-
-    Note the package{algorithm} and package{algpseudocode} seem to be the best way to
-    write Python code inside of LaTeX, with simple parsing and transformation back to Python.
-    Note, we also want to support math expressions wrapped in $$, because that is common.
-    We can introduce our own LaTeX commands if needed, and put them in LATEX_HEADER.
-
-
-Research Notes:
-
-https://tex.stackexchange.com/questions/37094/what-is-the-recommended-way-to-assign-a-value-to-a-variable-and-retrieve-it-for
-
-https://medium.com/bitgrit-data-science-publication/latexify-writing-latex-with-python-6c0fa4b2e9d5
-
-https://github.com/google/latexify_py
-
-https://github.com/alvinwan/tex2py
-https://github.com/lericson/pseudopython
-https://github.com/cairomassimo/py2tex
-
-'''
-
-DEBUG = 1
-
-LATEX_HEADER = r'''
-\documentclass{article}
-\usepackage{pgffor} % Standard package for loops
-\usepackage{amsmath}  % for cases and others
-\usepackage{amssymb}   % for \mathbb
-\usepackage{algorithm}
-\usepackage{algpseudocode}
-\usepackage{listings}
-\usepackage{xcolor}
-
-\lstset{
-    language=Python,
-    basicstyle=\ttfamily\footnotesize,
-    keywordstyle=\color{blue}\bfseries,
-    stringstyle=\color{green!50!black},
-    commentstyle=\color{gray}\itshape,
-    numbers=left,                  % Adds line numbers
-    numberstyle=\tiny\color{gray},  % Style of line numbers
-    stepnumber=1,                  % Number every line
-    breaklines=true,               % Wrap long lines automatically
-    frame=single                   % Adds a border around the code
+# math-mode commands and their Python spelling; unknown \cmd become plain 'cmd'
+OPS = {
+    '\\gets': '=', '\\geq': '>=', '\\leq': '<=', '\\neq': '!=',
+    '\\land': ' and ', '\\lor': ' or ', '\\lnot': ' not ',
+    '\\in': ' in ', '\\notin': ' not in ', '\\times': '*', '\\cdot': '*',
+    '\\{': '{', '\\}': '}', '\\_': '_', '\\%': '%', '\\#': '#', '\\&': '&',
+    '\\,': ' ', '\\;': ' ', '\\\\': '',
 }
 
+# ---------------------------------------------------------------- stage 0
+
+def match(s, i):
+    """s[i] is '{'; return the index of its partner (escaped braces skipped)."""
+    depth = 0
+    while i < len(s):
+        c = s[i]
+        if c == '\\':
+            i += 1
+        elif c == '{':
+            depth += 1
+        elif c == '}':
+            depth -= 1
+            if depth == 0:
+                return i
+        i += 1
+    raise ValueError('unbalanced braces: ' + s)
+
+def arg(s):
+    """first {group} of s, and the rest of s after it."""
+    i = s.index('{')
+    j = match(s, i)
+    return s[i+1:j], s[j+1:]
+
+def unescape(s):
+    r"""\texttt content -> plain text:  \textbackslash \{ \} \_ \$ \^{} ..."""
+    out = ''
+    i = 0
+    while i < len(s):
+        if s[i] == '\\':
+            if s.startswith('\\textbackslash', i):
+                out += '\\'
+                i += len('\\textbackslash')
+                if s.startswith(' ', i):
+                    i += 1
+            else:
+                out += s[i+1]
+                i += 2
+            if s.startswith('{}', i):
+                i += 2
+        else:
+            out += s[i]
+            i += 1
+    return out
+
+def segments(s):
+    """split on unescaped $ (or $$) into [(is_math, text), ...]."""
+    parts = []
+    buf = ''
+    math = False
+    i = 0
+    while i < len(s):
+        c = s[i]
+        if c == '\\':
+            buf += s[i:i+2]
+            i += 2
+        elif c == '$':
+            if buf:
+                parts.append((math, buf))
+            buf = ''
+            math = not math
+            i += 1
+            if i < len(s) and s[i] == '$':
+                i += 1
+        else:
+            buf += c
+            i += 1
+    if buf:
+        parts.append((math, buf))
+    return parts
+
+def math2py(m):
+    """translate the inside of $...$ to a Python expression."""
+    out = ''
+    lit = False              # inside a numeric literal?
+    i = 0
+    while i < len(m):
+        c = m[i]
+        if c == '\\':
+            j = i + 1
+            while j < len(m) and m[j].isalpha():
+                j += 1
+            if j == i + 1:
+                j += 1       # one-character command
+            cmd = m[i:j]
+            if cmd == '\\texttt':
+                k = match(m, j)
+                out += repr(unescape(m[j+1:k]))
+                i = k + 1
+            elif cmd == '\\frac':
+                k = match(m, j)
+                l = match(m, k + 1)
+                out += '(' + math2py(m[j+1:k]) + ')/(' + math2py(m[k+2:l]) + ')'
+                i = l + 1
+            else:
+                rep = OPS.get(cmd, cmd[1:])
+                if lit and rep[:1].isalpha():
+                    out += '*'
+                out += rep
+                i = j
+            lit = False
+        else:
+            if c.isdigit() and (i == 0 or not (m[i-1].isalnum() or m[i-1] == '_')):
+                lit = True
+            if c == '^':
+                out += '**'
+            elif c == '=':
+                out += '=='
+            elif c == '{':
+                out += '('
+            elif c == '}':
+                out += ')'
+            elif c.isalpha() and lit:
+                out += '*' + c
+            else:
+                out += c
+            if not c.isdigit() and c != '.':
+                lit = False
+            i += 1
+    return out
+
+def state2py(s):
+    r"""a \State body: math is translated, text outside math is already Python."""
+    out = ''
+    for ismath, seg in segments(s):
+        if ismath:
+            out += math2py(seg)
+        elif seg.strip().startswith('\\Comment{'):
+            note, rest = arg(seg)
+            out += '  # ' + note
+        else:
+            out += seg.replace('\\\\', '')
+    return out
+
+def stmt2py(s):
+    s = s.strip()
+    if s.startswith('\\Return'):
+        return 'return ' + state2py(s[len('\\Return'):]).strip()
+    return state2py(s).strip()
+
+def for2py(head):
+    t = head.replace('$', '')
+    if ' to ' in t:
+        a, hi = t.split(' to ')
+        var, lo = a.split('=')
+        return 'for ' + math2py(var).strip() + ' in range(' + math2py(lo).strip() + ', ' + math2py(hi).strip() + ' + 1):'
+    return 'for ' + math2py(t).strip() + ':'
+
+def tex2py(tex):
+    r"""algorithmic block -> Python source (one \State per line, indent by depth)."""
+    py = []
+    depth = 0
+    for raw in tex.splitlines():
+        ln = raw.strip()
+        pre = INDENT * depth
+        if ln.startswith('\\Function{') or ln.startswith('\\Procedure{'):
+            name, rest = arg(ln)
+            args, rest = arg(rest)
+            py.append(pre + 'def ' + unescape(name) + '(' + state2py(args) + '):')
+            depth += 1
+        elif ln.startswith('\\End'):
+            depth -= 1
+        elif ln.startswith('\\For'):
+            head, rest = arg(ln)
+            py.append(pre + for2py(head))
+            depth += 1
+        elif ln.startswith('\\While{'):
+            cond, rest = arg(ln)
+            py.append(pre + 'while ' + state2py(cond) + ':')
+            depth += 1
+        elif ln.startswith('\\If{'):
+            cond, rest = arg(ln)
+            py.append(pre + 'if ' + state2py(cond) + ':')
+            depth += 1
+        elif ln.startswith('\\ElsIf{'):
+            cond, rest = arg(ln)
+            py.append(pre[len(INDENT):] + 'elif ' + state2py(cond) + ':')
+        elif ln.startswith('\\Else'):
+            py.append(pre[len(INDENT):] + 'else:')
+        elif ln.startswith('\\State'):
+            py.append(pre + stmt2py(ln[len('\\State'):]))
+        elif ln.startswith('\\Return') or ln.startswith('\\Comment'):
+            py.append(pre + stmt2py(ln))
+    return NL.join(py)
+
+def eq2py(tex):
+    """$f(x) = ...$  (the last math segment is the definition) -> Python source."""
+    m = None
+    for ismath, seg in segments(tex):
+        if ismath:
+            m = seg
+    lhs, rhs = m.split('=', 1)
+    head = 'def ' + math2py(lhs).strip() + ':' + NL
+    CASES = '\\begin{cases}'
+    if CASES not in rhs:
+        return head + INDENT + 'return ' + math2py(rhs).strip()
+    rhs = rhs[rhs.index(CASES) + len(CASES) : rhs.index('\\end{cases}')]
+    rhs = rhs.replace('\\text{if }', '').replace('\\text{otherwise}', 'True')
+    for row in rhs.split('\\\\'):
+        if '&' in row:
+            expr, cond = row.split('&')
+            head = head + INDENT + 'if ' + math2py(cond).strip() + ': return ' + math2py(expr).strip() + NL
+    return head
+
+def latex2py(tex, scope=None):
+    """translate, exec into scope, and return the last function defined."""
+    if scope is None:
+        scope = {}
+    if '\\State' in tex or '\\Function' in tex:
+        py = tex2py(tex)
+    else:
+        py = eq2py(tex)
+    exec(py, scope)
+    name = None
+    for ln in py.splitlines():
+        if ln.startswith('def '):
+            name = ln[4:ln.index('(')]
+    if name is None:
+        return scope
+    return scope[name]
+
+# ------------------------------------------- the same translator, in LaTeX
+
+NEOMATH_TEX = r'''
+\begin{algorithm}
+\caption{RosettaMath: a \LaTeX{} to Python translator, written in the subset it translates}
+\begin{algorithmic}[1]
+
+\State $INDENT \gets chr(32) \times 4$
+\State $NL \gets chr(10)$
+
+\State \Comment{math-mode commands and their Python spelling}
+\State $OPS \gets \{\}$
+\State $OPS[\texttt{\textbackslash gets}] \gets \texttt{=}$
+\State $OPS[\texttt{\textbackslash geq}] \gets \texttt{>=}$
+\State $OPS[\texttt{\textbackslash leq}] \gets \texttt{<=}$
+\State $OPS[\texttt{\textbackslash neq}] \gets \texttt{!=}$
+\State $OPS[\texttt{\textbackslash land}] \gets \texttt{ and }$
+\State $OPS[\texttt{\textbackslash lor}] \gets \texttt{ or }$
+\State $OPS[\texttt{\textbackslash lnot}] \gets \texttt{ not }$
+\State $OPS[\texttt{\textbackslash in}] \gets \texttt{ in }$
+\State $OPS[\texttt{\textbackslash notin}] \gets \texttt{ not in }$
+\State $OPS[\texttt{\textbackslash times}] \gets \texttt{*}$
+\State $OPS[\texttt{\textbackslash cdot}] \gets \texttt{*}$
+\State $OPS[\texttt{\textbackslash\{}] \gets \texttt{\{}$
+\State $OPS[\texttt{\textbackslash\}}] \gets \texttt{\}}$
+\State $OPS[\texttt{\textbackslash\_}] \gets \texttt{\_}$
+\State $OPS[\texttt{\textbackslash\%}] \gets \texttt{\%}$
+\State $OPS[\texttt{\textbackslash\#}] \gets \texttt{\#}$
+\State $OPS[\texttt{\textbackslash\&}] \gets \texttt{\&}$
+\State $OPS[\texttt{\textbackslash,}] \gets \texttt{ }$
+\State $OPS[\texttt{\textbackslash;}] \gets \texttt{ }$
+\State $OPS[\texttt{\textbackslash\textbackslash}] \gets \texttt{}$
+
+\Function{match}{$s, i$} \Comment{$s[i]$ is a brace, return the index of its partner}
+    \State $depth \gets 0$
+    \While{$i < len(s)$}
+        \State $c \gets s[i]$
+        \If{$c = \texttt{\textbackslash}$}
+            \State $i \gets i + 1$
+        \ElsIf{$c = \texttt{\{}$}
+            \State $depth \gets depth + 1$
+        \ElsIf{$c = \texttt{\}}$}
+            \State $depth \gets depth - 1$
+            \If{$depth = 0$}
+                \Return $i$
+            \EndIf
+        \EndIf
+        \State $i \gets i + 1$
+    \EndWhile
+    \State raise $ValueError(\texttt{unbalanced braces: } + s)$
+\EndFunction
+
+\Function{arg}{$s$} \Comment{first brace group of $s$, and the rest of $s$}
+    \State $i \gets s.index(\texttt{\{})$
+    \State $j \gets match(s, i)$
+    \Return $s[i+1:j], s[j+1:]$
+\EndFunction
+
+\Function{unescape}{$s$} \Comment{\texttt{\textbackslash texttt} content to plain text}
+    \State $out \gets \texttt{}$
+    \State $i \gets 0$
+    \While{$i < len(s)$}
+        \If{$s[i] = \texttt{\textbackslash}$}
+            \If{$s.startswith(\texttt{\textbackslash textbackslash}, i)$}
+                \State $out \gets out + \texttt{\textbackslash}$
+                \State $i \gets i + len(\texttt{\textbackslash textbackslash})$
+                \If{$s.startswith(\texttt{ }, i)$}
+                    \State $i \gets i + 1$
+                \EndIf
+            \Else
+                \State $out \gets out + s[i+1]$
+                \State $i \gets i + 2$
+            \EndIf
+            \If{$s.startswith(\texttt{\{\}}, i)$}
+                \State $i \gets i + 2$
+            \EndIf
+        \Else
+            \State $out \gets out + s[i]$
+            \State $i \gets i + 1$
+        \EndIf
+    \EndWhile
+    \Return $out$
+\EndFunction
+
+\Function{segments}{$s$} \Comment{split on unescaped \texttt{\$} into (is math, text) pairs}
+    \State $parts \gets []$
+    \State $buf \gets \texttt{}$
+    \State $math \gets False$
+    \State $i \gets 0$
+    \While{$i < len(s)$}
+        \State $c \gets s[i]$
+        \If{$c = \texttt{\textbackslash}$}
+            \State $buf \gets buf + s[i:i+2]$
+            \State $i \gets i + 2$
+        \ElsIf{$c = \texttt{\$}$}
+            \If{$buf$}
+                \State $parts.append((math, buf))$
+            \EndIf
+            \State $buf \gets \texttt{}$
+            \State $math \gets \lnot math$
+            \State $i \gets i + 1$
+            \If{$i < len(s) \land s[i] = \texttt{\$}$}
+                \State $i \gets i + 1$
+            \EndIf
+        \Else
+            \State $buf \gets buf + c$
+            \State $i \gets i + 1$
+        \EndIf
+    \EndWhile
+    \If{$buf$}
+        \State $parts.append((math, buf))$
+    \EndIf
+    \Return $parts$
+\EndFunction
+
+\Function{math2py}{$m$} \Comment{the inside of \texttt{\$...\$} to a Python expression}
+    \State $out \gets \texttt{}$
+    \State $lit \gets False$ \Comment{inside a numeric literal?}
+    \State $i \gets 0$
+    \While{$i < len(m)$}
+        \State $c \gets m[i]$
+        \If{$c = \texttt{\textbackslash}$}
+            \State $j \gets i + 1$
+            \While{$j < len(m) \land m[j].isalpha()$}
+                \State $j \gets j + 1$
+            \EndWhile
+            \If{$j = i + 1$}
+                \State $j \gets j + 1$ \Comment{one-character command}
+            \EndIf
+            \State $cmd \gets m[i:j]$
+            \If{$cmd = \texttt{\textbackslash texttt}$}
+                \State $k \gets match(m, j)$
+                \State $out \gets out + repr(unescape(m[j+1:k]))$
+                \State $i \gets k + 1$
+            \ElsIf{$cmd = \texttt{\textbackslash frac}$}
+                \State $k \gets match(m, j)$
+                \State $l \gets match(m, k + 1)$
+                \State $out \gets out + \texttt{(} + math2py(m[j+1:k]) + \texttt{)/(} + math2py(m[k+2:l]) + \texttt{)}$
+                \State $i \gets l + 1$
+            \Else
+                \State $rep \gets OPS.get(cmd, cmd[1:])$
+                \If{$lit \land rep[:1].isalpha()$}
+                    \State $out \gets out + \texttt{*}$
+                \EndIf
+                \State $out \gets out + rep$
+                \State $i \gets j$
+            \EndIf
+            \State $lit \gets False$
+        \Else
+            \If{$c.isdigit() \land (i = 0 \lor \lnot (m[i-1].isalnum() \lor m[i-1] = \texttt{\_}))$}
+                \State $lit \gets True$
+            \EndIf
+            \If{$c = \texttt{\^{}}$}
+                \State $out \gets out + \texttt{**}$
+            \ElsIf{$c = \texttt{=}$}
+                \State $out \gets out + \texttt{==}$
+            \ElsIf{$c = \texttt{\{}$}
+                \State $out \gets out + \texttt{(}$
+            \ElsIf{$c = \texttt{\}}$}
+                \State $out \gets out + \texttt{)}$
+            \ElsIf{$c.isalpha() \land lit$}
+                \State $out \gets out + \texttt{*} + c$
+            \Else
+                \State $out \gets out + c$
+            \EndIf
+            \If{$\lnot c.isdigit() \land c \neq \texttt{.}$}
+                \State $lit \gets False$
+            \EndIf
+            \State $i \gets i + 1$
+        \EndIf
+    \EndWhile
+    \Return $out$
+\EndFunction
+
+\Function{state2py}{$s$} \Comment{a \texttt{\textbackslash State} body; text outside math is already Python}
+    \State $out \gets \texttt{}$
+    \For{$ismath, seg \in segments(s)$}
+        \If{$ismath$}
+            \State $out \gets out + math2py(seg)$
+        \ElsIf{$seg.strip().startswith(\texttt{\textbackslash Comment\{})$}
+            \State $note, rest \gets arg(seg)$
+            \State $out \gets out + \texttt{  \# } + note$
+        \Else
+            \State $out \gets out + seg.replace(\texttt{\textbackslash\textbackslash}, \texttt{})$
+        \EndIf
+    \EndFor
+    \Return $out$
+\EndFunction
+
+\Function{stmt2py}{$s$}
+    \State $s \gets s.strip()$
+    \If{$s.startswith(\texttt{\textbackslash Return})$}
+        \Return $\texttt{return } + state2py(s[len(\texttt{\textbackslash Return}):]).strip()$
+    \EndIf
+    \Return $state2py(s).strip()$
+\EndFunction
+
+\Function{for2py}{$head$}
+    \State $t \gets head.replace(\texttt{\$}, \texttt{})$
+    \If{$\texttt{ to } \in t$}
+        \State $a, hi \gets t.split(\texttt{ to })$
+        \State $var, lo \gets a.split(\texttt{=})$
+        \Return $\texttt{for } + math2py(var).strip() + \texttt{ in range(} + math2py(lo).strip() + \texttt{, } + math2py(hi).strip() + \texttt{ + 1):}$
+    \EndIf
+    \Return $\texttt{for } + math2py(t).strip() + \texttt{:}$
+\EndFunction
+
+\Function{tex2py}{$tex$} \Comment{algorithmic block to Python source}
+    \State $py \gets []$
+    \State $depth \gets 0$
+    \For{$raw \in tex.splitlines()$}
+        \State $ln \gets raw.strip()$
+        \State $pre \gets INDENT \times depth$
+        \If{$ln.startswith(\texttt{\textbackslash Function\{}) \lor ln.startswith(\texttt{\textbackslash Procedure\{})$}
+            \State $name, rest \gets arg(ln)$
+            \State $args, rest \gets arg(rest)$
+            \State $py.append(pre + \texttt{def } + unescape(name) + \texttt{(} + state2py(args) + \texttt{):})$
+            \State $depth \gets depth + 1$
+        \ElsIf{$ln.startswith(\texttt{\textbackslash End})$}
+            \State $depth \gets depth - 1$
+        \ElsIf{$ln.startswith(\texttt{\textbackslash For})$}
+            \State $head, rest \gets arg(ln)$
+            \State $py.append(pre + for2py(head))$
+            \State $depth \gets depth + 1$
+        \ElsIf{$ln.startswith(\texttt{\textbackslash While\{})$}
+            \State $cond, rest \gets arg(ln)$
+            \State $py.append(pre + \texttt{while } + state2py(cond) + \texttt{:})$
+            \State $depth \gets depth + 1$
+        \ElsIf{$ln.startswith(\texttt{\textbackslash If\{})$}
+            \State $cond, rest \gets arg(ln)$
+            \State $py.append(pre + \texttt{if } + state2py(cond) + \texttt{:})$
+            \State $depth \gets depth + 1$
+        \ElsIf{$ln.startswith(\texttt{\textbackslash ElsIf\{})$}
+            \State $cond, rest \gets arg(ln)$
+            \State $py.append(pre[len(INDENT):] + \texttt{elif } + state2py(cond) + \texttt{:})$
+        \ElsIf{$ln.startswith(\texttt{\textbackslash Else})$}
+            \State $py.append(pre[len(INDENT):] + \texttt{else:})$
+        \ElsIf{$ln.startswith(\texttt{\textbackslash State})$}
+            \State $py.append(pre + stmt2py(ln[len(\texttt{\textbackslash State}):]))$
+        \ElsIf{$ln.startswith(\texttt{\textbackslash Return}) \lor ln.startswith(\texttt{\textbackslash Comment})$}
+            \State $py.append(pre + stmt2py(ln))$
+        \EndIf
+    \EndFor
+    \Return $NL.join(py)$
+\EndFunction
+
+\Function{eq2py}{$tex$} \Comment{the last math segment is the definition}
+    \State $m \gets None$
+    \For{$ismath, seg \in segments(tex)$}
+        \If{$ismath$}
+            \State $m \gets seg$
+        \EndIf
+    \EndFor
+    \State $lhs, rhs \gets m.split(\texttt{=}, 1)$
+    \State $head \gets \texttt{def } + math2py(lhs).strip() + \texttt{:} + NL$
+    \State $CASES \gets \texttt{\textbackslash begin\{cases\}}$
+    \If{$CASES \notin rhs$}
+        \Return $head + INDENT + \texttt{return } + math2py(rhs).strip()$
+    \EndIf
+    \State $rhs \gets rhs[rhs.index(CASES) + len(CASES) : rhs.index(\texttt{\textbackslash end\{cases\}})]$
+    \State $rhs \gets rhs.replace(\texttt{\textbackslash text\{if \}}, \texttt{}).replace(\texttt{\textbackslash text\{otherwise\}}, \texttt{True})$
+    \For{$row \in rhs.split(\texttt{\textbackslash\textbackslash})$}
+        \If{$\texttt{\&} \in row$}
+            \State $expr, cond \gets row.split(\texttt{\&})$
+            \State $head \gets head + INDENT + \texttt{if } + math2py(cond).strip() + \texttt{: return } + math2py(expr).strip() + NL$
+        \EndIf
+    \EndFor
+    \Return $head$
+\EndFunction
+
+\Function{latex2py}{$tex, scope \gets None$} \Comment{translate, exec into scope, return the last function}
+    \If{$scope$ is None}
+        \State $scope \gets \{\}$
+    \EndIf
+    \If{$\texttt{\textbackslash State} \in tex \lor \texttt{\textbackslash Function} \in tex$}
+        \State $py \gets tex2py(tex)$
+    \Else
+        \State $py \gets eq2py(tex)$
+    \EndIf
+    \State $exec(py, scope)$
+    \State $name \gets None$
+    \For{$ln \in py.splitlines()$}
+        \If{$ln.startswith(\texttt{def })$}
+            \State $name \gets ln[4:ln.index(\texttt{(})]$
+        \EndIf
+    \EndFor
+    \If{$name$ is None}
+        \Return $scope$
+    \EndIf
+    \Return $scope[name]$
+\EndFunction
+
+\end{algorithmic}
+\end{algorithm}
+'''
+
+# ---------------------------------------------------------------- bootstrap
+
+def bootstrap():
+    """stage 0 translates the LaTeX; stage 1 must translate it identically."""
+    stage1 = {}
+    latex2py(NEOMATH_TEX, stage1)
+    src0 = tex2py(NEOMATH_TEX)                 # Python's reading of the LaTeX
+    src1 = stage1['tex2py'](NEOMATH_TEX)       # the LaTeX-born translator reading itself
+    if src0 != src1:
+        raise AssertionError('bootstrap did not reach a fixed point')
+    return stage1, src1
+
+def selftest(latex2py, label):
+    import math
+    f = latex2py(r'''
+    \begin{algorithm}
+    \caption{Sum of $1..n$}
+    \begin{algorithmic}[1]
+    \Function{Sum}{$n$}
+        \State $s \gets 0$
+        \For{$i = 1$ to $n$}
+            \State $s \gets s + i$ \Comment{happens inside the loop}
+        \EndFor
+        \Return $s$
+    \EndFunction
+    \end{algorithmic}
+    \end{algorithm}''')
+    assert f(5) == 15
+
+    f = latex2py(r'$f: \mathbb{R} \to \mathbb{R}$ defined by $f(x) = 2x + 1$')
+    assert f(32) == 65
+
+    f = latex2py(r'''
+    $$
+    f(x) = \begin{cases}
+        x^2   & \text{if } x < 0 \\
+        x + 2 & \text{if } x \geq 0
+    \end{cases}
+    $$''')
+    assert f(2) == 4 and f(-3) == 9
+
+    E = latex2py(r'$E(m) = m \cdot c^2$', {'c': 299792458})     # scope supplies constants
+    assert E(1) == 299792458 ** 2
+    C = latex2py(r'$C(r) = 2\pi \cdot r$', {'pi': math.pi})
+    assert abs(C(1) - 2 * math.pi) < 1e-12
+    K = latex2py(r'$K(m, v) = \frac{1}{2} \cdot m \cdot v^2$')
+    assert K(3, 2) == 6
+
+    gcd = latex2py(r'''
+    \Function{gcd}{$a, b$}
+        \While{$b \neq 0$}
+            \State $a, b \gets b, a \% b$
+        \EndWhile
+        \Return $a$
+    \EndFunction''')
+    assert gcd(48, 18) == 6
+    print('self test passed:', label)
+
+LATEX_HEADER = r'''\documentclass{article}
+\usepackage[margin=1.5cm]{geometry}
+\usepackage{amsmath,amssymb,algorithm,algpseudocode,listings}
+\lstset{language=Python,basicstyle=\ttfamily\scriptsize,breaklines=true}
 \begin{document}
 '''
 LATEX_FOOTER = r'''
 \end{document}
 '''
 
-
-LATEX2PYOPS = {
-    r'\geq' : '>=',
-    r'\gets': '=',
-    ## TODO, more...
-}
-
-def latex2def(tex, full_latex, verify=0):
-    wrap = False
-    if '=' not in tex:
-        tex = '_func() = \n' + tex
-        wrap = True
-    head = tex[ 0 : tex.index('=') ]
-    head = 'def ' + head + ':'
-    func = ast.parse( head + 'pass' ).body[0]
-    args = [arg.arg for arg in func.args.args]
-    if DEBUG:
-        print(func)
-        print('Function name:', func.name)
-        print('Function args:', args)
-
-    body = ['\tr"""' + full_latex + '"""']
-    in_case = in_foreach = False
-    for ln in tex[ tex.index('=')+1 : ].splitlines():
-        ln = ln.strip()
-        if ln.startswith('%'): continue
-        if ln.endswith(r'\\'): ln = ln[:-2]
-        if DEBUG: print(ln)
-        if ln== r'\begin{cases}':
-            in_case = True
-            continue
-        elif ln== r'\end{cases}':
-            in_case = False
-            continue
-        if ln.startswith(r'\foreach '):
-            assert ln.endswith('{')
-            #assert ln.startswith(r'\foreach \')
-            ln = ln[:-1] + ':'
-            foreach_var = '\\' + ln.split('\\')[-1].split()[0]
-            ln = ln.replace(r'\foreach ','for ').replace('\\', '')
-            ln = ln.replace('{', 'range(').replace('...,','').replace('}',')')
-            #print(ln)
-            in_foreach = True
-            body.append('\t' + ln)
-            continue
-        elif in_foreach:
-            if ln=='}':
-                in_foreach = False
-                continue
-            #print('in foreach', ln)
-            #print('in foreach var', foreach_var)
-            ln = 'print(f"%s")' % ln.replace(foreach_var, '{'+foreach_var[1:]+'}')
-            body.append('\t\t' + ln)
-            continue
-
-        if '^' in ln: ln = ln.replace('^', '**')
-        if '&' in ln: ln = ln.replace('&', '').strip()
-        for key in LATEX2PYOPS:
-            if key in ln: ln = ln.replace(key, LATEX2PYOPS[key])
-        if in_case:
-            assert r'\text{if }' in ln
-            a,b = ln.split(r'\text{if }')
-            if '=' not in a:
-                ln = 'if %s: return %s' %(b,a)
-            else:
-                ln = 'if %s: %s' %(b,a)
-
-        try: tree = ast.parse(ln)
-        except SyntaxError as err:
-            ## this breaks very easily - TODO a better way
-            if err.msg == 'invalid decimal literal' and ln[ err.offset ] in args:
-                ln = list(ln)
-                ln.insert(err.offset, '*')
-                ln = ''.join(ln)
-                print('FIXED:', ln)
-                assert ast.parse(ln)
-            else:
-                print(err)
-                print('error msg', err.msg)
-                print('error text', err.text)
-                print('error offset', err.offset)
-                raise err
-
-        body.append('\t' + ln)
-    if 'return ' not in body[-1] and body[-1].count('\t')==1:
-        body[-1] = body[-1].replace('\t', '\treturn ')
-    py = [head] + body
-    #print(head)
-    py = '\n'.join(py)
-    print('Python:\n', py)
-    if DEBUG:
-        tmp = [LATEX_HEADER,full_latex, '\\begin{lstlisting}\n%s\n\\end{lstlisting}' %py ,LATEX_FOOTER]
-        open('/tmp/test.tex','w').write('\n'.join(tmp))
-        subprocess.check_call(['pdflatex', '/tmp/test.tex'], cwd='/tmp')
-        if DEBUG >= 2: subprocess.check_call(['evince', '/tmp/test.pdf'])
-
-    scope = {}
-    exec(py, scope)
-    return scope[func.name]
-
-ALGOS = 0
-def algo2py(tex):
-    global ALGOS
-    if DEBUG >=3:
-        open('/tmp/test.tex','w').write(LATEX_HEADER+tex+LATEX_FOOTER)
-        subprocess.check_call(['pdflatex', '/tmp/test.tex'], cwd='/tmp')
-        subprocess.check_call(['evince', '/tmp/test.pdf'])
-
-    py = ['"""%s"""' % tex]
-    in_for = False
-    for_end = None
-    for ln in tex.splitlines():
-        print(ln)
-        ln = ln.strip().replace('$','')
-        for key in LATEX2PYOPS:
-            if key in ln: ln = ln.replace(key, LATEX2PYOPS[key])
-
-        if ln.strip().startswith(r'\State '):
-            ln = ln.replace(r'\State ', '')
-            if ln.startswith(r'\Comment{'):
-                a = ln.split('{')[-1].split('}')[0]
-                ln = 'print("%s")' %(a)
-            if in_for: ln = '\t' + ln
-        elif ln.strip().startswith(r'\For{'):
-            a = ln.split('{')[-1].split('}')[0]
-            a,for_end = a.split(' to ')
-            assert '=' in a
-            for_var, for_start = a.split('=')
-            ln = 'for %s in range(%s, %s):' %(for_var.strip(), for_start.strip(), for_end)
-            in_for = True
-        elif ln.strip().startswith(r'\EndFor'):
-            in_for = False
-        elif ln.strip().startswith(r'\Return'):
-            ln = ln.replace(r'\Return', 'return')
-
-        if ln and not ln.strip().startswith('\\'):
-            py.append(ln)
-    assert for_end
-    algo = ['def algo%s(%s):' % (ALGOS, for_end) ]
-    for ln in py: algo.append('\t'+ln)
-    py = '\n'.join(algo)
-    print(py)
-    scope = {}
-    exec(py, scope)
-    if DEBUG >= 2:
-        tmp = [LATEX_HEADER,tex, '\\begin{lstlisting}\n%s\n\\end{lstlisting}' %py ,LATEX_FOOTER]
-        open('/tmp/test.tex','w').write('\n'.join(tmp))
-        subprocess.check_call(['pdflatex', '/tmp/test.tex'], cwd='/tmp')
-        subprocess.check_call(['evince', '/tmp/test.pdf'])
-
-    fn = scope['algo%s' % ALGOS]
-    ALGOS += 1
-    return fn
-
-def latex2py(tex):
-    if DEBUG >= 3:
-        open('/tmp/test.tex','w').write(LATEX_HEADER+tex+LATEX_FOOTER)
-        subprocess.check_call(['pdflatex', '/tmp/test.tex'], cwd='/tmp')
-        subprocess.check_call(['evince', '/tmp/test.pdf'])
-        
-    if tex.strip().startswith(r'\begin{algorithm}'):
-        return algo2py(tex)
-    
-    orig_tex = tex
-    tex = tex.strip().replace('$$', '$')
-    #assert tex.count('$') >= 2
-    parts = []; dollar = False; code = None; text=[]
-    for c in tex:
-        if c=='$':
-            if not dollar:
-                if text:
-                    parts.append( ''.join(text) )
-                    text = []
-                code = []
-                dollar = True
-            else:
-                assert code
-                parts.append( ''.join(code).strip() )
-                dollar = False
-        elif dollar:
-            code.append( c )
-        else:
-            text.append( c )
-    if not parts and text: parts.append(''.join(text))
-    return latex2def( parts[-1], orig_tex )
-
-f = latex2py(r'''
-\begin{algorithm}
-\caption{An Example For Loop}
-\begin{algorithmic}[1] % [1] adds line numbers
-    \State $sum \gets 0$
-    \For{$i = 1$ to $n$}
-        \State $sum \gets sum + i$
-        \State \Comment{This happens inside the loop}
-    \EndFor \\
-    \Return $sum$
-\end{algorithmic}
-\end{algorithm}
-''')
-
-print(f)
-print(f(5))
-assert f(5)==10
-
-
-f = latex2py( r'$f: \mathbb{R} \to \mathbb{R}$ defined by $f(x) = 2x + 1$' )
-print( f( 32 ) )
-assert f(32) == 65
-
-
-f = latex2py( r'''
-$$
-f(x) = \begin{cases} 
-    x^2 & \text{if } x < 0 \\
-    x + 2 & \text{if } x \geq 0 
-\end{cases}
-$$
-''')
-
-print( f(2) )
-assert f(2) == 4
-
-f = latex2py(r'''
-% 1. Simple range loop (1 to 5)
-\foreach \i in {1,...,5} {
-    This is iteration number \i. \\
-}
-''')
-
-## TODO - bootstrap
-latex2py = latex2py(r'''
-% TODO the latex version of latex2py that can be transformed by Python version,
-% back into a runnable Python, this probably means breaking things apart into many
-% smaller functions, because our simple latex2py parser/transformer works best on small
-% chunks of latex that define functions, we may want to start step by step,
-% where latex2py is still a Python function, but it starts to call sub-functions that
-% are defined in latex.
-''')
-
-## TODO - after bootstrap
-## now we can use the new latex2py to start extending this script, without using so much Python anymore
-## our future goals is to connect with scipy.constants, so that when variables like c are used it is
-## mapped to scipy.constants.c, mapping all the constants from scipy to latex variables will make latex
-## much more readable, and educational, our next goal is to make Physics equations easy to read, and
-## self documenting.  There are so many conventions in math and physics, we need to help people understand
-## these symbols better, like rho (ρ) often denotes density, when transforming into Python we can make
-## this clear to the user by transforming it to ρ_density.
-
+if __name__ == '__main__':
+    selftest(latex2py, 'stage 0 (hand written Python)')
+    stage1, src = bootstrap()
+    selftest(stage1['latex2py'], 'stage 1 (translated from LaTeX)')
+    latex2py = stage1['latex2py']     # from here on the LaTeX version is in charge
+    print('bootstrap fixed point reached: %d lines of Python generated from LaTeX' % len(src.splitlines()))
+    if '--pdf' in sys.argv:
+        tex = LATEX_HEADER + NEOMATH_TEX + '\\begin{lstlisting}\n' + src + '\n\\end{lstlisting}' + LATEX_FOOTER
+        open('/tmp/neomath.tex', 'w').write(tex)
+        subprocess.check_call(['pdflatex', '-interaction=nonstopmode', '/tmp/neomath.tex'], cwd='/tmp')
+        print('wrote /tmp/neomath.pdf')

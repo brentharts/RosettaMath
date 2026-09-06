@@ -25,11 +25,17 @@ nearly one-to-one with Python.  Everything not listed is ignored (\begin,
       {..}    (..)        \times \cdot        *
       \{ \}   { }         \frac{a}{b}         (a)/(b)
       2x  2\pi            2*x  2*pi           (a number touching a name)
+      k_B c   m \hbar      k_B*c  m*hbar       (a space between two atoms)
       \texttt{..}         '..'                (\textbackslash \{ \$ \_ unescaped)
       \anything           anything            (\rho -> rho, resolved in the scope)
 
   equations ............................ one-liners
       $f(x) = 2x + 1$                          def f(x): return 2*x + 1
+      $S = k_B \log W$                         def S(k_B, W): return ..
+                                               (a bare left side takes its
+                                               arguments from the free names
+                                               on the right; anything already
+                                               in the scope stays a constant)
       $f(x) = \begin{cases} a & \text{if } c \\ .. \end{cases}$
                                                def f(x): if c: return a ..
 
@@ -62,7 +68,76 @@ OPS = {
     '\\,': ' ', '\\;': ' ', '\\\\': '',
 }
 
+# names that are Python syntax, not free variables of an equation
+KEYWORDS = ('return if else elif and or not in is None True False for while '
+            'def lambda raise break continue pass').split()
+
 # ---------------------------------------------------------------- stage 0
+
+def mulsep(out, m, i):
+    r"""is the space at m[i] an implied multiplication?  (k_B c, 2 \pi, x y)
+
+    Juxtaposition means "multiply" to a reader and nothing at all to a parser.
+    Only a space between two *atoms* counts: a space next to an operator, or
+    one already emitted by an OPS replacement such as ' and ', must be left
+    alone or the generated Python stops being Python.
+    """
+    if out == '':
+        return False
+    p = out[-1]
+    if not (p.isalnum() or p == '_' or p == ')' or p == ']'):
+        return False
+    j = i
+    while j < len(m) and m[j] == ' ':
+        j += 1
+    if j >= len(m):
+        return False
+    c = m[j]
+    if c.isalnum():
+        return True
+    if c == '\\':
+        k = j + 1
+        while k < len(m) and m[k].isalpha():
+            k += 1
+        if k == j + 1:
+            k += 1
+        rep = OPS.get(m[j:k], m[j+1:k])
+        if rep[:1].isalpha():
+            return True
+    return False
+
+def freevars(src, known):
+    """names in src that are not calls, attributes, keywords or already known.
+
+    Used to give a bare left-hand side ($S = ...$) a parameter list, so that
+    the equation still translates to something callable.
+    """
+    names = []
+    i = 0
+    while i < len(src):
+        c = src[i]
+        if c == "'" or c == '"':
+            q = c
+            i = i + 1
+            while i < len(src) and src[i] != q:
+                i = i + 1
+            i = i + 1
+        elif c.isalpha() or c == '_':
+            j = i
+            while j < len(src) and (src[j].isalnum() or src[j] == '_'):
+                j += 1
+            name = src[i:j]
+            k = j
+            while k < len(src) and src[k] == ' ':
+                k += 1
+            call = k < len(src) and src[k] == '('
+            attr = i > 0 and src[i-1] == '.'
+            if not call and not attr and name not in KEYWORDS and name not in known and name not in names:
+                names.append(name)
+            i = j
+        else:
+            i = i + 1
+    return names
 
 def match(s, i):
     """s[i] is '{'; return the index of its partner (escaped braces skipped)."""
@@ -176,6 +251,8 @@ def math2py(m):
                 out += ')'
             elif c.isalpha() and lit:
                 out += '*' + c
+            elif c == ' ' and mulsep(out, m, i):
+                out += '*'
             else:
                 out += c
             if not c.isdigit() and c != '.':
@@ -247,24 +324,35 @@ def tex2py(tex):
             py.append(pre + stmt2py(ln))
     return NL.join(py)
 
-def eq2py(tex):
-    """$f(x) = ...$  (the last math segment is the definition) -> Python source."""
+def eq2py(tex, known=None):
+    """$f(x) = ...$  (the last math segment is the definition) -> Python source.
+
+    A bare left-hand side such as $S = k_B \\log W$ names no arguments, so the
+    free variables of the right-hand side become the parameter list.  Anything
+    already in known (the scope the caller supplies) stays a constant.
+    """
+    if known is None:
+        known = {}
     m = None
     for ismath, seg in segments(tex):
         if ismath:
             m = seg
     lhs, rhs = m.split('=', 1)
-    head = 'def ' + math2py(lhs).strip() + ':' + NL
+    name = math2py(lhs).strip()
     CASES = '\\begin{cases}'
+    body = ''
     if CASES not in rhs:
-        return head + INDENT + 'return ' + math2py(rhs).strip()
-    rhs = rhs[rhs.index(CASES) + len(CASES) : rhs.index('\\end{cases}')]
-    rhs = rhs.replace('\\text{if }', '').replace('\\text{otherwise}', 'True')
-    for row in rhs.split('\\\\'):
-        if '&' in row:
-            expr, cond = row.split('&')
-            head = head + INDENT + 'if ' + math2py(cond).strip() + ': return ' + math2py(expr).strip() + NL
-    return head
+        body = INDENT + 'return ' + math2py(rhs).strip()
+    else:
+        rhs = rhs[rhs.index(CASES) + len(CASES) : rhs.index('\\end{cases}')]
+        rhs = rhs.replace('\\text{if }', '').replace('\\text{otherwise}', 'True')
+        for row in rhs.split('\\\\'):
+            if '&' in row:
+                expr, cond = row.split('&')
+                body = body + INDENT + 'if ' + math2py(cond).strip() + ': return ' + math2py(expr).strip() + NL
+    if '(' not in name:
+        name = name + '(' + ', '.join(freevars(body, known)) + ')'
+    return 'def ' + name + ':' + NL + body
 
 def latex2py(tex, scope=None):
     """translate, exec into scope, and return the last function defined."""
@@ -273,7 +361,7 @@ def latex2py(tex, scope=None):
     if '\\State' in tex or '\\Function' in tex:
         py = tex2py(tex)
     else:
-        py = eq2py(tex)
+        py = eq2py(tex, scope)
     exec(py, scope)
     name = None
     for ln in py.splitlines():
@@ -319,6 +407,79 @@ NEOMATH_TEX = r'''
 \State $OPS[\texttt{\textbackslash,}] \gets \texttt{ }$
 \State $OPS[\texttt{\textbackslash;}] \gets \texttt{ }$
 \State $OPS[\texttt{\textbackslash\textbackslash}] \gets \texttt{}$
+
+\State \Comment{names that are Python syntax, not free variables of an equation}
+\State $KEYWORDS \gets \texttt{return if else elif and or not in is None True False for while def lambda raise break continue pass}.split()$
+
+\Function{mulsep}{$out, m, i$} \Comment{is the space at $m[i]$ an implied multiplication?}
+    \If{$out = \texttt{}$}
+        \Return $False$
+    \EndIf
+    \State $p \gets out[-1]$
+    \If{$\lnot (p.isalnum() \lor p = \texttt{\_} \lor p = \texttt{)} \lor p = \texttt{]})$}
+        \Return $False$
+    \EndIf
+    \State $j \gets i$
+    \While{$j < len(m) \land m[j] = \texttt{ }$}
+        \State $j \gets j + 1$
+    \EndWhile
+    \If{$j \geq len(m)$}
+        \Return $False$
+    \EndIf
+    \State $c \gets m[j]$
+    \If{$c.isalnum()$}
+        \Return $True$
+    \EndIf
+    \If{$c = \texttt{\textbackslash}$}
+        \State $k \gets j + 1$
+        \While{$k < len(m) \land m[k].isalpha()$}
+            \State $k \gets k + 1$
+        \EndWhile
+        \If{$k = j + 1$}
+            \State $k \gets k + 1$
+        \EndIf
+        \State $rep \gets OPS.get(m[j:k], m[j+1:k])$
+        \If{$rep[:1].isalpha()$}
+            \Return $True$
+        \EndIf
+    \EndIf
+    \Return $False$
+\EndFunction
+
+\Function{freevars}{$src, known$} \Comment{names in $src$ that are not calls, keywords or known}
+    \State $names \gets []$
+    \State $i \gets 0$
+    \While{$i < len(src)$}
+        \State $c \gets src[i]$
+        \If{$c = \texttt{'} \lor c = \texttt{"}$}
+            \State $q \gets c$
+            \State $i \gets i + 1$
+            \While{$i < len(src) \land src[i] \neq q$}
+                \State $i \gets i + 1$
+            \EndWhile
+            \State $i \gets i + 1$
+        \ElsIf{$c.isalpha() \lor c = \texttt{\_}$}
+            \State $j \gets i$
+            \While{$j < len(src) \land (src[j].isalnum() \lor src[j] = \texttt{\_})$}
+                \State $j \gets j + 1$
+            \EndWhile
+            \State $name \gets src[i:j]$
+            \State $k \gets j$
+            \While{$k < len(src) \land src[k] = \texttt{ }$}
+                \State $k \gets k + 1$
+            \EndWhile
+            \State $call \gets k < len(src) \land src[k] = \texttt{(}$
+            \State $attr \gets i > 0 \land src[i-1] = \texttt{.}$
+            \If{$\lnot call \land \lnot attr \land name \notin KEYWORDS \land name \notin known \land name \notin names$}
+                \State $names.append(name)$
+            \EndIf
+            \State $i \gets j$
+        \Else
+            \State $i \gets i + 1$
+        \EndIf
+    \EndWhile
+    \Return $names$
+\EndFunction
 
 \Function{match}{$s, i$} \Comment{$s[i]$ is a brace, return the index of its partner}
     \State $depth \gets 0$
@@ -449,6 +610,8 @@ NEOMATH_TEX = r'''
                 \State $out \gets out + \texttt{)}$
             \ElsIf{$c.isalpha() \land lit$}
                 \State $out \gets out + \texttt{*} + c$
+            \ElsIf{$c = \texttt{ } \land mulsep(out, m, i)$}
+                \State $out \gets out + \texttt{*}$
             \Else
                 \State $out \gets out + c$
             \EndIf
@@ -533,7 +696,10 @@ NEOMATH_TEX = r'''
     \Return $NL.join(py)$
 \EndFunction
 
-\Function{eq2py}{$tex$} \Comment{the last math segment is the definition}
+\Function{eq2py}{$tex, known \gets None$} \Comment{the last math segment is the definition}
+    \If{$known$ is None}
+        \State $known \gets \{\}$
+    \EndIf
     \State $m \gets None$
     \For{$ismath, seg \in segments(tex)$}
         \If{$ismath$}
@@ -541,20 +707,26 @@ NEOMATH_TEX = r'''
         \EndIf
     \EndFor
     \State $lhs, rhs \gets m.split(\texttt{=}, 1)$
-    \State $head \gets \texttt{def } + math2py(lhs).strip() + \texttt{:} + NL$
+    \State $name \gets math2py(lhs).strip()$
     \State $CASES \gets \texttt{\textbackslash begin\{cases\}}$
+    \State $body \gets \texttt{}$
     \If{$CASES \notin rhs$}
-        \Return $head + INDENT + \texttt{return } + math2py(rhs).strip()$
+        \State $body \gets INDENT + \texttt{return } + math2py(rhs).strip()$
+    \Else
+        \State $rhs \gets rhs[rhs.index(CASES) + len(CASES) : rhs.index(\texttt{\textbackslash end\{cases\}})]$
+        \State $rhs \gets rhs.replace(\texttt{\textbackslash text\{if \}}, \texttt{}).replace(\texttt{\textbackslash text\{otherwise\}}, \texttt{True})$
+        \For{$row \in rhs.split(\texttt{\textbackslash\textbackslash})$}
+            \If{$\texttt{\&} \in row$}
+                \State $expr, cond \gets row.split(\texttt{\&})$
+                \State $body \gets body + INDENT + \texttt{if } + math2py(cond).strip() + \texttt{: return } + math2py(expr).strip() + NL$
+            \EndIf
+        \EndFor
     \EndIf
-    \State $rhs \gets rhs[rhs.index(CASES) + len(CASES) : rhs.index(\texttt{\textbackslash end\{cases\}})]$
-    \State $rhs \gets rhs.replace(\texttt{\textbackslash text\{if \}}, \texttt{}).replace(\texttt{\textbackslash text\{otherwise\}}, \texttt{True})$
-    \For{$row \in rhs.split(\texttt{\textbackslash\textbackslash})$}
-        \If{$\texttt{\&} \in row$}
-            \State $expr, cond \gets row.split(\texttt{\&})$
-            \State $head \gets head + INDENT + \texttt{if } + math2py(cond).strip() + \texttt{: return } + math2py(expr).strip() + NL$
-        \EndIf
-    \EndFor
-    \Return $head$
+    \State \Comment{a bare left side names no arguments, so infer them}
+    \If{$\texttt{(} \notin name$}
+        \State $name \gets name + \texttt{(} + \texttt{, }.join(freevars(body, known)) + \texttt{)}$
+    \EndIf
+    \Return $\texttt{def } + name + \texttt{:} + NL + body$
 \EndFunction
 
 \Function{latex2py}{$tex, scope \gets None$} \Comment{translate, exec into scope, return the last function}
@@ -564,7 +736,7 @@ NEOMATH_TEX = r'''
     \If{$\texttt{\textbackslash State} \in tex \lor \texttt{\textbackslash Function} \in tex$}
         \State $py \gets tex2py(tex)$
     \Else
-        \State $py \gets eq2py(tex)$
+        \State $py \gets eq2py(tex, scope)$
     \EndIf
     \State $exec(py, scope)$
     \State $name \gets None$
@@ -791,6 +963,35 @@ def selftest(latex2py, label):
     assert abs(C(1) - 2 * math.pi) < 1e-12
     K = latex2py(r'$K(m, v) = \frac{1}{2} \cdot m \cdot v^2$')
     assert K(3, 2) == 6
+
+    # implicit multiplication: juxtaposition is multiplication to a reader,
+    # and now to the parser too
+    A = latex2py(r'$A(x, y) = 2x y$')
+    assert A(3, 4) == 24
+    B = latex2py(r'$B(m, c) = m c^2$')
+    assert B(3, 4) == 48
+
+    # a bare left-hand side gets its parameters inferred from the right
+    P = latex2py(r'$P = I V$')
+    assert P(3, 4) == 12
+    S = latex2py(r'$S = \frac{k_B c^3 A}{4 G \hbar}$')
+    assert S(2, 3, 4, 5, 6) == (2 * 3 ** 3 * 4) / (4 * 5 * 6)
+
+    # names the caller already supplies stay constants, not parameters
+    E = latex2py(r'$E = m c^2$', {'c': 2})
+    assert E(3) == 12
+    K = latex2py(r'$K = \frac{1}{2} m v^2$', {})
+    assert K(3, 2) == 6
+
+    # inference works for piecewise definitions too
+    step = latex2py(r'''
+    $$
+    step = \begin{cases}
+        n     & \text{if } n > 0 \\
+        0     & \text{otherwise}
+    \end{cases}
+    $$''')
+    assert step(5) == 5 and step(-2) == 0
 
     gcd = latex2py(r'''
     \Function{gcd}{$a, b$}

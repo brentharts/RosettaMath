@@ -243,6 +243,34 @@ Full higher-order unification is undecidable, so outside the fragment — a hole
 applied to a repeated variable, or to something that is not a variable — the
 elaborator refuses rather than guesses. A guess there is a proof nobody wrote.
 
+### Postponed constraints
+
+Even inside the fragment a constraint can have more than one legal answer.
+`?P a = Eq A a a` admits both `λz. Eq A z z` and `λz. Eq A z a` whenever `a` is
+in scope where the hole was made — so each hole records the scope it was
+created in, and a constraint is only ambiguous when the variable is in it.
+
+Ambiguous constraints are **postponed**, then settled once every constraint on
+that hole is known. Each constraint proposes its own solution, and a proposal
+is accepted only if it satisfies all of them. That is what lets `symm` be
+written the natural way:
+
+```python
+@theorem(r'\forall \{A : \text{Type}\}, \forall a \in A, \forall b \in A, '
+         r'\text{Eq} A a b \to \text{Eq} A b a')
+def symmetry(A: 'Type', a: 'A', b: 'A', h: r'\text{Eq} A a b'):
+    return transport(h, refl(a))
+```
+
+`?P a = Eq A a a` proposes `λz. Eq A z z`; `?P b = Eq A b a` proposes
+`λz. Eq A z a`. Only the second survives both, and it is the one that means
+symmetry. Solved eagerly, the first proposal wins and the theorem fails with
+`stated Eq A b a, proved Eq A b b`.
+
+A hole that no single value can satisfy is reported rather than left tentative,
+and `type_check` still runs on the finished term either way — postponement can
+cost an error message, never a false theorem.
+
 Checking is bidirectional: the expected type is pushed inwards through the
 lambdas rather than compared at the top. Inside the binders both sides are
 open, with ordinary names, which is what puts `?P a` in the pattern fragment at
@@ -269,7 +297,7 @@ lexes the subset and `rosettamath.unescape` handles `\text{}` content.
 
 ```sh
 make proofs              # check the theorems
-python3 lean4.py --selftest      # 81 kernel, elaborator and front-end checks
+python3 lean4.py --selftest      # 90 kernel, elaborator and front-end checks
 python3 lean4.py --non-strict    # report failures instead of raising
 ```
 

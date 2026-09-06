@@ -70,6 +70,14 @@ transport's motive P is only ever seen applied, as P a and P b, so solving it
 means answering a higher-order question.  Full higher-order unification is
 undecidable; outside the fragment the elaborator refuses rather than guesses,
 because a guess here is a proof the user did not write.
+
+Inside the fragment a constraint can still have more than one legal answer:
+?P a = Eq A a a admits both (lam z. Eq A z z) and (lam z. Eq A z a) whenever a
+is in scope where the hole was made.  Such constraints are postponed rather
+than guessed, and settled once every constraint on that hole is known: each
+one proposes its own solution, and only a proposal satisfying all of them is
+accepted.  That is what lets symm be written transport(h, refl(a)) -- the first
+constraint proposes the wrong motive and the second overrules it.
 '''
 
 
@@ -166,9 +174,13 @@ class Meta(Expr):
     handed to type_check once every hole has been filled in.
     """
 
-    def __init__(self, index, hint='?'):
+    def __init__(self, index, hint='?', context=()):
         self.index = index
         self.hint = hint
+        # the local names in scope where the hole was created: a solution may
+        # legitimately mention these, which is exactly what makes some
+        # constraints ambiguous
+        self.context = tuple(context)
 
     def key(self):
         return ('meta', self.index)
@@ -180,9 +192,9 @@ class Meta(Expr):
 _meta_count = [0]
 
 
-def new_meta(hint='?'):
+def new_meta(hint='?', context=()):
     _meta_count[0] += 1
-    return Meta(_meta_count[0], hint)
+    return Meta(_meta_count[0], hint, context)
 
 
 class Binder(Expr):
@@ -577,8 +589,42 @@ def strip_local(name):
     return name[len(LOCAL_PREFIX):].rstrip('0123456789') or 'x'
 
 
-def unify(a, b, subst, ctx=None):
-    """Unification up to normalisation, over Miller's pattern fragment."""
+def is_pattern(args, subst):
+    """Are these arguments distinct local variables?  Returns the names, or None."""
+    names = []
+    for arg in args:
+        arg = normalize(resolve(arg, subst))
+        if not isinstance(arg, Var) or not arg.name.startswith(LOCAL_PREFIX):
+            return None
+        if arg.name in names:
+            return None
+        names.append(arg.name)
+    return names
+
+
+def is_ambiguous(meta, names, rhs, subst):
+    r"""Does this constraint have more than one legitimate solution?
+
+    Abstracting every occurrence is the only choice when the variable is not in
+    the hole's scope -- leaving one behind would produce a term mentioning
+    something the hole cannot see.  But when the variable *is* in scope, both
+    readings are legal:
+
+        ?P a = Eq A a a     could be   (lam z. Eq A z z)   or   (lam z. Eq A z a)
+
+    and only some later constraint can say which was meant.  Guessing here is
+    what made symm fail.
+    """
+    free = free_names(resolve(rhs, subst))
+    return any(n in free and n in meta.context for n in names)
+
+
+def unify(a, b, subst, ctx=None, pending=None):
+    """Unification up to normalisation, over Miller's pattern fragment.
+
+    With a pending list, a constraint whose solution is not yet determined is
+    recorded instead of guessed, and settled later by solve_pending.
+    """
     ctx = ctx if ctx is not None else {}
     a = normalize(resolve(a, subst))
     b = normalize(resolve(b, subst))
@@ -595,17 +641,42 @@ def unify(a, b, subst, ctx=None):
     for left, right in ((a, b), (b, a)):
         if head_is_meta(left):
             head, args = spine(left)
+            names = is_pattern(args, subst)
+            if names is not None and pending is not None \
+                    and is_ambiguous(head, names, right, subst):
+                pending.append(Constraint(left, right, dict(ctx)))
+                return True                # settled later, and verified then
             solved = assign_pattern(head, args, right, subst, ctx)
             if solved is not None:
                 return solved
 
     if isinstance(a, App) and isinstance(b, App):
-        return (unify(a.func, b.func, subst, ctx)
-                and unify(a.arg, b.arg, subst, ctx))
+        return (unify(a.func, b.func, subst, ctx, pending)
+                and unify(a.arg, b.arg, subst, ctx, pending))
     if isinstance(a, Binder) and isinstance(b, Binder) and a.tag == b.tag:
-        return (unify(a.var_type, b.var_type, subst, ctx)
-                and unify(a.body, b.body, subst, ctx))
+        return (unify(a.var_type, b.var_type, subst, ctx, pending)
+                and unify(a.body, b.body, subst, ctx, pending))
     return False
+
+
+class Constraint:
+    """A postponed equation ?m x1..xn = rhs, kept with the context it arose in."""
+
+    def __init__(self, lhs, rhs, ctx):
+        self.lhs = lhs
+        self.rhs = rhs
+        self.ctx = ctx
+
+    def head(self, subst):
+        head, args = spine(normalize(resolve(self.lhs, subst)))
+        return head, args
+
+    def satisfied(self, subst):
+        return definitionally_equal(resolve(self.lhs, subst),
+                                    resolve(self.rhs, subst))
+
+    def __str__(self):
+        return f"{readable(self.lhs)} = {readable(self.rhs)}"
 
 
 EXPLICIT = 'explicit'          # explicit(f) is Lean's @f: no holes inserted
@@ -630,7 +701,11 @@ class Elaborator:
     def __init__(self, env):
         self.env = dict(env)
         self.subst = {}
+        self.pending = []
         self.counter = 0
+
+    def local_names(self):
+        return tuple(n for n in self.env if n.startswith(self.PREFIX))
 
     def fresh_local(self, hint):
         self.counter += 1
@@ -640,7 +715,7 @@ class Elaborator:
         """Apply the term to a fresh hole for each leading implicit binder."""
         type_ = normalize(resolve(type_, self.subst))
         while isinstance(type_, Pi) and type_.implicit:
-            hole = new_meta(type_.var_name)
+            hole = new_meta(type_.var_name, self.local_names())
             term = App(term, hole)
             type_ = normalize(instantiate(type_.body, hole))
         return term, type_
@@ -673,7 +748,8 @@ class Elaborator:
         expected = normalize(resolve(expected, self.subst))
         if isinstance(expr, Lambda) and isinstance(expected, Pi):
             domain, _ = self.infer(expr.var_type)
-            if not unify(domain, expected.var_type, self.subst, self.env):
+            if not unify(domain, expected.var_type, self.subst,
+                         self.env, self.pending):
                 raise TheoremError(
                     f"argument '{expr.var_name}' is declared "
                     f"{readable(resolve(domain, self.subst))} but the "
@@ -690,10 +766,13 @@ class Elaborator:
             return expr.rebuild(domain, body)
 
         term, actual = self.infer(expr)
-        if not unify(expected, actual, self.subst, self.env):
+        if not unify(expected, actual, self.subst, self.env, self.pending):
             raise TheoremError(
                 f"stated {readable(resolve(expected, self.subst))}, "
                 f"proved {readable(resolve(actual, self.subst))}")
+        # settle constraints here, while the locals a solution may mention are
+        # still open names; once the binders close they are indices again
+        self.solve_pending()
         return term
 
     def infer(self, expr, insert=True):
@@ -735,7 +814,7 @@ class Elaborator:
                                   f"{pretty(func_type)}")
             arg, arg_type = self.infer(expr.arg)
             if not unify(func_type.var_type, arg_type, self.subst,
-                         self.env):
+                         self.env, self.pending):
                 raise KernelError(
                     f"Type mismatch: expected "
                     f"{readable(resolve(func_type.var_type, self.subst))}, got "
@@ -745,6 +824,58 @@ class Elaborator:
             return self.insert_implicits(term, result) if insert else (term, result)
 
         raise KernelError(f"Cannot elaborate: {expr}")
+
+    def solve_pending(self):
+        r"""Settle the postponed constraints, once there is enough to go on.
+
+        Every constraint on a hole proposes one candidate: its own Miller
+        solution.  A candidate is accepted only if it satisfies *all* the
+        constraints on that hole, which is what lets a later constraint
+        overrule an earlier guess --
+
+            ?P a = Eq A a a      proposes  (lam z. Eq A z z)
+            ?P b = Eq A b a      proposes  (lam z. Eq A z a)
+
+        and only the second survives both.  That is symm.
+        """
+        for _ in range(len(self.pending) + 2):
+            self.pending = [c for c in self.pending
+                            if not c.satisfied(self.subst)]
+            if not self.pending:
+                return
+            by_meta = {}
+            for c in self.pending:
+                head, args = c.head(self.subst)
+                if isinstance(head, Meta) and head.index not in self.subst:
+                    by_meta.setdefault(head.index, []).append((c, head, args))
+            if not by_meta:
+                return
+            progressed = False
+            for group in by_meta.values():
+                for candidate, head, args in group:
+                    trial = dict(self.subst)
+                    if assign_pattern(head, args, candidate.rhs, trial,
+                                      candidate.ctx) is not True:
+                        continue
+                    if all(c.satisfied(trial) for c, _, _ in group):
+                        self.subst = trial
+                        progressed = True
+                        break
+                if progressed:
+                    break
+            if not progressed:
+                return
+
+    def check_pending(self):
+        """Nothing may be left unverified: a postponed constraint that never
+        got settled is an implicit argument we could not work out."""
+        self.solve_pending()
+        unmet = [c for c in self.pending if not c.satisfied(self.subst)]
+        if unmet:
+            raise KernelError(
+                f"Could not work out an implicit argument: no single value "
+                f"satisfies {unmet[0]}. Supply it with explicit(f)(...)")
+        self.pending = []
 
     def finish(self, expr, what='term'):
         """Substitute the solutions in, and insist there are none left over."""
@@ -773,6 +904,7 @@ def elaborate(env, term, expected=None):
     else:
         expected, _ = el.infer(expected)
         term = el.check(term, expected)
+    el.check_pending()
     term = el.finish(term)
     checked = type_check(env, term)          # the trusted check
     if expected is not None:
@@ -1369,6 +1501,49 @@ def selftest():
     check('a solved motive prints without the internal local prefix',
           LOCAL_PREFIX not in str(resolve(Q, s)))
 
+    print('constraint postponement')
+    m_free = new_meta('P')                          # nothing in scope
+    m_bound = new_meta('P', ('@a1',))               # a is in scope
+    check('a hole records the scope it was created in',
+          m_bound.context == ('@a1',) and m_free.context == ())
+    check('abstracting is forced when the variable is out of scope',
+          not is_ambiguous(m_free, ['@a1'],
+                           eq3(Var('Nat'), Var('@a1'), Var('@a1')), {}))
+    check('but ambiguous when it is in scope',
+          is_ambiguous(m_bound, ['@a1'],
+                       eq3(Var('Nat'), Var('@a1'), Var('@a1')), {}))
+    check('and unambiguous when the variable does not occur at all',
+          not is_ambiguous(m_bound, ['@a1'],
+                           eq3(Var('Nat'), Var('c'), Var('c')), {}))
+    queue = []
+    check('an ambiguous constraint is recorded, not guessed',
+          unify(App(m_bound, Var('@a1')),
+                eq3(Var('Nat'), Var('@a1'), Var('@a1')), {}, pctx, queue)
+          and len(queue) == 1 and m_bound.index not in {})
+
+    # symm is the case that motivated all of this: the first constraint
+    # proposes the wrong motive and only the second rules it out
+    @theorem(r'\forall \{A : \text{Type}\}, \forall a \in A, \forall b \in A, '
+             r'\text{Eq} A a b \to \text{Eq} A b a', verbose=False)
+    def symmetry(A: 'Type', a: 'A', b: 'A', h: r'\text{Eq} A a b'):
+        return transport(h, refl(a))
+    check('symm proves a = b implies b = a',
+          symmetry.lean_type
+          == latex2type(r'\forall \{A : \text{Type}\}, \forall a \in A, '
+                        r'\forall b \in A, \text{Eq} A a b \to '
+                        r'\text{Eq} A b a'))
+    check('and the motive chosen was the later candidate, not the first',
+          'Eq' in str(symmetry.lean_term))
+
+    def unsatisfiable():
+        @theorem(r'\forall \{A : \text{Type}\}, \forall a \in A, '
+                 r'\forall b \in A, \text{Eq} A a a \to \text{Eq} A a b',
+                 verbose=False)
+        def bogus(A: 'Type', a: 'A', b: 'A', h: r'\text{Eq} A a a'):
+            return transport(h, refl(a))
+    check('postponing does not let a false claim through',
+          raises(unsatisfiable, 'no single value satisfies'))
+
     print('dependent constants')
     for name in ('symm', 'trans', 'congrArg', 'transport'):
         check('%-10s is well formed' % name,
@@ -1577,6 +1752,13 @@ def demo():
     def transitivity(A: 'Type', a: 'A', b: 'A', c: 'A',
                      h: r'\text{Eq} A a b', p: r'\text{Eq} A a c'):
         return transport(h, p)
+
+    # here the first constraint on the motive proposes the wrong answer, and
+    # only the expected type rules it out
+    @theorem(r'\forall \{A : \text{Type}\}, \forall a \in A, \forall b \in A, '
+             r'\text{Eq} A a b \to \text{Eq} A b a')
+    def symmetry(A: 'Type', a: 'A', b: 'A', h: r'\text{Eq} A a b'):
+        return transport(h, refl(a))
 
     print("\n--- and a proof that should fail ---")
     try:

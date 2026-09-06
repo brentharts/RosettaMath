@@ -15,6 +15,7 @@ The project is two files:
 | :--- | :--- |
 | `rosettamath.py` | The translator. Self-hosting: written in the LaTeX subset it translates, and bootstrapped to a fixed point. |
 | `rosettaui.py` | An interactive PyQt5 explorer for that subset. Plain Python, deliberately not self-hosted. |
+| `lean4.py` | A dependent-type micro-kernel that checks proofs about Python code, with the theorem statements written in LaTeX. |
 
 ---
 
@@ -152,6 +153,64 @@ including `math2py`.
 
 ---
 
+## Proofs: `lean4.py`
+
+A Calculus of Constructions micro-kernel — the foundation Lean and Coq are
+built on — small enough to read in one sitting. The Xena project rendered Lean
+proofs *into* LaTeX; this flips the bridge and uses LaTeX as the *input*
+language for stating theorems about Python functions.
+
+```python
+@theorem(r'\forall x \in \text{Nat}, x = x')
+def reflexivity(x: 'Nat'):
+    return refl(Nat, x)
+```
+
+The function is compiled to a kernel term, type checked, and the LaTeX
+statement is read as a type. Both must agree — checking only that the Python is
+well typed would prove nothing about what it claims. A theorem that does not
+prove its statement raises, so `make proofs` gates CI; `--non-strict` records
+the failure and continues.
+
+### Representation
+
+Bound variables are **de Bruijn indices**; free variables and constants keep
+their names. That removes two classes of bug by construction rather than
+patching them:
+
+*   **Substitution cannot capture.** A name in the substituted term can never
+    collide with an index.
+*   **Alpha-equivalent terms are the same object.** `∀ x : Nat, Nat` and
+    `∀ y : Nat, Nat` compare equal with no renaming machinery — which matters,
+    because comparing types is how every decision in a proof checker gets made.
+
+The constructors still take names, so terms read the way they always did:
+`Lambda("T", Universe(1), Var("T"))` abstracts the `T` for you, and the printer
+renames binders that would shadow a free variable, so the output never claims
+a variable is bound when it isn't.
+
+### The statement language
+
+| LaTeX | Kernel |
+| :--- | :--- |
+| `\text{Nat}`, `\mathbb{N}` | a named type |
+| `\text{Prop}`, `\text{Type}` | sorts |
+| `A \to B` | function type, right associative |
+| `\forall x \in A, B` / `\forall (x : A), B` | dependent function type |
+| `f x` | application, by juxtaposition |
+| `a = b` | `Eq A a b`, with `A` taken from the binder |
+
+The front end is shared with the rest of the project: `rosettaui.tokenize`
+lexes the subset and `rosettamath.unescape` handles `\text{}` content.
+
+```sh
+make proofs              # check the theorems
+python3 lean4.py --selftest      # 49 kernel and front-end checks
+python3 lean4.py --non-strict    # report failures instead of raising
+```
+
+---
+
 ## Bootstrapping Process
 
 The project relies on an elegant self-generation architecture:
@@ -172,8 +231,9 @@ and the fixed point is the proof that the two agree.
 ## Testing
 
 ```sh
-make test          # both bootstrap stages, plus the explorer's checks
+make test          # both bootstrap stages, the explorer, and the kernel
 make render-test   # layout engine, offscreen
+make proofs        # the lean4 theorems
 ```
 
 `python3 rosettamath.py` runs the self test against Stage 0 and again against

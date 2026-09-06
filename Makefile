@@ -36,6 +36,7 @@ help:
 	@echo 'make check-deps     report what is present and what is missing'
 	@echo 'make ui             launch the interactive explorer'
 	@echo 'make test           run every self test'
+	@echo 'make proofs         check the lean4 theorems'
 	@echo 'make pdf            typeset the paper to /tmp/neomath.pdf'
 	@echo 'make paper          the paper with the source appendix'
 	@echo 'make clean          remove caches and build products'
@@ -82,6 +83,11 @@ ui:
 test:
 	$(PYTHON) rosettamath.py
 	$(PYTHON) rosettaui.py --selftest
+	$(PYTHON) lean4.py --selftest
+
+# The micro-kernel on its own: proofs raise on failure, so this gates CI.
+proofs:
+	$(PYTHON) lean4.py
 
 # Renders a sample equation offscreen, so it works without a display.
 render-test:
@@ -97,5 +103,5 @@ clean:
 	rm -rf __pycache__ /tmp/rosettaui-cache
 	rm -f /tmp/neomath.aux /tmp/neomath.log /tmp/neomath.out /tmp/neomath.tex
 
-.PHONY: default help install install-all check-deps ui test render-test \
-	pdf paper clean
+.PHONY: default help install install-all check-deps ui test proofs \
+	render-test pdf paper clean

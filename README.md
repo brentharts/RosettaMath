@@ -216,8 +216,41 @@ where `A` is itself bound. A raw de Bruijn index would mean something different
 at every depth it appeared in; a name does not.
 
 Write `explicit(refl)(Nat, x)` — Lean's `@refl` — to supply an implicit
-argument by hand. Unification is first-order, with an occurs check; an argument
-that cannot be inferred is reported rather than guessed.
+argument by hand.
+
+### Higher-order holes
+
+An implicit argument in a *dependent* position is only ever seen applied.
+`transport` has type `∀ {A} {P : A → Prop} {a b : A}, Eq A a b → P a → P b`, so
+working out the motive `P` means solving `?P a = Eq A a c` — a higher-order
+question, which first-order decomposition can only answer by demanding `a = c`.
+
+Unification therefore covers **Miller's pattern fragment**: a hole applied to
+distinct variables is solved by abstracting those variables out of the other
+side. That is enough for
+
+```python
+@theorem(r'\forall \{A : \text{Type}\}, \forall a \in A, \forall b \in A, \forall c \in A, '
+         r'\text{Eq} A a b \to \text{Eq} A a c \to \text{Eq} A b c')
+def transitivity(A: 'Type', a: 'A', b: 'A', c: 'A',
+                 h: r'\text{Eq} A a b', p: r'\text{Eq} A a c'):
+    return transport(h, p)
+```
+
+where the elaborator synthesises the motive `λ z ⇒ Eq A z c` on its own.
+
+Full higher-order unification is undecidable, so outside the fragment — a hole
+applied to a repeated variable, or to something that is not a variable — the
+elaborator refuses rather than guesses. A guess there is a proof nobody wrote.
+
+Checking is bidirectional: the expected type is pushed inwards through the
+lambdas rather than compared at the top. Inside the binders both sides are
+open, with ordinary names, which is what puts `?P a` in the pattern fragment at
+all; two closed types facing each other would leave de Bruijn indices with no
+name to abstract over.
+
+The environment ships `Eq`, `refl`, `symm`, `trans`, `congrArg` and
+`transport`.
 
 ### The statement language
 
@@ -236,7 +269,7 @@ lexes the subset and `rosettamath.unescape` handles `\text{}` content.
 
 ```sh
 make proofs              # check the theorems
-python3 lean4.py --selftest      # 64 kernel, elaborator and front-end checks
+python3 lean4.py --selftest      # 81 kernel, elaborator and front-end checks
 python3 lean4.py --non-strict    # report failures instead of raising
 ```
 

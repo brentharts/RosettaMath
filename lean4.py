@@ -62,6 +62,14 @@ The elaborator that does this is deliberately untrusted: it fills in the holes
 and then hands the completed term to type_check, which verifies it from
 scratch knowing nothing about implicit arguments.  A bug in the elaborator can
 therefore cost you a confusing error message, but not a false theorem.
+
+Unification is over Miller's pattern fragment: a hole applied to distinct
+variables, ?P a, is solved by abstracting those variables out of the other
+side.  That is what makes an implicit argument in a dependent position work --
+transport's motive P is only ever seen applied, as P a and P b, so solving it
+means answering a higher-order question.  Full higher-order unification is
+undecidable; outside the fragment the elaborator refuses rather than guesses,
+because a guess here is a proof the user did not write.
 '''
 
 
@@ -474,15 +482,39 @@ def resolve(expr, subst):
             return resolve(subst[expr.index], subst)
         return expr
     if isinstance(expr, App):
-        return App(resolve(expr.func, subst), resolve(expr.arg, subst))
+        func = resolve(expr.func, subst)
+        arg = resolve(expr.arg, subst)
+        if head_is_meta(expr.func) or isinstance(expr.func, Meta):
+            # solving ?P leaves (lam z. ..) applied to an argument; reduce it,
+            # so what comes out is a term and not a substitution in progress
+            return normalize(App(func, arg))
+        return App(func, arg)
     if isinstance(expr, Binder):
         return expr.rebuild(resolve(expr.var_type, subst),
                             resolve(expr.body, subst))
     return expr
 
 
+def spine(expr):
+    """A term as a head and its arguments: f a b -> (f, [a, b])."""
+    args = []
+    while isinstance(expr, App):
+        args.append(expr.arg)
+        expr = expr.func
+    args.reverse()
+    return expr, args
+
+
+def head_is_meta(expr):
+    head, _ = spine(expr)
+    return isinstance(head, Meta)
+
+
+LOCAL_PREFIX = '@'         # elaboration opens binders into names starting here
+
+
 def assign(meta, term, subst):
-    """Solve a hole, refusing the two solutions that would be unsound."""
+    """Solve a bare hole, refusing the two solutions that would be unsound."""
     if has_meta(term, meta.index):
         return False                      # occurs check: ?m := f(?m)
     if has_loose_bound(term):
@@ -493,21 +525,86 @@ def assign(meta, term, subst):
     return True
 
 
-def unify(a, b, subst):
-    """First-order unification, up to normalisation."""
+def assign_pattern(meta, args, rhs, subst, ctx):
+    r"""Solve ?m x1 .. xn = rhs, when the arguments are distinct variables.
+
+    This is Miller's pattern fragment.  Higher-order unification is undecidable
+    in general, but this special case has a single most general solution --
+    abstract the arguments out of the right-hand side:
+
+        ?P a  =  Eq Nat a a        gives    ?P := (lam z. Eq Nat z z)
+
+    Outside the fragment we refuse rather than guess, because guessing here
+    means inventing a proof the user did not write.
+    """
+    names = []
+    for arg in args:
+        arg = normalize(resolve(arg, subst))
+        if not isinstance(arg, Var) or not arg.name.startswith(LOCAL_PREFIX):
+            return None                   # not a pattern: caller may try more
+        if arg.name in names:
+            return None                   # repeated argument: not a pattern
+        names.append(arg.name)
+
+    rhs = resolve(rhs, subst)
+    if has_meta(rhs, meta.index) or has_loose_bound(rhs):
+        return False
+
+    solution = rhs
+    for name in reversed(names):
+        solution = Lambda(name, ctx.get(name, Universe(0)), solution)
+        solution.var_name = strip_local(name)   # the hint is for reading only
+    # A solution may legitimately mention a local: the hole was created where
+    # that local was in scope, and the enclosing binder closes over it when the
+    # term is put back together.  A local that really does escape is caught by
+    # Elaborator.finish, which can say so properly.
+    subst[meta.index] = solution
+    return True
+
+
+def readable(expr):
+    """Render for a person: the names elaboration opened are internal detail."""
+    for name in sorted(free_names(expr)):
+        if name.startswith(LOCAL_PREFIX):
+            expr = substitute(expr, name, Var(strip_local(name)))
+    return pretty(expr)
+
+
+def strip_local(name):
+    """@a12 -> a, for printing."""
+    if not name.startswith(LOCAL_PREFIX):
+        return name
+    return name[len(LOCAL_PREFIX):].rstrip('0123456789') or 'x'
+
+
+def unify(a, b, subst, ctx=None):
+    """Unification up to normalisation, over Miller's pattern fragment."""
+    ctx = ctx if ctx is not None else {}
     a = normalize(resolve(a, subst))
     b = normalize(resolve(b, subst))
     if a == b:
         return True
+
     if isinstance(a, Meta):
         return assign(a, b, subst)
     if isinstance(b, Meta):
         return assign(b, a, subst)
+
+    # a hole applied to arguments: try the pattern rule before decomposing,
+    # since it gives the most general solution when it applies
+    for left, right in ((a, b), (b, a)):
+        if head_is_meta(left):
+            head, args = spine(left)
+            solved = assign_pattern(head, args, right, subst, ctx)
+            if solved is not None:
+                return solved
+
     if isinstance(a, App) and isinstance(b, App):
-        return unify(a.func, b.func, subst) and unify(a.arg, b.arg, subst)
+        return (unify(a.func, b.func, subst, ctx)
+                and unify(a.arg, b.arg, subst, ctx))
     if isinstance(a, Binder) and isinstance(b, Binder) and a.tag == b.tag:
-        return (unify(a.var_type, b.var_type, subst)
-                and unify(a.body, b.body, subst))
+        return (unify(a.var_type, b.var_type, subst, ctx)
+                and unify(a.body, b.body, subst, ctx))
     return False
 
 
@@ -528,7 +625,7 @@ class Elaborator:
     every depth it appeared.  A name does not.
     """
 
-    PREFIX = '@'               # cannot occur in a Python identifier
+    PREFIX = LOCAL_PREFIX      # cannot occur in a Python identifier
 
     def __init__(self, env):
         self.env = dict(env)
@@ -562,6 +659,42 @@ class Elaborator:
         body = abstract(resolve(body, self.subst), name)
         body_type = abstract(resolve(body_type, self.subst), name)
         return domain, body, body_type
+
+    def check(self, expr, expected):
+        r"""Elaborate expr against a known expected type.
+
+        Pushing the expectation inwards is what makes a hole in a dependent
+        position solvable: inside \lambda f. \lambda x. congrArg(refl(x)) the
+        goal is Eq Nat (f x) (f x) with f and x opened as ordinary names, so
+        ?f x = f x falls in the pattern fragment.  Unifying only at the top,
+        after both sides are closed again, would leave de Bruijn indices facing
+        each other with no name to abstract over.
+        """
+        expected = normalize(resolve(expected, self.subst))
+        if isinstance(expr, Lambda) and isinstance(expected, Pi):
+            domain, _ = self.infer(expr.var_type)
+            if not unify(domain, expected.var_type, self.subst, self.env):
+                raise TheoremError(
+                    f"argument '{expr.var_name}' is declared "
+                    f"{readable(resolve(domain, self.subst))} but the "
+                    f"statement expects "
+                    f"{readable(resolve(expected.var_type, self.subst))}")
+            name = self.fresh_local(expr.var_name)
+            self.env[name] = domain
+            try:
+                body = self.check(instantiate(expr.body, Var(name)),
+                                  instantiate(expected.body, Var(name)))
+            finally:
+                del self.env[name]
+            body = abstract(resolve(body, self.subst), name)
+            return expr.rebuild(domain, body)
+
+        term, actual = self.infer(expr)
+        if not unify(expected, actual, self.subst, self.env):
+            raise TheoremError(
+                f"stated {readable(resolve(expected, self.subst))}, "
+                f"proved {readable(resolve(actual, self.subst))}")
+        return term
 
     def infer(self, expr, insert=True):
         """(elaborated term, its type)."""
@@ -601,11 +734,12 @@ class Elaborator:
                 raise KernelError(f"Expected a function, got "
                                   f"{pretty(func_type)}")
             arg, arg_type = self.infer(expr.arg)
-            if not unify(func_type.var_type, arg_type, self.subst):
+            if not unify(func_type.var_type, arg_type, self.subst,
+                         self.env):
                 raise KernelError(
                     f"Type mismatch: expected "
-                    f"{pretty(resolve(func_type.var_type, self.subst))}, got "
-                    f"{pretty(resolve(arg_type, self.subst))}")
+                    f"{readable(resolve(func_type.var_type, self.subst))}, got "
+                    f"{readable(resolve(arg_type, self.subst))}")
             result = normalize(instantiate(func_type.body, arg))
             term = App(func, arg)
             return self.insert_implicits(term, result) if insert else (term, result)
@@ -618,7 +752,7 @@ class Elaborator:
         if has_meta(out):
             raise KernelError(
                 f"Could not infer every implicit argument in the {what}: "
-                f"{pretty(out)}. Supply them with explicit(f)(...)")
+                f"{readable(out)}. Supply them with explicit(f)(...)")
         escaped = sorted(n for n in free_names(out) if n.startswith(self.PREFIX))
         if escaped:
             raise KernelError(
@@ -634,14 +768,11 @@ def elaborate(env, term, expected=None):
     whatever it produces is type checked from scratch.
     """
     el = Elaborator(env)
-    term, actual = el.infer(term)
-    if expected is not None:
+    if expected is None:
+        term, _ = el.infer(term)
+    else:
         expected, _ = el.infer(expected)
-        if not unify(expected, actual, el.subst):
-            term = el.finish(term)
-            raise TheoremError(
-                f"stated {pretty(el.finish(expected, 'statement'))}, "
-                f"proved {pretty(resolve(actual, el.subst))}")
+        term = el.check(term, expected)
     term = el.finish(term)
     checked = type_check(env, term)          # the trusted check
     if expected is not None:
@@ -937,6 +1068,73 @@ def _refl_type():
     return Pi('A', Universe(1), Pi('a', Var('A'), same), implicit=True)
 
 
+def _eq(t, x, y):
+    return App(App(App(Var('Eq'), t), x), y)
+
+
+def _symm_type():
+    r"""symm : forall {A} {a b : A}, Eq A a b -> Eq A b a"""
+    return Pi('A', Universe(1),
+              Pi('a', Var('A'),
+                 Pi('b', Var('A'),
+                    arrow(_eq(Var('A'), Var('a'), Var('b')),
+                          _eq(Var('A'), Var('b'), Var('a'))),
+                    implicit=True),
+                 implicit=True),
+              implicit=True)
+
+
+def _trans_type():
+    r"""trans : forall {A} {a b c : A}, Eq A a b -> Eq A b c -> Eq A a c"""
+    inner = arrow(_eq(Var('A'), Var('a'), Var('b')),
+                  arrow(_eq(Var('A'), Var('b'), Var('c')),
+                        _eq(Var('A'), Var('a'), Var('c'))))
+    return Pi('A', Universe(1),
+              Pi('a', Var('A'),
+                 Pi('b', Var('A'),
+                    Pi('c', Var('A'), inner, implicit=True),
+                    implicit=True),
+                 implicit=True),
+              implicit=True)
+
+
+def _congr_type():
+    r"""congrArg : forall {A B} {f : A -> B} {a b : A}, Eq A a b -> Eq B (f a) (f b)
+
+    f is implicit, so working out what it is means solving ?f x = g x -- a
+    higher-order problem, and the reason the unifier needs Miller patterns.
+    """
+    inner = arrow(_eq(Var('A'), Var('a'), Var('b')),
+                  _eq(Var('B'), App(Var('f'), Var('a')),
+                      App(Var('f'), Var('b'))))
+    return Pi('A', Universe(1),
+              Pi('B', Universe(1),
+                 Pi('f', arrow(Var('A'), Var('B')),
+                    Pi('a', Var('A'),
+                       Pi('b', Var('A'), inner, implicit=True),
+                       implicit=True),
+                    implicit=True),
+                 implicit=True),
+              implicit=True)
+
+
+def _transport_type():
+    r"""transport : forall {A} {P : A -> Prop} {a b : A}, Eq A a b -> P a -> P b
+
+    The motive P is implicit and appears applied, so ?P a = <goal> is again a
+    pattern problem.
+    """
+    inner = arrow(_eq(Var('A'), Var('a'), Var('b')),
+                  arrow(App(Var('P'), Var('a')), App(Var('P'), Var('b'))))
+    return Pi('A', Universe(1),
+              Pi('P', arrow(Var('A'), Universe(0)),
+                 Pi('a', Var('A'),
+                    Pi('b', Var('A'), inner, implicit=True),
+                    implicit=True),
+                 implicit=True),
+              implicit=True)
+
+
 # A global logical environment for our theorems.  Nat is a Type, not a Prop:
 # declaring it a Prop is what let the old identity example typecheck for the
 # wrong reason.
@@ -946,6 +1144,10 @@ GLOBAL_ENV = {
     "Real": Universe(1),
     "Eq": _eq_type(),
     "refl": _refl_type(),
+    "symm": _symm_type(),
+    "trans": _trans_type(),
+    "congrArg": _congr_type(),
+    "transport": _transport_type(),
 }
 
 STRICT = True                 # a failed theorem raises; --non-strict prints
@@ -1122,6 +1324,58 @@ def selftest():
     check('an implicit argument that cannot be inferred is reported',
           raises(lambda: elaborate(env, Var('refl')), 'Could not infer'))
 
+    print('pattern unification')
+    loc = '@a1'
+    pctx = {loc: Var('Nat')}
+
+    def eq3(t, u, v):
+        return App(App(App(Var('Eq'), t), u), v)
+
+    s = {}
+    P = new_meta('P')
+    check('?P a = Eq Nat c c solves, though a does not occur',
+          unify(App(P, Var(loc)), eq3(Var('Nat'), Var('c'), Var('c')), s, pctx))
+    check('and the motive is a constant function',
+          normalize(App(resolve(P, s), Var('b')))
+          == eq3(Var('Nat'), Var('c'), Var('c')))
+
+    s = {}
+    P = new_meta('P')
+    check('?P a = Eq Nat a a abstracts every occurrence',
+          unify(App(P, Var(loc)), eq3(Var('Nat'), Var(loc), Var(loc)), s, pctx))
+    check('so applying it to b gives Eq Nat b b',
+          normalize(App(resolve(P, s), Var('b')))
+          == eq3(Var('Nat'), Var('b'), Var('b')))
+
+    s = {}
+    F = new_meta('F')
+    check('?F a = Nat solves, where first-order has no rule at all',
+          unify(App(F, Var(loc)), Var('Nat'), s, pctx))
+
+    s = {}
+    Q = new_meta('Q')
+    check('?Q a = Eq Nat a c solves, where first-order would need a = c',
+          unify(App(Q, Var(loc)), eq3(Var('Nat'), Var(loc), Var('c')), s, pctx))
+    check('and gives the motive transport needs',
+          normalize(App(resolve(Q, s), Var('b')))
+          == eq3(Var('Nat'), Var('b'), Var('c')))
+
+    check('a hole applied to a non-variable is refused, not guessed',
+          not unify(App(new_meta('H'), App(Var('f'), Var(loc))), Var('Nat'),
+                    {}, pctx))
+    check('the occurs check still applies under an application',
+          (lambda m: not unify(App(m, Var(loc)), App(Var('f'), m), {}, pctx))
+          (new_meta('O')))
+    check('a solved motive prints without the internal local prefix',
+          LOCAL_PREFIX not in str(resolve(Q, s)))
+
+    print('dependent constants')
+    for name in ('symm', 'trans', 'congrArg', 'transport'):
+        check('%-10s is well formed' % name,
+              isinstance(type_check(GLOBAL_ENV, GLOBAL_ENV[name]), Universe))
+    check('transport takes its motive implicitly',
+          GLOBAL_ENV['transport'].body.implicit)
+
     print('LaTeX front end')
     cases = [
         (r'\text{Nat}', Var('Nat')),
@@ -1221,12 +1475,37 @@ def selftest():
     check('the polymorphic identity proves its Pi type',
           polymorphic_id.lean_type == latex2type(r'\forall (T : \text{Type}), T \to T'))
 
+    # the motive is implicit and appears applied, so this is exactly the
+    # higher-order case: ?P a = Eq A a c
+    @theorem(r'\forall \{A : \text{Type}\}, \forall a \in A, \forall b \in A, '
+             r'\forall c \in A, \text{Eq} A a b \to \text{Eq} A a c \to '
+             r'\text{Eq} A b c', verbose=False)
+    def transport_demo(A: 'Type', a: 'A', b: 'A', c: 'A',
+                       h: r'\text{Eq} A a b', p: r'\text{Eq} A a c'):
+        return transport(h, p)
+    check('transport proves b = c from a = b and a = c',
+          transport_demo.lean_type
+          == latex2type(r'\forall \{A : \text{Type}\}, \forall a \in A, '
+                        r'\forall b \in A, \forall c \in A, '
+                        r'\text{Eq} A a b \to \text{Eq} A a c \to '
+                        r'\text{Eq} A b c'))
+
+    @theorem(r'\forall f \in (\text{Nat} \to \text{Nat}), '
+             r'\forall x \in \text{Nat}, \text{Eq} \text{Nat} (f x) (f x)',
+             verbose=False)
+    def congr_demo(f: r'\text{Nat} \to \text{Nat}', x: 'Nat'):
+        return congrArg(refl(x))
+    check('congrArg infers the function it is congruent over',
+          congr_demo.lean_type is not None)
+
     def wrong_claim():
         @theorem(r'\forall x \in \text{Nat}, x = x', verbose=False)
         def not_a_proof(x: 'Nat'):
             return x
     check('bug 7: a false claim now raises instead of printing',
           raises(wrong_claim, 'does not prove what it claims'))
+    check('and the message uses readable names, not internal ones',
+          not raises(wrong_claim, LOCAL_PREFIX))
 
     def undeclared():
         @theorem(r'\text{Nat} \to \text{Nat}', verbose=False)
@@ -1289,6 +1568,15 @@ def demo():
     @theorem(r"\forall x \in \text{Nat}, x = x")
     def reflexivity_by_hand(x: 'Nat'):
         return explicit(refl)(Nat, x)
+
+    # transport's motive is implicit and appears applied, so working it out is
+    # a higher-order problem: ?P a = Eq A a c
+    @theorem(r'\forall \{A : \text{Type}\}, \forall a \in A, \forall b \in A, '
+             r'\forall c \in A, \text{Eq} A a b \to \text{Eq} A a c \to '
+             r'\text{Eq} A b c')
+    def transitivity(A: 'Type', a: 'A', b: 'A', c: 'A',
+                     h: r'\text{Eq} A a b', p: r'\text{Eq} A a c'):
+        return transport(h, p)
 
     print("\n--- and a proof that should fail ---")
     try:

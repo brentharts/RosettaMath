@@ -16,6 +16,7 @@ The project is two files:
 | `rosettamath.py` | The translator. Self-hosting: written in the LaTeX subset it translates, and bootstrapped to a fixed point. |
 | `rosettaui.py` | An interactive PyQt5 explorer for that subset. Plain Python, deliberately not self-hosted. |
 | `lean4.py` | A dependent-type micro-kernel that checks proofs about Python code, with the theorem statements written in LaTeX. |
+| `neomath.tex` | The paper. |
 
 ---
 
@@ -362,10 +363,19 @@ integrity of the knowledge base, and the bridge back to `rosettamath`.
 
 ## The paper
 
+The paper's prose is `neomath.tex`, an ordinary LaTeX file. What `rosettamath.py`
+adds is the appendix: the self-hosted LaTeX source typeset function by function,
+and the Python it becomes, spliced in at the `%%APPENDIX%%` marker.
+
 ```sh
-make pdf      # /tmp/neomath.pdf
+make pdf      # /tmp/neomath.pdf, 13 pages
 make paper    # with the LaTeX source and generated Python as an appendix
 ```
+
+It covers all three components, the argument for local, open, Python-based
+tooling in mathematics education from school to research, and the path from
+the micro-kernel toward verified systems software via
+[Crust](https://github.com/brentharts/crust).
 
 ---
 

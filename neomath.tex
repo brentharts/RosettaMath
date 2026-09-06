@@ -1,0 +1,901 @@
+\documentclass[11pt]{article}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{amsmath,amssymb,algorithm,algpseudocode,listings}
+\usepackage{booktabs}
+\usepackage{xurl}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+\usepackage{orcidlink}
+
+\lstset{
+    language=Python,
+    basicstyle=\ttfamily\small,
+    keywordstyle=\color{blue!60!black}\bfseries,
+    stringstyle=\color{green!45!black},
+    commentstyle=\color{gray}\itshape,
+    breaklines=true,
+    frame=single,
+    framerule=0.3pt,
+    xleftmargin=1em,
+    columns=fullflexible,
+    keepspaces=true,
+    showstringspaces=false
+}
+\lstdefinestyle{appendix}{
+    basicstyle=\ttfamily\tiny,
+    numbers=left,
+    numberstyle=\tiny\color{gray},
+    stepnumber=1
+}
+
+\title{RosettaMath: Reading, Running and Proving Mathematics from \LaTeX{}\\
+\large A self-hosting translator, an interactive explorer, and a dependent-type
+micro-kernel, as a foundation for open mathematics education from school to research}
+\author{B.S. Hartshorn \orcidlink{0009-0004-2853-655X}\\
+\small \url{https://github.com/brentharts/RosettaMath}}
+\date{September 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Mathematics is written in \LaTeX{} and computed in Python, and the two are
+connected by hand. RosettaMath closes that gap with three small, dependency-free
+Python programs that treat \LaTeX{} as an \emph{input} language rather than a
+typesetting target. \texttt{rosettamath.py} translates a strict subset of
+\LaTeX{}---math mode and \texttt{algpseudocode}---into executable Python and back
+again; it is self-hosting, written in the very subset it translates, and
+bootstraps to a byte-identical fixed point, while the reverse direction is
+verified by round-tripping functions and checking that they still behave the
+same. \texttt{rosettaui.py} renders an equation glyph by glyph in a desktop
+window in which every symbol is a live object: hover it for its name, origin and
+conventional meaning, click it for an offline explanation, right-click it for
+the encyclopedia article; the whole equation is identified against a library of
+well-known physics and mathematics, and the Python it becomes is shown alongside
+with physical constants resolved to \texttt{scipy.constants}.
+\texttt{lean4.py} is a Calculus of Constructions kernel in under two thousand
+lines, with de Bruijn indices, an untrusted elaborator that infers implicit
+arguments by Miller pattern unification with postponed constraints, and a
+\LaTeX{} statement language, so that a theorem about a Python function is
+stated as \verb|\forall x \in \text{Nat}, x = x|
+and checked by a kernel small
+enough to read in one sitting. We argue that these three pieces, precisely
+because they are small, local, open and written in the language students
+already learn, form a practical foundation for mathematics and programming
+education at every level---from a child clicking on a Greek letter to an
+undergraduate proving symmetry of equality to a researcher graduating to
+Lean---and that the same small trusted kernel points toward verified systems
+software when its statement language becomes the contract language of a
+self-contained compiler toolchain. We situate the work against the rapid
+mechanisation of mathematics, in which AI systems now formalise Fermat's Last
+Theorem in eleven days, and argue that what that moment most needs is not
+another prover but tools with which people can read, run and check
+mathematics on their own machines.
+\end{abstract}
+
+\section{Introduction}
+
+The universal language of theoretical research is mathematics, and the
+universal medium for writing it down is \LaTeX{}. The universal language for
+investigating it computationally is Python. Between the two sits a manual
+translation step that is slow, error-prone, and---more importantly for
+education---invisible: the reader of a paper sees the equation, the user of a
+simulation sees the code, and nobody sees the correspondence. The notation is
+dense, overloaded and dependent on unstated convention; the program is verbose,
+explicit and dependent on names. A student who has learned one has learned
+almost nothing about the other.
+
+RosettaMath began as a small attempt to make that correspondence mechanical.
+Its first component, \texttt{rosettamath.py}, translates a strict subset of
+\LaTeX{} into Python with no dependencies, and demonstrates the adequacy of the
+subset by being written in it: a plain-Python stage~0 translates the \LaTeX{}
+source of the translator into a stage~1, and stage~1 translates the same source
+again, byte for byte, to a fixed point. The earlier draft of this paper
+described that translator alone. Since then the project has grown two further
+components, and with them a claim.
+
+The claim is about education, and it is made at a particular moment. In the
+past eighteen months the mechanisation of mathematics has moved faster than
+almost anyone predicted. AlphaProof reached silver-medal performance at the
+International Mathematical Olympiad with proofs checked in Lean
+\cite{hubert2025}; a succession of open models followed
+\cite{ren2025,wang2025kimina,chen2025seed,lin2025goedel,achim2025aristotle};
+the strong Prime Number Theorem, which had stalled for eighteen months of expert
+effort, was formalised by an autoformalisation agent in three weeks
+\cite{mathinc2025gauss}; AI systems began to find counterexamples to conjectures
+that had stood for a century \cite{buzzard2026counter}; and days before this
+paper was finished, a swarm of language-model agents produced the first complete,
+computer-checked formalisation of Fermat's Last Theorem in eleven days---thirteen
+million lines of Lean, checked by the Lean kernel and then again by an independent
+kernel implementation \cite{anthropic2026flt,newscientist2026flt}. The
+mathematical community is asking, with some urgency, what its values, practice
+and teaching should look like in such a world \cite{commelin2026,sloman2026,simons2026}.
+
+We take a narrow position within that conversation. The provers are being built,
+at enormous scale and cost, by organisations that can afford to. What is not
+being built at the same pace is the other side: tools with which a person, on
+their own computer, with no account and no server, can \emph{read} an equation
+and understand its conventions, \emph{run} it as code and see the numbers, and
+\emph{check} a claim about that code with a kernel small enough that they could
+read the kernel itself. Those are the three components of RosettaMath, and the
+argument of this paper is that they are the right foundation for teaching
+mathematics and programming together, at every level, in an age when the
+proving will increasingly be done by machines and the understanding must still
+be done by people.
+
+\medskip
+\noindent The contributions since the previous draft are:
+\begin{itemize}
+\item a \textbf{self-hosting translator} extended with implicit multiplication,
+inferred parameters, and a reverse translator whose output is verified by
+behaviour rather than by eye (\S\ref{sec:rosettamath});
+\item an \textbf{interactive explorer}, \texttt{rosettaui.py}, in which every
+glyph of a typeset equation is a clickable object backed by an offline
+knowledge base of 134 symbols, 44 equations and 17 concept articles, with
+automatic identification of what an equation ``looks like'' (\S\ref{sec:rosettaui});
+\item a \textbf{dependent-type micro-kernel}, \texttt{lean4.py}, that checks
+proofs about Python functions against theorems stated in \LaTeX{}, with an
+elaborator separated from a trusted core, implicit arguments, pattern
+unification and constraint postponement (\S\ref{sec:lean4});
+\item an \textbf{argument} that these pieces, being local, open and modifiable,
+are a better foundation for mathematics education than the client--server
+applications and proprietary systems that currently dominate it
+(\S\ref{sec:education}), and a sketch of how the same kernel extends to verified
+systems software (\S\ref{sec:beyond}).
+\end{itemize}
+
+\section{Background}
+
+\subsection{Literate programming and the notation gap}
+
+Knuth's literate programming \cite{knuth} proposed that a program and its
+explanation be one document. RosettaMath takes the proposal one step further
+in the specific case of mathematics: the equation \emph{is} the program. Prior
+systems approach this from the computational side---SymPy \cite{meurer} emits
+\LaTeX{} from expressions it already holds, and PythonTeX \cite{poore} lets
+\LaTeX{} documents execute embedded Python---so in both the source of truth is
+code. RosettaMath reverses the direction: the source of truth is the notation a
+mathematician actually writes, and the code is derived from it.
+
+\subsection{Lean, and the bridge from proofs to prose}
+
+Lean \cite{demoura2021} is a proof assistant and programming language built on
+the Calculus of Constructions \cite{coquand1988}, whose mathematical library
+Mathlib now runs to millions of lines. The Xena project's early work on
+rendering Lean proofs into \LaTeX{} and HTML \cite{massot2019} recognised that
+formal proofs are unreadable to mathematicians unless something translates
+them back into the language mathematicians use; Massot's later Verbose Lean
+\cite{massot2024} takes the pedagogical version of that idea to
+undergraduates, letting students write proofs in a controlled natural language
+that transfers directly to paper, with a teacher-adjustable level of
+assistance. Bottoni, Cattaneo and Sacikara report a course teaching foundations
+of mathematics with Lean and observe its influence on students' understanding
+of proof \cite{bottoni2025}.
+
+RosettaMath's \texttt{lean4.py} flips the Xena bridge, as its docstring says:
+\LaTeX{} is the input language, and the thing being proved is a Python
+function. It is not a competitor to Lean and does not attempt to be; it is a
+kernel of the same design, small enough to be a teaching object, positioned
+before Lean on the path a student walks.
+
+\subsection{Machines that prove, and what they change}
+
+The systems cited in the introduction share a structure: a language model
+proposes, and a Lean kernel disposes. That structure matters for education in
+two ways. First, it makes a small trusted kernel the load-bearing component of
+the entire enterprise---de Moura calls this the trust bottleneck
+\cite{peterman2024}, and the Fermat formalisation was checked not once but by
+two independent kernels, precisely because the kernel is the only thing anyone
+has to believe \cite{anthropic2026flt}. A student who has read a kernel understands
+what a machine-checked proof \emph{is} in a way that a student who has only
+used one does not. Second, it changes what mathematicians are for. Buzzard,
+reflecting on a summer in which AI agents disproved a conjecture of Erd\H{o}s
+and then the Jacobian conjecture, describes a discipline being
+``outcounterexampled'' and a community whose trust in human-checked argument was
+already fragile \cite{buzzard2026counter}. Commelin, Jamnik, Ochigame, Taelman
+and Venkatesh, writing for the Notices of the AMS, call for the community to
+safeguard its intellectual autonomy, broaden curricula, and build
+academically-oriented infrastructure rather than let the future happen to it
+\cite{commelin2026}; SorryDB \cite{letson2026} is one such piece of
+infrastructure, a benchmark drawn from real formalisation projects rather than
+competitions. The Simons Foundation's account of Lean's growth notes that the
+Lean Focused Research Organization intends to transition into a foundation in
+the footsteps of those behind Rust and Linux \cite{simons2026}. The
+infrastructure of verified mathematics is converging on the governance model of
+open-source systems software. We think its educational tools should too.
+
+\subsection{Education, and the design of the tool}
+
+Wegerif's recent essay on researching the future of education
+\cite{wegerif2026} makes a point that is central to our argument. A widely-cited
+randomised trial of nearly a thousand secondary mathematics students
+\cite{bastani2025} found that those given unrestricted access to a GPT-4
+assistant performed better while using it and substantially worse once it was
+removed; but the same trial found that a more carefully constrained tutor
+performed as well as the control. Wegerif's reading is that the design of the
+tool, not the presence of AI, is what determines whether students learn---and
+that an experiment which measures learning only by the old examination cannot
+see the new capabilities a new tool might teach. He offers an analogy: students
+taught with calculators who are then examined on an abacus will do worse on
+the abacus, and this tells us nothing about whether they learned mathematics.
+
+A proof checker is the most carefully constrained tutor there is. It will not
+finish the student's proof; it will only say whether the proof the student
+wrote is right, and why not. A translator that shows the Python an equation
+becomes does not do the student's thinking; it shows the student what their
+notation means. These are tools in the constrained category, and the argument
+of \S\ref{sec:education} is that they teach.
+
+\section{\texttt{rosettamath.py}: the self-hosting translator}
+\label{sec:rosettamath}
+
+\subsection{The subset}
+
+The translator accepts \LaTeX{} math mode and the \texttt{algpseudocode}
+environment. Table~\ref{tab:subset} summarises the correspondence. Everything
+in the left column is ordinary \LaTeX{} that typesets as one would expect; the
+translation is a second reading of the same text.
+
+\begin{table}[h]
+\centering\footnotesize
+\begin{tabular}{@{}lll@{}}
+\toprule
+\LaTeX{} & Python & Note \\
+\midrule
+\verb|\gets| & \verb|=| & assignment; \verb|=| itself becomes \verb|==| \\
+\verb|\land  \lor  \lnot  \in  \notin| & \verb|and or not in| & with their own spacing \\
+\verb|\frac{a}{b}| & \verb|(a)/(b)| & parenthesised: the stacking was the grouping \\
+\verb|a^{b}| & \verb|a**(b)| & \\
+\verb|2x  2\pi| & \verb|2*x  2*pi| & a number touching a name \\
+\verb|k_B c  m \hbar| & \verb|k_B*c  m*hbar| & a space between two atoms (new) \\
+\verb|\texttt{..}| & \verb|'..'| & with \verb|\textbackslash \{ \_ \$| unescaped \\
+\verb|\rho| & \verb|rho| & resolved in the caller's scope \\
+\verb|\State $x \gets 1$| & \verb|x = 1| & one statement per line \\
+\verb|\If \ElsIf \Else \EndIf| & \verb|if elif else| & indentation from nesting depth \\
+\verb|\For{$i = a$ to $b$}| & \verb|for i in range(a, b + 1)| & inclusive, as in mathematics \\
+\verb|\While  \Function  \Return| & \verb|while def return| & \\
+\verb|$f(x) = 2x + 1$| & \verb|def f(x): return 2*x + 1| & an equation is a function \\
+\verb|$S = k_B \log W$| & \verb|def S(k_B, W): ...| & a bare left side infers its arguments (new) \\
+\verb|\begin{cases} .. \end{cases}| & \verb|if ..: return ..| & piecewise is a branch \\
+\bottomrule
+\end{tabular}
+\caption{The translated subset. The two rows marked new are the semantic
+additions since the previous draft.}
+\label{tab:subset}
+\end{table}
+
+\subsection{Two semantic additions}
+
+\paragraph{Implicit multiplication.} Juxtaposition means ``multiply'' to a reader
+and nothing at all to a parser. The earlier translator handled only a numeral
+touching a name; \verb|k_B c^3 A| became the syntactically invalid
+\verb|k_B c**3 A|. A new predicate decides whether a literal space is a product:
+the character before it must be alphanumeric, an underscore, or a closing
+bracket, and what follows must begin a name, a digit, or a command whose
+translation begins with a letter. The last condition is what keeps it safe.
+\verb|\cdot| translates to \verb|*|, \verb|\gets| to \verb|=|, and \verb|\land|
+to \verb|and| with its own surrounding spaces, so none of them is mistaken for
+an operand. The test that matters is that the translator's reading of its own
+\LaTeX{} source is byte-for-byte unchanged by the rule.
+
+\paragraph{Inferred parameters.} An equation whose left-hand side is a bare
+symbol---$S = \frac{k_B c^3 A}{4 G \hbar}$, written as
+\verb|$S = \frac{k_B c^3 A}{4 G \hbar}$|---names no arguments, and
+previously produced the invalid \verb|def S:|. The translator now builds the
+function body first and then takes the free names of that body, in order of
+first appearance, as the parameter list---skipping string literals, attribute
+access, anything followed by an opening parenthesis, and Python keywords.
+Names already present in the caller's scope stay constants:
+\begin{lstlisting}
+latex2py(r'$S = \frac{k_B c^3 A}{4 G \hbar}$')
+# def S(k_B, c, A, G, hbar): return (k_B*c**3*A)/(4*G*hbar)
+latex2py(r'$S = \frac{k_B c^3 A}{4 G \hbar}$',
+         {'k_B': k, 'c': c, 'G': G, 'hbar': hbar})
+# def S(A): return (k_B*c**3*A)/(4*G*hbar)
+\end{lstlisting}
+The second form is the point of the exercise. Fed CODATA values it gives
+$1.449\times10^{54}$\,J/K for the entropy of a one-solar-mass black hole,
+against a literature value of about $1.5\times10^{54}$. The equation as
+published is the function that runs.
+
+\subsection{Self-hosting, and what it costs}
+
+The translator exists twice: in plain Python, and in the \LaTeX{} subset it
+translates. Stage~0 reads the \LaTeX{} and produces stage~1; stage~1 reads the
+same \LaTeX{} and must produce itself. The fixed point is currently 285 lines of
+generated Python, and it is reached on every run of the test suite.
+
+The practical consequence, which the earlier draft did not spell out, is that
+every change to the translator has to be made twice---once in the Python of
+stage~0 and once in the \LaTeX{} of the self-hosted source---and the fixed point
+is the proof that the two agree. Both semantic additions above were made that
+way. This is a cost, and it is the right cost: a translator that can only
+express what it can translate is a translator whose subset is honest. The
+hand-written \LaTeX{} source, typeset, appears in the appendix; a reader can
+trace a \verb|while| loop from pseudocode to Python by looking left and right.
+
+\subsection{The reverse direction, verified by behaviour}
+
+\texttt{Python2Tex} walks a Python abstract syntax tree back into
+\texttt{algpseudocode}. The previous draft described it as complete; it was
+not, and the failure mode is instructive. \LaTeX{} that reads correctly can
+mean something else. Precedence was ignored, so \verb|(a + b) * c| came out as
+$a + b \cdot c$, a different function. Attribute access was typeset in
+\verb|\texttt|, which the forward translator reads as a string literal, so
+\verb|self.result| came back as \verb|'self.result'|. A chained assignment
+\verb|a = b = 1| became tuple unpacking. None of these produced a \LaTeX{}
+error; all of them produced wrong code.
+
+The rewritten translator makes precedence explicit with parentheses, and
+handles a subtler problem: inside \verb|$...$| a space between two names is now
+implicit multiplication, so \verb|x is None| would read back as
+\verb|x*is*None|. Rather than change the forward translator, the reverse one
+steps outside math mode for Python keywords---\verb|$x$ is $None$|---which is
+the convention the hand-written \LaTeX{} source already uses. Underscores are
+escaped, since \verb|__name__| in math mode is a double subscript that \LaTeX{}
+rejects; a standalone \verb|\Comment| is hung off a \verb|\State|, since
+\texttt{algpseudocode} treats it as an attachment. Both of those were found by
+compiling the output, which nothing had done before.
+
+The test is the deliverable. Twenty-one functions are translated to \LaTeX{},
+read back with the forward translator, executed, and compared against the
+originals on sample arguments---by result, not by text, because \verb|\frac|
+legitimately comes back with parentheses it did not have. Every function in
+\texttt{rosettamath.py} survives the journey, including the forward translator
+itself, which still behaves identically after being written out as pseudocode
+and read back in. Constructs the subset cannot express---\verb|with|,
+\verb|try|, decorators---are reported as a comment and recorded in a warnings
+list, never dropped in silence.
+
+\section{\texttt{rosettaui.py}: every glyph is an object}
+\label{sec:rosettaui}
+
+\subsection{What it does}
+
+The explorer renders an equation glyph by glyph into a desktop window
+(figure~\ref{fig:ui}). Each glyph is a live object. Hovering it colours it and
+shows a tooltip with the symbol's name, its Greek or Latin origin, and what it
+conventionally denotes in physics and mathematics; a left click opens a fuller
+offline description; a right click offers the relevant encyclopedia article,
+the \LaTeX{} to copy, and a submenu of other equations in the library that use
+the same symbol. Roles are colour-coded---Greek letters, constants, relations,
+variables---which makes visible a distinction that typesetting leaves implicit
+and that newcomers find hardest.
+
+\begin{figure}[h]
+\centering
+\fbox{\parbox{0.92\textwidth}{\small
+\textbf{Rendered:}\quad
+$\displaystyle S = \frac{k_B\, c^3 A}{4\, G\, \hbar}$
+\hfill
+\textbf{This equation:}\; looks like the Bekenstein--Hawking entropy (General relativity).
+A black hole's entropy is proportional to the area of its horizon, not its volume\ldots\\[3pt]
+\textbf{Python (rosettamath):}\;
+\texttt{from scipy.constants import k as k\_B, c, G, hbar}\;
+\texttt{def S(A): return (k\_B*c**3*A)/(4*G*hbar)}
+}}
+\caption{The three panels of the explorer, for one equation. In the running
+program the rendered equation is interactive: $\hbar$ is purple because it is a
+constant, $=$ is brown because it is a relation, and hovering any of them
+explains it.}
+\label{fig:ui}
+\end{figure}
+
+The whole equation is classified. A feature set is extracted from the parsed
+tree---the symbols present, plus structural tags such as ``has a fraction'',
+``has a Laplacian'', ``has an exponent of two''---and matched against a library
+of 44 equations, each with must-have and confidence-raising features. The
+result is a verdict such as ``this looks like the Klein--Gordon equation'', or a
+family fallback such as ``a second-order partial differential equation of the
+kind that governs fields---compare the wave, heat and Laplace equations, which
+differ only in what the Laplacian is set equal to''. The classifier identifies
+both forms of the Schr\"odinger equation, Klein--Gordon, Dirac, the Lorentz
+factor, the Debye length, and the d'Alembert operator, among others; the
+library spans classical mechanics, electromagnetism, quantum mechanics,
+relativity, plasma physics, thermodynamics, information theory and probability.
+
+A third panel shows what \texttt{rosettamath.py} makes of the same \LaTeX{}.
+Symbols that are physical constants are recognised as such, kept out of the
+argument list, and bound with a generated \verb|from scipy.constants import|
+line. That is the symbol-to-library mapping the earlier draft described as an
+aspiration, now doing something.
+
+\subsection{The knowledge base}
+
+The offline knowledge base holds 134 symbols, 44 equations and 17 longer
+concept articles, cross-linked and with 165 distinct encyclopedia links. Each
+symbol entry gives the glyph, the \LaTeX{}, the name, a category, and a
+description written to explain \emph{convention} rather than syntax: what
+$\rho$ means in four different sub-fields, why the curly $\partial$ differs
+from the straight $d$, why the $i$ in the Schr\"odinger equation cannot be
+removed. The concept articles are short essays on the things a syntax
+reference cannot tell you---overloaded notation, the three notations for a
+derivative, the nabla operator, the Laplacian as a sorting principle for the
+great partial differential equations, bra--ket notation, tensor index
+conventions, conservation laws and symmetry, the action principle, entropy,
+Fourier analysis, dimensional analysis, natural units, and the d'Alembertian.
+An alias table folds alternative spellings---\verb|\square|, \verb|\dfrac|,
+\verb|\ne|---onto the entries that document them, so each idea appears once in
+the menus and classifies identically however it is written.
+
+The menu bar exposes all of this as a small browsable encyclopedia: equations
+by field, concepts by category, symbols by category, each with a filterable
+browser. The point is not that this is a large knowledge base---it is
+not---but that it is a \emph{local} one, in a single Python file, that a
+teacher can open and extend with the symbols and equations their own course
+uses.
+
+\subsection{Rendering, honestly}
+
+Rendering \LaTeX{} in a desktop widget is harder than it looks. The explorer
+uses its own two-pass layout engine---measure the tree, then place real
+items---so that fractions and roots size themselves around their contents. The
+radical is drawn as a path that stretches, since a fixed glyph degenerates over
+tall content. A detail worth reporting: Latin Modern Roman, the natural choice
+of typeface, has no glyph for sixty-seven of the symbols the explorer uses,
+including every Greek letter, $\nabla$, $\partial$ and $\hbar$. They rendered
+anyway, because the font system silently substituted, but the metrics were
+wrong. Glyphs are now measured and drawn with a typeface chosen per character,
+serif for Latin and digits and Latin Modern Math for operators and Greek, so
+that measuring and drawing agree.
+
+For anything the unicode approximation cannot stack, the explorer shells out
+to \texttt{pdflatex} and shows the result as an image. It tries poppler before
+ImageMagick, because ImageMagick delegates PDF to Ghostscript, which is often
+absent; a dependency checker reports which tools are present rather than
+failing. Everything is cached by content hash.
+
+\subsection{Why a desktop program}
+
+The explorer is 3,171 lines of Python and PyQt5, in one file, with no server,
+no account, no network requirement beyond an optional browser link, and no
+build step. This is a design position, argued in \S\ref{sec:education}. Here we
+note only its immediate consequence: a teacher who wants to add a symbol edits a
+list; a student who wants to change the colour of Greek letters edits a
+dictionary; a class that wants a new panel writes a method. The program is
+small enough to be a thing one modifies rather than a thing one uses.
+
+\section{\texttt{lean4.py}: a micro-kernel for proofs about Python}
+\label{sec:lean4}
+
+\subsection{The kernel}
+
+\texttt{lean4.py} implements the Calculus of Constructions
+\cite{coquand1988}---the foundation Lean and Coq are built on---in under two
+thousand lines including its tests. The term language is universes, variables,
+$\Pi$-types, $\lambda$-abstractions and application; the checker implements the
+standard rules, with an impredicative \textsf{Prop} and no type-in-type.
+
+Bound variables are de Bruijn indices \cite{debruijn1972}; free variables and
+constants keep their names, and a binder stores a name only as a printing hint.
+The first version of the kernel used names throughout and had the two bugs
+that representation invites: substitution captured variables, so a correct
+proof could be made to typecheck for the wrong reason, and $\forall x{:}\mathrm{Nat},
+\mathrm{Nat}$ was judged different from $\forall y{:}\mathrm{Nat}, \mathrm{Nat}$, so
+a correct proof could be rejected as soon as a statement and a function named
+their variables differently. De Bruijn indices do not fix those bugs; they make
+them unstateable. A name in a substituted term cannot collide with an index,
+and alpha-equivalent terms are the same object, so structural equality is
+alpha-equivalence with no renaming machinery. The constructors still take
+names---\verb|Lambda("T", Universe(1), Var("T"))| abstracts the \verb|T| for
+you---so terms read as they always did. One consequence deserves mention: the
+printer renames a binder that would shadow a free variable, because a checker
+whose output cannot be trusted to mean what it says is worse than none.
+
+\subsection{Theorems about Python functions}
+
+A Python function is compiled to a kernel term by an AST visitor: parameters
+with type annotations become nested $\lambda$s, calls become curried
+application, and the single \verb|return| is the body. The statement is written
+in \LaTeX{}:
+\begin{lstlisting}
+@theorem(r'\forall x \in \text{Nat}, x = x')
+def reflexivity(x: 'Nat'):
+    return refl(x)
+\end{lstlisting}
+The decorator compiles the function, elaborates it, reads the statement as a
+type, and requires the two to agree definitionally. A theorem that does not
+prove what it claims raises; \verb|make proofs| gates the build. A
+\verb|--non-strict| mode records the failure and continues. The earliest
+version of this decorator accepted the statement and never read it, checking
+only that the Python was well typed; its flagship example ``proved'' $\forall
+x, x = x$ by returning $x$, whose type is $\mathrm{Nat}$, and it passed because
+$\mathrm{Nat}$ had been declared a proposition. We mention this because it is
+the exact failure mode the tool exists to prevent, and it was caught by making
+the tool honest.
+
+The statement language is a recursive-descent parser over the same tokeniser
+the explorer uses: \verb|\to| is a right-associative function type,
+\verb|\forall x \in A, B| and \verb|\forall (x : A), B| are dependent function
+types, \verb|\forall \{A : \text{Type}\}, B| declares an implicit binder,
+juxtaposition is application, \verb|\text{Nat}| and \verb|\mathbb{N}| name
+types, and \verb|a = b| elaborates to $\mathrm{Eq}\;A\;a\;b$ with the carrier
+taken from the enclosing binder or left as a hole for the elaborator.
+
+\subsection{An elaborator, separated from the kernel}
+
+The kernel knows nothing about implicit arguments; a hole reaching it is an
+error. In front of it sits an elaborator that fills the holes and hands the
+completed term to the kernel for independent verification---the same
+separation Lean maintains, and the property that makes the design safe to
+teach with: a bug in the elaborator can cost a confusing error message, never a
+false theorem. The elaborator went through three stages, each forced by an
+example.
+
+\paragraph{Implicit arguments.} \verb|refl| has type $\forall \{A{:}\mathrm{Type}\},
+\forall a{:}A, \mathrm{Eq}\;A\;a\;a$. Each use contributes a hole for $A$, solved
+by unifying the expected argument type with the actual one, so the proof is
+written \verb|refl(x)|, as Lean writes it, rather than \verb|refl(Nat, x)|.
+Elaboration runs over \emph{opened} terms: entering a binder replaces the bound
+variable with a fresh free name and the binder is closed again on the way
+out. That is what lets a hole be solved with a bound variable---as in
+\verb|refl(a)| where $a{:}A$ and $A$ is itself bound---since a de Bruijn index
+would mean something different at every depth it appeared, and a name does
+not. \verb|explicit(refl)(Nat, x)| is Lean's \verb|@refl|.
+
+\paragraph{Pattern unification.} An implicit argument in a \emph{dependent}
+position is only ever seen applied. The transport constant has the type
+\[\forall \{A\}\{P{:}A\to\mathrm{Prop}\}\{a\,b{:}A\},\quad
+\mathrm{Eq}\;A\;a\;b \to P\,a \to P\,b,\]
+so solving for the motive $P$ means answering $?P\,a = \mathrm{Eq}\;A\;a\;c$,
+a higher-order question that first-order decomposition can only answer by
+demanding $a = c$. Unification therefore covers Miller's pattern fragment
+\cite{miller1991}: a hole applied to distinct variables is solved by abstracting
+them out of the other side. Full higher-order unification is undecidable, so
+outside the fragment the elaborator refuses rather than guesses. Checking is
+bidirectional, with the expected type pushed inward through the $\lambda$s, since
+two closed types facing each other at the top would leave indices with no name to
+abstract over. This is enough for
+\begin{lstlisting}
+@theorem(r'\forall \{A : \text{Type}\}, \forall a \in A, \forall b \in A, \forall c \in A, '
+         r'\text{Eq} A a b \to \text{Eq} A a c \to \text{Eq} A b c')
+def transitivity(A: 'Type', a: 'A', b: 'A', c: 'A',
+                 h: r'\text{Eq} A a b', p: r'\text{Eq} A a c'):
+    return transport(h, p)
+\end{lstlisting}
+where the elaborator synthesises the motive $\lambda z.\,\mathrm{Eq}\;A\;z\;c$.
+
+\paragraph{Postponed constraints.} Even inside the fragment a constraint can
+have several legal answers. $?P\,a = \mathrm{Eq}\;A\;a\;a$ admits
+$\lambda z.\,\mathrm{Eq}\;A\;z\;z$, $\lambda z.\,\mathrm{Eq}\;A\;z\;a$,
+$\lambda z.\,\mathrm{Eq}\;A\;a\;z$ and the constant, whenever $a$ is in scope
+where the hole was made; so each hole records the scope it was created in, and
+a constraint is ambiguous only when its variable is in it. Ambiguous constraints
+are postponed and settled once every constraint on that hole is known. Each
+proposes the whole family of readings, obtained by abstracting any subset of the
+occurrences, most abstracted first; a reading is accepted only if it satisfies
+all of them. That is what lets symmetry be written the natural way:
+\begin{lstlisting}
+@theorem(r'\forall \{A : \text{Type}\}, \forall a \in A, \forall b \in A, '
+         r'\text{Eq} A a b \to \text{Eq} A b a')
+def symmetry(A: 'Type', a: 'A', b: 'A', h: r'\text{Eq} A a b'):
+    return transport(h, refl(a))
+\end{lstlisting}
+Solved eagerly, the first constraint's obvious answer, $\lambda z.\,\mathrm{Eq}\;A\;z\;z$,
+wins, and the theorem fails with \emph{stated} $\mathrm{Eq}\;A\;b\;a$, \emph{proved}
+$\mathrm{Eq}\;A\;b\;b$. With postponement the second constraint's proposal
+$\lambda z.\,\mathrm{Eq}\;A\;z\;a$ survives both and is chosen. When several
+readings survive, the theorem is still proved---the kernel checks the finished
+term either way---but the elaborator reports that the choice was not forced.
+A hole no reading can satisfy is reported, not left tentative.
+
+\subsection{What it does and does not do}
+
+The environment ships $\mathrm{Eq}$, \verb|refl|, \verb|symm|, \verb|trans|,
+\verb|congrArg| and \verb|transport|; the test suite runs 103 checks, each a
+regression from a bug the kernel used to have or a construction it can now do,
+and each of the elaboration features is verified to be doing the work by
+disabling it and watching the corresponding theorem fail. The kernel has no
+inductive types, no universe polymorphism, no definitional unfolding of
+constants, and no tactics; every proof is a term. The constraint solver is
+greedy across holes. None of that is hidden, and all of it is the point: a
+student can read \texttt{lean4.py} in an afternoon and understand exactly what
+it means for a machine to have checked a proof, and then go to Lean knowing
+what the big system is doing and why.
+
+\section{Education, from school to research}
+\label{sec:education}
+
+\subsection{A progression}
+
+The three components correspond to three things a person learning mathematics
+needs to be able to do with a piece of notation: read it, run it, and check a
+claim about it. They also correspond, roughly, to a progression of age and
+level, though the boundaries are deliberately porous.
+
+\paragraph{Reading (school).} A child learning that $E = mc^2$ means something
+can hover the $c$ and learn that it is the speed of light, a conversion factor
+between space and time and the universal speed limit; hover the $=$ and learn
+that in a programming language this same symbol means assignment and a
+different symbol means comparison, which is a fact worth knowing at ten. The
+explorer's tooltips are written for that reader. Greek letters have entries
+that say what they \emph{are} before what they denote. The equation library is
+a gallery to browse, with the guarantee that each item comes with the Python it
+becomes---so the student who asks ``but what does it \emph{do}?'' gets an
+answer in a language with a \verb|for| loop in it.
+
+\paragraph{Running (secondary and undergraduate).} The translator's rules are
+themselves a curriculum. That $\frac{a}{b}$ must become \verb|(a)/(b)| teaches
+that the visual stacking was doing the grouping. That a sum from $1$ to $n$
+becomes \verb|range(1, n + 1)| teaches inclusive versus exclusive bounds, the
+single most common bug in transcribing mathematics into code, at the exact
+moment it matters. That $S = k_B\log W$ needs $k_B$ and $W$ as arguments, unless
+$k_B$ is a constant, teaches the difference between a variable and a parameter
+and what ``in scope'' means. The self-hosting bootstrap is the capstone: a
+student who reads the appendix sees the same program in two languages side by
+side and can trace one into the other.
+
+\paragraph{Checking (undergraduate and beyond).} Massot reports that students
+using a proof assistant learn to write proofs that transfer to paper
+\cite{massot2024}; Bottoni and colleagues report a positive influence on
+students' understanding of what a proof is \cite{bottoni2025}. \texttt{lean4.py}
+is smaller and earlier than either of those settings. It asks a student to
+prove that equality is symmetric by writing one line of Python and one line of
+\LaTeX{}, and then it tells them, precisely, whether they did. A student who
+writes \verb|return x| to prove $x = x$ is told that they proved
+$\mathrm{Nat}\to\mathrm{Nat}$ instead. That is a better tutor than most. And
+because the kernel is readable, the student can then be asked to read it, and
+to answer the question that separates people who have used a proof assistant
+from people who understand one: what, exactly, is the machine trusting?
+
+\paragraph{Graduating.} The statement language uses Lean's spellings
+deliberately---\verb|\forall|, braces for implicit arguments, \verb|refl|,
+\verb|@| as \verb|explicit|---so that a student who moves to Lean and Mathlib
+finds the same ideas with the same names. RosettaMath is a ramp, not a
+destination. The destination is the system the FLT proof was checked with, and
+the world Commelin et al.\ describe, in which mathematical training must
+broaden to include the tools mathematics is now done with \cite{commelin2026}.
+
+\subsection{Why local, open, and Python}
+
+The design position of this project is that mathematics education software
+should run on the student's own computer, should be open source, should be
+written in the language the student is learning, and should be small enough to
+modify. Each of these is a choice against a prevailing alternative, and we give
+the reasons.
+
+\paragraph{Against the client--server model.} Most educational software now
+being built is a web application: a JavaScript front end, a server-side runtime,
+an account, a network. That architecture was designed for software that needs
+to be the same for millions of users and updated without their consent. It is a
+poor fit for a classroom. It adds a server nobody in the room controls, a
+network the school may not have, a login that expires, and two languages
+neither the teacher nor the student is learning. A program that runs on a laptop
+needs none of that. We have found that removing the server also removes most of
+the complexity: the explorer's entire persistence layer is a dictionary.
+
+\paragraph{Against the walled garden.} Proprietary mathematical software is
+excellent and expensive, and its excellence is not the student's. A student
+cannot read how it renders an equation, cannot correct an entry, cannot add
+their teacher's notation, and takes nothing with them when the licence ends.
+The alternative is not a worse proprietary tool but the same model that built
+the systems mathematics itself now runs on: Linux, Python, \LaTeX{}, and now
+Lean, whose stewards intend to become a foundation in the footsteps of Rust and
+Linux \cite{simons2026}. These are also, not coincidentally, the tools of a
+working scientist. A student who learns mathematics on them learns the
+workbench along with the subject.
+
+\paragraph{Against the phone.} We would like students to learn mathematics on
+a machine with a keyboard, a file system, a terminal, and a compiler---a
+machine on which the software they use is something they could, in principle,
+have written. A tablet is a consumption device. The explorer does not run on
+one, and this is a feature.
+
+\paragraph{For Python.} The choice of Python is not a matter of taste. It is
+the language secondary schools teach, the language undergraduate science
+courses use, and the language in which the numerical libraries live. A
+translator that emits Python emits something the student can already read.
+A kernel written in Python is a kernel the student can already read. And
+scipy is the reason the constants in an equation can be resolved to numbers by
+name.
+
+\paragraph{For smallness.} \texttt{rosettamath.py}, \texttt{rosettaui.py} and
+\texttt{lean4.py} are 1,675, 3,171 and 1,945 lines respectively, in three
+files, with one optional dependency (PyQt5) between them. This is small enough
+that a teacher preparing a course on special relativity can add the Lorentz
+transformations to the equation library in an hour, and small enough that a
+student who wants the kernel to have inductive types can attempt it. Bastani's
+trial \cite{bastani2025} and Wegerif's reading of it \cite{wegerif2026} suggest
+that what a tool does to learning depends on how it is designed; a tool that the
+learner can redesign is a tool whose design is itself a lesson.
+
+\subsection{What this is not}
+
+It is not a claim that RosettaMath replaces Lean, SymPy, Mathematica, or a
+teacher. The subset is strict, the kernel is minimal, the knowledge base is a
+few hundred entries, and the classifier is a signature matcher. It is a claim
+about foundations: that the right base for mathematics education in the age of
+machine proof is a set of small, local, open, readable tools in the student's
+own language, and that these three are a working example.
+
+\section{Beyond education: toward verified systems}
+\label{sec:beyond}
+
+The same small trusted kernel that makes \texttt{lean4.py} teachable makes it
+a candidate for something else. The author's Crust project \cite{crust} is a
+self-contained C, C++ and Rust toolchain that owns its whole stack---compiler,
+emitted C, boot path, threading model---with no external compiler and, on
+bare-metal targets, no operating system underneath. Its position is that every
+credible safety story in systems programming, from JSF and MISRA to SPARK and
+seL4 \cite{klein2009}, is a story of \emph{subtraction}: a smaller language made
+load-bearing. Crust already carries contract-like declarations in its source,
+such as assertions about which core a thread runs on, from which the compiler
+derives register partitions and a context switcher; and its own paper on
+proof-guided runtime checking \cite{crustsafety} argues for a toolchain small
+enough to read.
+
+The natural next step is to make the statement language of \texttt{lean4.py}
+the contract language of Crust. A function contract would be a $\Pi$-type; a
+call would be an application; the obligation to satisfy the contract would be
+a theorem checked by the kernel, with the elaborator inferring the implicit
+arguments as it does now. Crust's compiler is itself written in Python, so the
+two projects share a host language and a philosophy. seL4 demonstrated that an
+operating-system kernel can be proved correct; it did so with a large proof in
+a large assistant. What a small assistant and a small toolchain make thinkable
+is a verified system whose \emph{entire} trusted base---kernel, compiler and
+checker---a single person can read. The Fermat formalisation was checked by a
+second, independent kernel because the kernel is the only thing anyone must
+believe \cite{anthropic2026flt}. That principle scales down as well as up.
+
+This is future work, and we do not claim more than the shape of it here. But it
+is why the kernel was built to be honest about what it trusts.
+
+\section{Limitations}
+
+The \LaTeX{} subset is deliberately small, and there are conventions it does
+not read: summation and product notation are handled in pseudocode but not as
+bare math-mode operators; matrices, integrals and limits are typeset but not
+translated. The classifier is a signature matcher and will be confused by
+equations that share symbols with unrelated ones; it says ``looks like'' for a
+reason. The knowledge base is written by one author and has one author's
+emphases. The kernel lacks inductive types and universe polymorphism, so it
+cannot state induction on the naturals, and its constraint solver is greedy
+across holes. The explorer's rendering is serviceable, not beautiful, and
+degrades to a \texttt{pdflatex} image for anything demanding. None of these are
+hidden in the code, and the test suites---the translator's bootstrap and 21
+round-trip cases, the explorer's 53 checks and the kernel's 103---name what is
+covered.
+
+\section{Conclusion}
+
+The equations published in a paper and the code executed in a simulation should
+be the same artefact; a student should be able to click on any symbol in that
+artefact and be told what it means; and a claim about the code should be
+checkable by a kernel small enough to read. RosettaMath is a working example of
+all three, built as three small, local, open Python programs, and offered as a
+foundation for mathematics and programming education at every level in a
+period when the proving of mathematics is being handed to machines. The
+machines are learning to prove. The point of education is that people still
+learn to understand, and understanding begins with being able to read the
+notation, run it, and check it, on a machine of one's own.
+
+%%APPENDIX%%
+
+\small
+\begin{thebibliography}{99}
+
+\bibitem{knuth} Knuth, D.~E. (1984). Literate programming. \emph{The Computer
+Journal}, 27(2), 97--111. \url{https://doi.org/10.1093/comjnl/27.2.97}
+
+\bibitem{meurer} Meurer, A., Smith, C.~P., Paprocki, M., et al. (2017). SymPy:
+symbolic computing in Python. \emph{PeerJ Computer Science}, 3, e103.
+\url{https://doi.org/10.7717/peerj-cs.103}
+
+\bibitem{poore} Poore, G.~M. (2015). PythonTeX: reproducible documents with
+\LaTeX{}, Python, and more. \emph{Computational Science \& Discovery}, 8(1),
+014010. \url{https://doi.org/10.1088/1749-4699/8/1/014010}
+
+\bibitem{coquand1988} Coquand, T., \& Huet, G. (1988). The Calculus of
+Constructions. \emph{Information and Computation}, 76(2--3), 95--120.
+
+\bibitem{debruijn1972} de Bruijn, N.~G. (1972). Lambda calculus notation with
+nameless dummies, a tool for automatic formula manipulation, with application
+to the Church--Rosser theorem. \emph{Indagationes Mathematicae}, 34(5),
+381--392.
+
+\bibitem{miller1991} Miller, D. (1991). A logic programming language with
+lambda-abstraction, function variables, and simple unification. \emph{Journal
+of Logic and Computation}, 1(4), 497--536.
+
+\bibitem{demoura2021} de Moura, L., \& Ullrich, S. (2021). The Lean 4 theorem
+prover and programming language. In \emph{Automated Deduction -- CADE 28},
+LNCS 12699, 625--635. Springer.
+
+\bibitem{klein2009} Klein, G., Elphinstone, K., Heiser, G., et al. (2009).
+seL4: formal verification of an OS kernel. In \emph{Proceedings of the 22nd
+ACM Symposium on Operating Systems Principles (SOSP)}, 207--220.
+
+\bibitem{massot2019} Massot, P. (2019). Lean in \LaTeX{}. \emph{The Xena
+Project}, 11 February 2019.
+\url{https://xenaproject.wordpress.com/2019/02/11/lean-in-latex/}
+
+\bibitem{massot2024} Massot, P. (2024). Teaching mathematics using Lean and
+controlled natural language. In \emph{15th International Conference on
+Interactive Theorem Proving (ITP 2024)}, LIPIcs vol.~309, 27:1--27:19.
+\url{https://doi.org/10.4230/LIPIcs.ITP.2024.27}
+
+\bibitem{bottoni2025} Bottoni, M.~L., Cattaneo, A.~S., \& Sacikara, E. (2025).
+Teaching ``Foundations of Mathematics'' with the LEAN theorem prover.
+arXiv:2501.03352. \url{https://arxiv.org/abs/2501.03352}
+
+\bibitem{wegerif2026} Wegerif, R. (2026). AI: researching the future of
+education. \emph{Expanding Dialogic Space}, 17 August 2026.
+\url{https://rupertwegerif.substack.com/p/ai-researching-the-future-of-education}
+
+\bibitem{bastani2025} Bastani, H., Bastani, O., Sungu, A., Ge, H., Kabakc\i,
+\"O., \& Mariman, R. (2025). Generative AI without guardrails can harm learning:
+evidence from high school mathematics. \emph{Proceedings of the National
+Academy of Sciences}, 122(26), e2422633122.
+\url{https://doi.org/10.1073/pnas.2422633122}
+
+\bibitem{commelin2026} Commelin, J., Jamnik, M., Ochigame, R., Taelman, L., \&
+Venkatesh, A. (2026). Shaping the future of mathematics in the age of AI. To
+appear in \emph{Notices of the American Mathematical Society}. arXiv:2603.24914.
+\url{https://arxiv.org/abs/2603.24914}
+
+\bibitem{letson2026} Letson, A., Sarra, L., Poiroux, A., et al. (2026). SorryDB:
+can AI provers complete real-world Lean theorems? arXiv:2603.02668.
+\url{https://arxiv.org/abs/2603.02668}
+
+\bibitem{hubert2025} Hubert, T., Mehta, R., Sartran, L., et al. (2025).
+Olympiad-level formal mathematical reasoning with reinforcement learning.
+\emph{Nature}, 651, 607--613. \url{https://doi.org/10.1038/s41586-025-09833-y}
+
+\bibitem{ren2025} Ren, Z.~Z., Shao, Z., Song, J., et al. (2025).
+DeepSeek-Prover-V2: advancing formal mathematical reasoning via reinforcement
+learning for subgoal decomposition. arXiv:2504.21801.
+\url{https://arxiv.org/abs/2504.21801}
+
+\bibitem{wang2025kimina} Wang, H., Unsal, M., Lin, X., et al. (2025).
+Kimina-Prover Preview: towards large formal reasoning models with reinforcement
+learning. arXiv:2504.11354. \url{https://arxiv.org/abs/2504.11354}
+
+\bibitem{chen2025seed} Chen, L., Gu, J., Huang, L., et al. (2025). Seed-Prover:
+deep and broad reasoning for automated theorem proving. arXiv:2507.23726.
+\url{https://arxiv.org/abs/2507.23726}
+
+\bibitem{lin2025goedel} Lin, Y., Tang, S., Lyu, B., et al. (2025).
+Goedel-Prover-V2: scaling formal theorem proving with scaffolded data synthesis
+and self-correction. arXiv:2508.03613. \url{https://arxiv.org/abs/2508.03613}
+
+\bibitem{achim2025aristotle} Achim, T., Best, A., Bietti, A., et al. (2025).
+Aristotle: IMO-level automated theorem proving. arXiv:2510.01346.
+\url{https://arxiv.org/abs/2510.01346}
+
+\bibitem{mathinc2025gauss} Math, Inc. (2025). Introducing Gauss, an agent for
+autoformalization. September 2025. \url{https://www.math.inc/gauss}
+
+\bibitem{anthropic2026flt} Anthropic (2026). Formalizing Fermat's Last Theorem.
+September 2026. \url{https://www.anthropic.com/research/formalizing-fermats-last-theorem}
+
+\bibitem{newscientist2026flt} \emph{New Scientist} (2026). Fermat's last
+theorem formalised by AI agents in just 11 days.
+\url{https://www.newscientist.com/article/2587839-fermats-last-theorem-formalised-by-ai-agents-in-just-11-days/}
+
+\bibitem{buzzard2026counter} Buzzard, K. (2026). Human mathematicians are being
+outcounterexampled. \emph{The Xena Project}, 20 July 2026.
+\url{https://xenaproject.wordpress.com/2026/07/20/human-mathematicians-are-being-outcounterexampled/}
+
+\bibitem{simons2026} Simons Foundation (2026). From trust to verification:
+Lean's impact on mathematics. 23 June 2026.
+\url{https://www.simonsfoundation.org/2026/06/23/from-trust-to-verification-leans-impact-on-mathematics/}
+
+\bibitem{sloman2026} Sloman, L. (2026). In math, rigor is vital. But are
+digitized proofs taking it too far? \emph{Quanta Magazine}, 25 March 2026.
+\url{https://www.quantamagazine.org/in-math-rigor-is-vital-but-are-digitized-proofs-taking-it-too-far-20260325/}
+
+\bibitem{peterman2024} Peterman, R. (2024). Creator of Lean: the end of
+handwritten proofs and code. Interview with Leonardo de Moura, \emph{The
+Developing Dev}.
+\url{https://www.developing.dev/p/creator-of-lean-the-end-of-handwritten}
+
+\bibitem{crust} Hartshorn, B.~S. (2026). Crust: a unified C/C++/Rust compiler
+environment for systems programming. \url{https://github.com/brentharts/crust}
+
+\bibitem{crustsafety} Hartshorn, B.~S. (2026). Memory safety where it is needed:
+proof-guided runtime checking in a toolchain small enough to read. SSRN.
+\url{https://dx.doi.org/10.2139/ssrn.7396160}
+
+\end{thebibliography}
+
+\end{document}

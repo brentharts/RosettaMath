@@ -68,6 +68,7 @@ a bootstrap that could be regenerated from the LaTeX.
 No external libraries.   python3 rosettamath.py          runs the self test
                          python3 rosettamath.py --pdf    also typesets NEOMATH_TEX
 """
+import os
 import sys, subprocess
 import ast, inspect
 
@@ -1411,112 +1412,22 @@ def selftest(latex2py, label):
     print('self test passed:', label)
 
 
-LATEX_HEADER = r'''\documentclass{article}
-\usepackage[margin=1.5cm]{geometry}
-\usepackage{amsmath,amssymb,algorithm,algpseudocode,listings}
-\usepackage{url}
-\usepackage{hyperref}
-\usepackage{orcidlink}
-
-%\lstset{language=Python,basicstyle=\ttfamily\scriptsize,breaklines=true}
-
-\usepackage{xcolor}
-
-\lstset{
-    language=Python,
-    basicstyle=\ttfamily\tiny,
-    keywordstyle=\color{blue}\bfseries,
-    stringstyle=\color{green!50!black},
-    commentstyle=\color{gray}\itshape,
-    numbers=left,                  % Adds line numbers
-    numberstyle=\tiny\color{gray},  % Style of line numbers
-    stepnumber=1,                  % Number every line
-    breaklines=true,               % Wrap long lines automatically
-    frame=single                   % Adds a border around the code
-}
-%TITLE
-%AUTHOR
-\begin{document}
-'''
-LATEX_FOOTER = r'''
-\end{document}
-'''
-
-def make_title_author(
-    tex,
-    title='RosettaMath: Semantic Translation of Mathematical Conventions \\\\ into Self-Documenting Code',
-    author='B.S. Hartshorn \\orcidlink{0009-0004-2853-655X} \\small (\\url{https://github.com/brentharts/RosettaMath})'
-    ):
-    tex = tex.replace('%TITLE', '\\title{%s}' % title).replace('%AUTHOR', '\\author{%s}' % author)
-    return tex.replace('\\begin{document}', '\\begin{document} \\maketitle')
-
-PAPER_ABS = r'''
-\begin{abstract}
-The translation of theoretical mathematical models into executable code remains a persistent bottleneck in computational science. While LaTeX serves as the standard for sharing algebraic equations and algorithms, its representation is fundamentally disconnected from the explicit logic required by programming languages like Python. We present RosettaMath, a minimalist, zero-dependency translator that converts a strict subset of LaTeX---specifically mathematical expressions and algorithmic pseudocode---directly into functional Python. Notably, RosettaMath is self-hosting; the core translation engine is written in the very LaTeX subset it processes and bootstraps itself to a fixed point without external libraries. Beyond its mechanical translation capabilities, RosettaMath is designed as an educational bridge. By semantically mapping dense physics and mathematical conventions to explicitly named variables and scientific libraries (such as mapping standard symbols to scipy.constants), the tool demystifies standard notation for software developers while simultaneously teaching programmatic logic to mathematicians. RosettaMath offers a novel approach to literate programming, ensuring that the equations published in research are the exact algorithms executed in simulation.
-\end{abstract}
-'''
-
-PAPER_INTRO = r'''
-\section{Introduction}
-
-The universal language of theoretical research---from modeling horizon dynamics and quantum gravity to generating procedural geometry---is mathematics, universally typeset in LaTeX. However, investigating these models computationally requires translating them into a functional programming language. This manual translation process is prone to error and creates an artificial barrier between disciplines. Mathematical notation is highly concise, relying on established conventions, overloaded symbols, and implicit context. Conversely, modern software development in languages like Python prioritizes explicit logic, verbose variable naming, and strict control flow.
-
-RosettaMath is introduced as a lightweight, self-contained solution to bridge this syntactic and semantic divide. Rather than relying on heavy, external parsing libraries, RosettaMath is built to process a highly specific subset of LaTeX---encompassing standard math-mode operations and algpseudocode environments---and map them directly to Python constructs. To demonstrate the completeness and robustness of this subset, the RosettaMath compiler is entirely self-hosting. A preliminary translation script parses the LaTeX representation of the compiler, generating Python code that subsequently parses its own source until reaching a verified fixed point.
-
-The primary objective of RosettaMath extends beyond mere syntax translation; it acts as an educational framework. For computational models to be truly accessible, the underlying code must be as legible as the mathematics it represents. RosettaMath actively unpacks cryptic conventions by semantically linking standard mathematical symbols to descriptive programming paradigms. By transforming abstract characters into self-documenting code---such as automatically associating physical constants with their numerical counterparts in scientific libraries---the translator clarifies physics conventions for developers and introduces functional programming architectures to pure mathematicians. Ultimately, RosettaMath provides a unified environment where the formal specification of a mathematical problem and its computational implementation are identical.
-'''
-
-PAPER_SELFHOST = r'''
-\section{Self-Hosting as an Educational Paradigm: The Two-Stage Bootstrap}
-
-To ensure that the chosen subset of LaTeX is sufficiently robust for general-purpose algorithmic logic, RosettaMath is designed to be entirely self-hosting. The compiler relies on a two-stage bootstrapping architecture that achieves a verified fixed point without the aid of external parsing libraries.
-
-In Stage 0, a foundational script written in plain Python parses the LaTeX source code of the RosettaMath translator, interpreting the algpseudocode and math-mode expressions. This generates an initial Python representation of the compiler (Stage 1). In the final step, this newly generated Stage 1 Python code is executed to parse its own LaTeX source code once again. When the byte-for-byte output of this second translation identically matches the first, the compiler is proven to be fully self-hosted and independent.
-
-Beyond merely validating the parser's computational completeness, this self-hosting architecture serves a deliberate pedagogical purpose. The source code of RosettaMath acts as its own Rosetta Stone. By providing the exact same logic simultaneously in explicit Python control flow and formal LaTeX pseudocode, readers can study the translation engine side-by-side. A mathematician can trace how a `While` loop and recursive function in LaTeX become executable Python, while a software engineer can see how standard Python string manipulation maps onto formal algorithmic notation. The tool itself is the ultimate tutorial on how to bridge these two domains.
-'''
-
-PAPER_SCI = r'''
-\section{Demystifying Physics: Semantic Translation of Cryptic Conventions}
-Perhaps the most significant barrier to entry in computational science is the density of mathematical and physical notation. In theoretical physics and cosmology, equations rely heavily on implicit domain knowledge and a finite alphabet of Greek symbols that are heavily overloaded. For a programmer attempting to model complex phenomena---such as relative entropy in quantum systems, optical wavefront dynamics, or the horizon mechanics of black holes---the raw mathematical formulation can appear entirely opaque. A single character might represent a universal constant, a dynamic variable, or an abstract physical property depending entirely on the context.
-
-RosettaMath addresses this barrier by functioning as a premier educational tool that translates not just syntax, but semantics. It transitions static, intimidating physics formulas into self-documenting, executable models. When a user inputs an equation, RosettaMath goes beyond mapping operators; it maps domain-specific conventions to explicit, descriptive programming paradigms.For example, the symbol $\rho$ is notoriously overloaded, but in standard contexts, RosettaMath can map it to a readable identifier like rho\_density. Similarly, characters representing complex metrics---such as $S$ for entropy or $\Phi$ for a gravitational potential or wavefront---are automatically expanded into verbose, human-readable variables. Furthermore, by linking directly to scientific libraries, standard notations for physical constants (such as $c$ for the speed of light or $G$ for the gravitational constant) can be automatically resolved to their high-precision values in scipy.constants.By automatically unpacking these conventions, RosettaMath acts as an interactive glossary. It allows developers to read an advanced physics equation as explicit, logical software, and it trains physicists to write formulas with the precision and legibility required for computational modeling. In doing so, it lowers the barrier to entry for scientific computing, transforming theoretical mathematics from a gate-kept language into an accessible, executable format.
-'''
-
-PAPER_CON = r'''
-\section{Conclusion: A Bidirectional Bridge for Literate Programming}
-
-RosettaMath successfully demonstrates that the semantic gap between formal mathematical typesetting and executable programming can be bridged without relying on heavy external dependencies. By bootstrapping a self-hosting compiler entirely within a strict subset of LaTeX, the project proves the computational robustness of its algorithmic representations.
-
-Crucially, the translation of mathematical models is no longer a one-way street. The integration of the `Python2Tex` class, which leverages Python's `ast.NodeVisitor` to traverse the Abstract Syntax Tree, enables full bidirectional translation by converting Python source code directly back into formal LaTeX pseudocode. This reverse compiler reconstructs loops, conditionals, list comprehensions, and arithmetic operations back into publication-ready algorithms.
-
-Furthermore, `Python2Tex` strictly maintains the pedagogical and semantic goals of the broader RosettaMath framework. When translating explicit Python back into mathematical notation, the tool automatically maps scientific libraries to their traditional physical symbols. For example, references to standard constants like `scipy.constants.hbar` are intelligently reduced back to their respective LaTeX representations, $\hbar$ and $\epsilon_0$. This bidirectional semantic mapping solidifies RosettaMath as an interactive glossary, ensuring that software engineers can write explicit Python while seamlessly generating the dense, conventional mathematics required for academic publication.
-
-Ultimately, RosettaMath enables a true literate programming paradigm for computational physics. By guaranteeing that the formal specification of a mathematical problem and its computational implementation are perfectly symmetrical, it ensures that the equations published in theoretical research are mathematically and logically identical to the algorithms executed in simulation.
-
-'''
-
-PAPER_REFS = r'''
-\small
-\begin{thebibliography}{99}
-
-\bibitem{knuth} Knuth, D. E. (1984). 
-\emph{Literate Programming. The Computer Journal, 27, 97-111.}
-\newline
-\url{https://doi.org/10.1093/comjnl/27.2.97}
-
-\bibitem{meurer} Meurer, A., Smith, C. P., Paprocki, M., et al. (2016). 
-\emph{SymPy: Symbolic computing in Python.}
-\newline
-\url{https://doi.org/10.7287/peerj.preprints.2083v3}
-
-\bibitem{poore} Poore, G. (2015). PythonTeX: Reproducible documents with LaTeX, Python, and more. Computational Science \& Discovery, 8(1), 014010. \url{https://doi.org/10.1088/1749-4699/8/1/014010}
-
-\end{thebibliography}
-
-'''
+# ---------------------------------------------------------------- paper
+#
+# The paper's prose is neomath.tex; see makepdf() for how the appendix is
+# generated from the self-hosted source and spliced in.
 
 def makepdf():
+    """Typeset the paper.
+
+    The prose lives in neomath.tex, a real LaTeX file next to this one; what
+    this function adds is the generated appendix -- the self-hosted LaTeX
+    source, function by function, and the Python it becomes -- spliced in at
+    the %%APPENDIX%% marker when --appendix is given.
+    """
+    here = os.path.dirname(os.path.abspath(__file__))
+    paper = open(os.path.join(here, 'neomath.tex')).read()
+
     parts = []; func = None; header = []
     for ln in NEOMATH_TEX.splitlines():
         if ln.startswith('\\end{algorithmic}'): break
@@ -1524,9 +1435,8 @@ def makepdf():
             func = [ln]; parts.append( func )
         elif func: func.append(ln)
         else:
-            #if not ln.startswith('\\begin{algorithm}'):
             header.append(ln)
-        
+
     header = ['\\section{ \\LaTeX{} Global Constants}', '\\footnotesize'] + header[4:]
     header.append( '\\end{algorithmic}' )
 
@@ -1548,30 +1458,28 @@ def makepdf():
             p = '\\begin{minipage}[t]{0.48\\textwidth}\n' + p + ' \\end{minipage} \n \\par \\bigskip \\hrule'
         left = not left
         neo.append(p)
-        
-    tex = [
-        make_title_author(LATEX_HEADER),
-        PAPER_ABS,
-        PAPER_INTRO,
-        PAPER_SCI,
-        PAPER_SELFHOST,
-        PAPER_CON
-    ]
+
+    appendix = ''
     if '--appendix' in sys.argv:
-        tex += [
-        '\\appendix',
-        '\n'.join(header),
-        '\\section{\\LaTeX{} Functions}',
-        '\n'.join(neo),
-        '\\section{Automatic \\LaTeX{} to Python Translation}',
-        '\\begin{lstlisting}',
-        src,
-        '\\end{lstlisting}'
-        ]
-    tex.append(PAPER_REFS)
-    tex.append(LATEX_FOOTER)
-    open('/tmp/neomath.tex', 'w').write('\n'.join(tex))
-    subprocess.check_call(['pdflatex', '/tmp/neomath.tex'], cwd='/tmp')
+        appendix = '\n'.join([
+            '\\clearpage',
+            '\\appendix',
+            '\n'.join(header),
+            '\\section{\\LaTeX{} Functions}',
+            '\n'.join(neo),
+            '\\section{Automatic \\LaTeX{} to Python Translation}',
+            '\\begin{lstlisting}[style=appendix]',
+            src,
+            '\\end{lstlisting}',
+        ])
+    assert '%%APPENDIX%%' in paper, 'neomath.tex needs a %%APPENDIX%% marker'
+    tex = paper.replace('%%APPENDIX%%', appendix)
+    open('/tmp/neomath.tex', 'w').write(tex)
+    # twice, so the cross references and citations resolve
+    for _ in range(2):
+        subprocess.check_call(['pdflatex', '-interaction=nonstopmode',
+                               '/tmp/neomath.tex'], cwd='/tmp',
+                              stdout=subprocess.DEVNULL)
     print('wrote /tmp/neomath.pdf')
 
 # (source, argument sets) -- the reverse translation is checked by behaviour,

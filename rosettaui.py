@@ -53,6 +53,39 @@ MATH_STACK = ['Latin Modern Math', 'DejaVu Math TeX Gyre', 'STIX Two Math',
 MONO_STACK = ['Latin Modern Mono', 'DejaVu Sans Mono', 'Courier New', 'monospace']
 
 _font_cache = {}
+_probe_cache = {}
+_support_cache = {}
+
+
+def supports(family, ch):
+    """Does this family really have a glyph for ch?
+
+    Qt will silently substitute another font for a missing glyph, which is how
+    a maths view ends up with Greek in one typeface and Latin in another.
+    Asking first lets us choose deliberately instead.
+    """
+    key = (family, ch)
+    if key in _support_cache:
+        return _support_cache[key]
+    from PyQt5.QtGui import QFont, QRawFont
+    if family not in _probe_cache:
+        _probe_cache[family] = QRawFont.fromFont(QFont(family, 12))
+    ok = _probe_cache[family].supportsCharacter(ch)
+    _support_cache[key] = ok
+    return ok
+
+
+def family_for(text):
+    """The first stack that can draw every character of text.
+
+    Serif for Latin and digits, the maths font for operators and Greek.
+    """
+    chars = [c for c in text if not c.isspace()]
+    for stack in (SERIF_STACK, MATH_STACK, ['DejaVu Sans', 'FreeSerif']):
+        fam = pick_family(stack)
+        if all(supports(fam, c) for c in chars):
+            return fam
+    return pick_family(SERIF_STACK)
 
 
 def pick_family(stack):
@@ -313,6 +346,17 @@ OPERATORS = [
      'gradient (direction of steepest increase); dotted with a vector it gives '
      'the divergence (how much a field spreads out); crossed with a vector it '
      'gives the curl (how much it circulates).', 'Del'),
+    (r'\Box', '□', "d'Alembert operator", 'Calculus',
+     'The d\'Alembertian, or wave operator, or box operator -- the Laplace '
+     'operator of Minkowski spacetime. It is the second time derivative '
+     'divided by c squared, minus the spatial Laplacian, so it treats time '
+     'and space almost alike, differing only by the minus sign that '
+     'separates a spacetime interval from a Euclidean distance. Setting it '
+     'to zero gives the wave equation in a form that is manifestly the same '
+     'in every reference frame, which is why it is the natural operator of '
+     'special relativity and electromagnetism. Named for Jean le Rond '
+     "d'Alembert; the box notation is due to Poincare, and by analogy with "
+     'nabla it is sometimes called the quabla.', "D'Alembert_operator"),
     (r'\int', '∫', 'Integral', 'Calculus',
      'Accumulates a quantity over an interval -- the area under a curve, or '
      'the total of an infinitesimal contribution. The elongated S stands for '
@@ -664,6 +708,33 @@ why quantum mechanics behaves like diffusion with a complex phase, and
 produces interference instead of smoothing.
 """, 'Laplace_operator', ['\\nabla', '\\partial'])
 
+add_concept("The d'Alembert operator", 'Calculus', """
+The d'Alembertian, written as a box, is what the Laplacian becomes when time
+is admitted as a fourth coordinate. It is the second derivative with respect
+to time, divided by the speed of light squared, minus the ordinary spatial
+Laplacian.
+
+That minus sign is the entire point. In Euclidean space every coordinate
+contributes with the same sign and the Laplacian measures how a field differs
+from its local average. In Minkowski spacetime the time coordinate enters with
+the opposite sign, and the operator instead measures propagation. Setting it
+to zero gives the wave equation; the speed of that propagation is the c
+already sitting inside the operator.
+
+Its value is that it is Lorentz invariant. An equation written with a box has
+the same form for every observer, however fast they are moving, whereas an
+equation written with a bare Laplacian and a separate time derivative
+privileges one frame. This is why the box is the natural operator of special
+relativity, electromagnetism and relativistic field theory -- the Klein-Gordon
+equation is little more than the box plus a mass term.
+
+The operator is named after Jean le Rond d'Alembert, who studied the vibrating
+string. The box notation was introduced by Henri Poincare in his lectures on
+electromagnetism, and by analogy with nabla the operator is sometimes called
+the quabla.
+""", "D'Alembert_operator", ['\\Box', '\\nabla', '\\partial', 'c'],
+    ['Wave equation (box form)', 'Klein-Gordon equation'])
+
 add_concept('Bra-ket notation', 'Quantum mechanics', """
 Dirac's notation for quantum states. A ket is a column vector in Hilbert space
 representing a state. A bra is its conjugate transpose, a row vector. Writing
@@ -904,7 +975,8 @@ EQUATIONS = [
     dict(name='Klein-Gordon equation', field='Quantum field theory',
          latex=r'\left( \Box + \frac{m^2 c^2}{\hbar^2} \right) \phi = 0',
          slug='Klein%E2%80%93Gordon_equation',
-         must=['phi', 'm', 'hbar'], nice=['c', 'S:nabla2', 'partial', 'S:sup2', 'S:frac'],
+         must=['phi', 'm', 'hbar'],
+         nice=['c', 'Box', 'S:nabla2', 'partial', 'S:sup2', 'S:frac'],
          blurb='The relativistic wave equation for a spinless field. It is '
                'second order in time, unlike the Schrodinger equation, which '
                'is what makes it Lorentz invariant -- and also what forced the '
@@ -918,6 +990,23 @@ EQUATIONS = [
                'insisted on first order in time, which required the '
                'coefficients to be matrices; spin and antimatter both fell out '
                'of the algebra rather than being put in by hand.'),
+    dict(name="d'Alembert operator", field='Relativity',
+         latex=r'\Box = \frac{1}{c^2} \frac{\partial^2}{\partial t^2} - \nabla^2',
+         slug="D'Alembert_operator",
+         must=['Box', 'S:nabla2', 'partial'], nice=['c', 'S:frac', 'S:sup2', 't'],
+         blurb='The definition of the box operator: a second time derivative '
+               'against a spatial Laplacian, with the relative minus sign that '
+               'is the whole difference between Minkowski spacetime and '
+               'Euclidean space. Written out this way it is clear why the '
+               'operator is Lorentz invariant and the Laplacian alone is not.'),
+    dict(name='Wave equation (box form)', field='Waves',
+         latex=r'\Box \psi = 0', slug='Wave_equation',
+         must=['Box'], nice=['psi', 'phi', 'A', 'u', 'F'],
+         blurb='The wave equation written with the d\'Alembertian. Compressing '
+               'the time and space derivatives into one symbol makes the '
+               'relativistic content visible at a glance: the equation has the '
+               'same form in every inertial frame, and its solutions propagate '
+               'at exactly the speed c buried inside the operator.'),
     dict(name='Wave equation', field='Waves',
          latex=r'\frac{\partial^2 u}{\partial t^2} = c^2 \nabla^2 u',
          slug='Wave_equation',
@@ -1232,6 +1321,22 @@ class Node:
         return '%s%r' % (self.kind, self.kids())
 
 
+# alternative spellings of the same idea.  Kept out of SYMBOLS so that each
+# concept appears exactly once in the browse menus.
+ALIASES = {
+    r'\square': r'\Box', r'\dfrac': r'\frac', r'\tfrac': r'\frac',
+    r'\ne': r'\neq', r'\le': r'\leq', r'\ge': r'\geq',
+    r'\rightarrow': r'\to', r'\Rightarrow': r'\implies',
+    r'\Leftrightarrow': r'\iff', r'\wedge': r'\land', r'\vee': r'\lor',
+    r'\neg': r'\lnot', r'\varnothing': r'\emptyset',
+}
+
+
+def canonical(latex):
+    """Fold an alternative spelling onto the entry that documents it."""
+    return ALIASES.get(latex, latex)
+
+
 ACCENTS = {r'\vec': '\u2192', r'\hat': '\u0302', r'\dot': '\u02d9',
            r'\ddot': '\u00a8', r'\bar': '\u00af', r'\tilde': '\u007e',
            r'\overline': '\u00af', r'\widehat': '\u0302'}
@@ -1391,7 +1496,7 @@ def disp(latex):
     """Display text for a command: its unicode if we know it, else the name."""
     if latex in DISPLAY_CHARS:
         return DISPLAY_CHARS[latex]
-    e = SYMBOLS.get(latex)
+    e = SYMBOLS.get(canonical(latex))
     if e:
         return e['unicode']
     if latex in ACCENTS:
@@ -1450,6 +1555,7 @@ def extract_features(node, acc=None):
     elif k in ('sym', 'num', 'text'):
         lx = node.latex or node.text
         if lx.startswith('\\'):
+            lx = canonical(lx)
             name = lx.lstrip('\\')
             acc.add(name)
             if lx == r'\nabla':
@@ -1800,7 +1906,7 @@ def role_of(node):
     if node.kind == 'num':
         return 'number'
     lx = node.latex or node.text
-    entry = SYMBOLS.get(lx)
+    entry = SYMBOLS.get(canonical(lx))
     if entry:
         cat = entry['category']
         if cat == 'Greek letters':
@@ -1829,7 +1935,8 @@ def lookup(node):
     """The knowledge-base entry for a leaf, or None."""
     if node is None:
         return None
-    return SYMBOLS.get(node.latex) or SYMBOLS.get(node.text)
+    return (SYMBOLS.get(canonical(node.latex))
+            or SYMBOLS.get(canonical(node.text)))
 
 
 def tooltip_for(node):
@@ -1857,12 +1964,12 @@ if QT_OK:
     class Glyph(QGraphicsSimpleTextItem):
         """One interactive character of the equation."""
 
-        def __init__(self, text, node, ui, size, italic=False):
+        def __init__(self, text, node, ui, size, italic=False, family=None):
             super().__init__(text)
             self.node = node
             self.ui = ui
             self.role = role_of(node)
-            font = QFont(pick_family(SERIF_STACK), int(size))
+            font = QFont(family or family_for(text), int(size))
             font.setItalic(italic)
             self.setFont(font)
             self.base_colour = QColor(ROLE_COLOURS.get(self.role, '#000000'))
@@ -1985,8 +2092,8 @@ if QT_OK:
             self.base_size = base_size
 
         # -- metrics -----------------------------------------------------
-        def metrics(self, size, italic=False):
-            font = QFont(pick_family(SERIF_STACK), int(size))
+        def metrics(self, size, italic=False, family=None):
+            font = QFont(family or pick_family(SERIF_STACK), int(size))
             font.setItalic(italic)
             return QFontMetricsF(font)
 
@@ -2036,16 +2143,18 @@ if QT_OK:
 
             elif k in ('sym', 'num', 'text'):
                 italic = self.is_italic(node)
-                fm = self.metrics(size, italic)
                 text = node.text or node.latex
                 text = DISPLAY_CHARS.get(text, text) if node.kind == 'sym' \
                     else text
+                family = family_for(text)
+                fm = self.metrics(size, italic, family)
                 node.w = fm.horizontalAdvance(text)
                 node.above = fm.ascent()
                 node.below = fm.descent()
                 node._size = size
                 node._italic = italic
                 node._draw = text
+                node._family = family
 
             elif k == 'frac':
                 s2 = max(size * 0.95, self.MIN_SIZE)
@@ -2125,7 +2234,8 @@ if QT_OK:
 
             elif k in ('sym', 'num', 'text'):
                 item = Glyph(node._draw, node, self.ui, node._size,
-                             getattr(node, '_italic', False))
+                             getattr(node, '_italic', False),
+                             getattr(node, '_family', None))
                 item.setPos(x, baseline - node.above)
                 self.scene.addItem(item)
 
@@ -2886,6 +2996,9 @@ def selftest():
         (r'\left( \Box + \frac{m^2 c^2}{\hbar^2} \right) \phi = 0',
          'Klein-Gordon equation'),
         (r'( i \gamma^\mu \partial_\mu - m ) \psi = 0', 'Dirac equation'),
+        (r'\Box \psi = 0', 'Wave equation (box form)'),
+        (r'\Box = \frac{1}{c^2} \frac{\partial^2}{\partial t^2} - \nabla^2',
+         "d'Alembert operator"),
     ]
     for tex, want in cases:
         hits = classify(parse_latex(tex), tex)
@@ -2895,6 +3008,21 @@ def selftest():
     check('bare Laplacian falls back to a family',
           'partial differential' in family_of(parse_latex(r'\nabla^2 u = '
                                                           r'\partial u')))
+
+    print('aliases')
+    check('\\square folds onto the d\'Alembertian entry',
+          lookup(Node('sym', latex=r'\square'))['name'] == "d'Alembert operator")
+    check('and classifies the same as \\Box',
+          classify(parse_latex(r'\square \phi = 0'), '')[0][0]['name']
+          == 'Wave equation (box form)')
+    check('every alias target exists',
+          all(v in SYMBOLS for v in ALIASES.values()))
+    check('no alias shadows a real entry',
+          not (set(ALIASES) & set(SYMBOLS)))
+
+    print('fonts')
+    check('the box has a real glyph somewhere in the stacks',
+          SYMBOLS[r'\Box']['unicode'] == '\u25a1')
 
     print('knowledge base')
     check('%d symbols' % len(SYMBOLS), len(SYMBOLS) > 100)

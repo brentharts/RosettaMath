@@ -44,6 +44,24 @@ proof checker comparing types is how every decision gets made.
 
 The constructors still take names, so terms read the way they always did:
 Lambda("T", Universe(0), Var("T")) abstracts the T for you.
+
+Implicit arguments
+------------------
+A binder may be implicit, written \forall {A : Type}, ... in a statement.  Each
+use of such a constant contributes a hole, and the hole is solved by unifying
+the expected argument type with the actual one, so a proof reads
+
+    @theorem(r'\forall x \in \text{Nat}, x = x')
+    def reflexivity(x: 'Nat'):
+        return refl(x)
+
+rather than spelling out refl(Nat, x).  Write explicit(refl)(Nat, x) -- Lean's
+@refl -- to supply the argument by hand.
+
+The elaborator that does this is deliberately untrusted: it fills in the holes
+and then hands the completed term to type_check, which verifies it from
+scratch knowing nothing about implicit arguments.  A bug in the elaborator can
+therefore cost you a confusing error message, but not a false theorem.
 '''
 
 
@@ -133,6 +151,32 @@ class App(Expr):
         return pretty(self)
 
 
+class Meta(Expr):
+    """A hole for an implicit argument, to be solved by unification.
+
+    Metavariables belong to the elaborator, never to the kernel: a term is only
+    handed to type_check once every hole has been filled in.
+    """
+
+    def __init__(self, index, hint='?'):
+        self.index = index
+        self.hint = hint
+
+    def key(self):
+        return ('meta', self.index)
+
+    def __str__(self):
+        return pretty(self)
+
+
+_meta_count = [0]
+
+
+def new_meta(hint='?'):
+    _meta_count[0] += 1
+    return Meta(_meta_count[0], hint)
+
+
 class Binder(Expr):
     """Shared machinery for Pi and Lambda.
 
@@ -142,15 +186,20 @@ class Binder(Expr):
     been abstracted by the time the outer binder looks at it.
     """
 
-    def __init__(self, var_name, var_type, body, raw=False):
+    def __init__(self, var_name, var_type, body, raw=False, implicit=False):
         self.var_name = var_name
         self.var_type = var_type
+        self.implicit = implicit
         self.body = body if raw else abstract(body, var_name)
 
     @classmethod
-    def raw(cls, var_name, var_type, body):
+    def raw(cls, var_name, var_type, body, implicit=False):
         """Build directly from a body that already uses de Bruijn indices."""
-        return cls(var_name, var_type, body, raw=True)
+        return cls(var_name, var_type, body, raw=True, implicit=implicit)
+
+    def rebuild(self, var_type, body):
+        """The same binder with new parts, keeping name hint and implicitness."""
+        return type(self).raw(self.var_name, var_type, body, self.implicit)
 
     def key(self):
         return (self.tag, self.var_type.key(), self.body.key())
@@ -222,15 +271,19 @@ def pretty(expr, names=None):
         return expr.name
     if isinstance(expr, Bound):
         return names[expr.index] if expr.index < len(names) else f"#{expr.index}"
+    if isinstance(expr, Meta):
+        return f"?{expr.hint}{expr.index}"
     if isinstance(expr, App):
         return f"{pretty(expr.func, names)}({pretty(expr.arg, names)})"
     if isinstance(expr, Pi):
         dom = pretty(expr.var_type, names)
-        if not occurs(expr.body, 0):
+        if not occurs(expr.body, 0) and not expr.implicit:
             # non-dependent: print the arrow, which is what a reader expects
             return f"({dom} → {pretty(expr.body, ['_'] + names)})"
         n = fresh(expr.var_name, names, free_names(expr.body))
-        return f"(∀ {n} : {dom}, {pretty(expr.body, [n] + names)})"
+        left, right = ('{', '}') if expr.implicit else ('', '')
+        return (f"(∀ {left}{n} : {dom}{right}, "
+                f"{pretty(expr.body, [n] + names)})")
     if isinstance(expr, Lambda):
         n = fresh(expr.var_name, names, free_names(expr.body))
         return (f"(λ {n} : {pretty(expr.var_type, names)} ⇒ "
@@ -248,9 +301,8 @@ def shift(expr, amount, cutoff=0):
         return App(shift(expr.func, amount, cutoff),
                    shift(expr.arg, amount, cutoff))
     if isinstance(expr, Binder):
-        return type(expr).raw(expr.var_name,
-                              shift(expr.var_type, amount, cutoff),
-                              shift(expr.body, amount, cutoff + 1))
+        return expr.rebuild(shift(expr.var_type, amount, cutoff),
+                            shift(expr.body, amount, cutoff + 1))
     return expr
 
 
@@ -262,9 +314,8 @@ def abstract(expr, name, depth=0):
         return App(abstract(expr.func, name, depth),
                    abstract(expr.arg, name, depth))
     if isinstance(expr, Binder):
-        return type(expr).raw(expr.var_name,
-                              abstract(expr.var_type, name, depth),
-                              abstract(expr.body, name, depth + 1))
+        return expr.rebuild(abstract(expr.var_type, name, depth),
+                            abstract(expr.body, name, depth + 1))
     return expr
 
 
@@ -278,9 +329,8 @@ def instantiate(expr, value, depth=0):
         return App(instantiate(expr.func, value, depth),
                    instantiate(expr.arg, value, depth))
     if isinstance(expr, Binder):
-        return type(expr).raw(expr.var_name,
-                              instantiate(expr.var_type, value, depth),
-                              instantiate(expr.body, value, depth + 1))
+        return expr.rebuild(instantiate(expr.var_type, value, depth),
+                            instantiate(expr.body, value, depth + 1))
     return expr
 
 
@@ -298,9 +348,8 @@ def substitute(expr, var_name, replacement):
                    substitute(expr.arg, var_name, replacement))
     if isinstance(expr, Binder):
         inner = shift(replacement, 1)
-        return type(expr).raw(expr.var_name,
-                              substitute(expr.var_type, var_name, replacement),
-                              substitute(expr.body, var_name, inner))
+        return expr.rebuild(substitute(expr.var_type, var_name, replacement),
+                            substitute(expr.body, var_name, inner))
     return expr
 
 
@@ -313,9 +362,7 @@ def normalize(expr):
             return normalize(instantiate(func.body, arg))
         return App(func, arg)
     if isinstance(expr, Binder):
-        return type(expr).raw(expr.var_name,
-                              normalize(expr.var_type),
-                              normalize(expr.body))
+        return expr.rebuild(normalize(expr.var_type), normalize(expr.body))
     return expr
 
 
@@ -334,6 +381,10 @@ def type_check(env, expr, local=None):
     """
     local = list(local or [])
 
+    if isinstance(expr, Meta):
+        raise KernelError(f"Unsolved metavariable {pretty(expr)}: an implicit "
+                          f"argument could not be inferred")
+
     if isinstance(expr, Universe):
         return Universe(expr.level + 1)
 
@@ -351,7 +402,7 @@ def type_check(env, expr, local=None):
     if isinstance(expr, Lambda):
         expect_sort(env, expr.var_type, local, "lambda argument")
         body_type = type_check(env, expr.body, [expr.var_type] + local)
-        return Pi.raw(expr.var_name, expr.var_type, body_type)
+        return Pi.raw(expr.var_name, expr.var_type, body_type, expr.implicit)
 
     if isinstance(expr, Pi):
         domain = expect_sort(env, expr.var_type, local, "function domain")
@@ -384,6 +435,221 @@ def expect_sort(env, expr, local, role):
                           f"(it has type {pretty(sort)})")
     return sort
 
+
+
+# ------------------------------------------------------------- elaboration
+#
+# The kernel above is the trusted part and knows nothing about implicit
+# arguments.  The elaborator is the untrusted part: it fills in the holes and
+# then hands a complete term back to type_check for independent verification,
+# which is how Lean is arranged too.
+
+def has_meta(expr, index=None):
+    """Does expr contain a hole (optionally, this particular one)?"""
+    if isinstance(expr, Meta):
+        return index is None or expr.index == index
+    if isinstance(expr, App):
+        return has_meta(expr.func, index) or has_meta(expr.arg, index)
+    if isinstance(expr, Binder):
+        return has_meta(expr.var_type, index) or has_meta(expr.body, index)
+    return False
+
+
+def has_loose_bound(expr, depth=0):
+    """Does expr refer to a binder outside itself?"""
+    if isinstance(expr, Bound):
+        return expr.index >= depth
+    if isinstance(expr, App):
+        return has_loose_bound(expr.func, depth) or has_loose_bound(expr.arg, depth)
+    if isinstance(expr, Binder):
+        return (has_loose_bound(expr.var_type, depth)
+                or has_loose_bound(expr.body, depth + 1))
+    return False
+
+
+def resolve(expr, subst):
+    """Replace every solved hole by its solution, everywhere."""
+    if isinstance(expr, Meta):
+        if expr.index in subst:
+            return resolve(subst[expr.index], subst)
+        return expr
+    if isinstance(expr, App):
+        return App(resolve(expr.func, subst), resolve(expr.arg, subst))
+    if isinstance(expr, Binder):
+        return expr.rebuild(resolve(expr.var_type, subst),
+                            resolve(expr.body, subst))
+    return expr
+
+
+def assign(meta, term, subst):
+    """Solve a hole, refusing the two solutions that would be unsound."""
+    if has_meta(term, meta.index):
+        return False                      # occurs check: ?m := f(?m)
+    if has_loose_bound(term):
+        # the solution mentions a variable bound outside the hole, so it would
+        # mean something different wherever the hole is used
+        return False
+    subst[meta.index] = term
+    return True
+
+
+def unify(a, b, subst):
+    """First-order unification, up to normalisation."""
+    a = normalize(resolve(a, subst))
+    b = normalize(resolve(b, subst))
+    if a == b:
+        return True
+    if isinstance(a, Meta):
+        return assign(a, b, subst)
+    if isinstance(b, Meta):
+        return assign(b, a, subst)
+    if isinstance(a, App) and isinstance(b, App):
+        return unify(a.func, b.func, subst) and unify(a.arg, b.arg, subst)
+    if isinstance(a, Binder) and isinstance(b, Binder) and a.tag == b.tag:
+        return (unify(a.var_type, b.var_type, subst)
+                and unify(a.body, b.body, subst))
+    return False
+
+
+EXPLICIT = 'explicit'          # explicit(f) is Lean's @f: no holes inserted
+
+
+class Elaborator:
+    r"""Fills in implicit arguments, so a proof can be written as refl(x).
+
+    An implicit binder \forall {A : Type}, ... contributes a hole at every use
+    site, solved by unifying the expected argument type with the actual one.
+
+    Elaboration runs over *opened* terms: on the way into a binder the bound
+    variable is replaced by a fresh free name, and the binder is closed again
+    on the way out.  That matters because a hole under a binder may need to be
+    solved with the bound variable itself -- as in refl(a) where a : A and A is
+    itself bound -- and a raw de Bruijn index would mean something different at
+    every depth it appeared.  A name does not.
+    """
+
+    PREFIX = '@'               # cannot occur in a Python identifier
+
+    def __init__(self, env):
+        self.env = dict(env)
+        self.subst = {}
+        self.counter = 0
+
+    def fresh_local(self, hint):
+        self.counter += 1
+        return f"{self.PREFIX}{hint}{self.counter}"
+
+    def insert_implicits(self, term, type_):
+        """Apply the term to a fresh hole for each leading implicit binder."""
+        type_ = normalize(resolve(type_, self.subst))
+        while isinstance(type_, Pi) and type_.implicit:
+            hole = new_meta(type_.var_name)
+            term = App(term, hole)
+            type_ = normalize(instantiate(type_.body, hole))
+        return term, type_
+
+    def binder(self, expr):
+        """Elaborate under a binder by opening it with a fresh name."""
+        domain, _ = self.infer(expr.var_type)
+        name = self.fresh_local(expr.var_name)
+        self.env[name] = domain
+        try:
+            body, body_type = self.infer(instantiate(expr.body, Var(name)))
+        finally:
+            del self.env[name]
+        # resolve before closing up: a hole solved inside the body may mention
+        # the opened name, and abstraction has to see it
+        body = abstract(resolve(body, self.subst), name)
+        body_type = abstract(resolve(body_type, self.subst), name)
+        return domain, body, body_type
+
+    def infer(self, expr, insert=True):
+        """(elaborated term, its type)."""
+        if isinstance(expr, Meta):
+            return expr, new_meta('T')
+
+        if isinstance(expr, Universe):
+            return expr, Universe(expr.level + 1)
+
+        if isinstance(expr, Var):
+            if expr.name not in self.env:
+                raise KernelError(f"Unknown identifier: {expr.name}")
+            term, type_ = expr, self.env[expr.name]
+            return self.insert_implicits(term, type_) if insert else (term, type_)
+
+        if isinstance(expr, Bound):
+            raise KernelError(f"Unbound index #{expr.index}")
+
+        if isinstance(expr, Lambda):
+            domain, body, body_type = self.binder(expr)
+            return (expr.rebuild(domain, body),
+                    Pi.raw(expr.var_name, domain, body_type, expr.implicit))
+
+        if isinstance(expr, Pi):
+            domain, body, _ = self.binder(expr)
+            # the kernel recomputes the sort; here we only need a placeholder
+            return expr.rebuild(domain, body), Universe(0)
+
+        if isinstance(expr, App):
+            # explicit(f) turns insertion off for this head, Lean's @f
+            if isinstance(expr.func, Var) and expr.func.name == EXPLICIT:
+                return self.infer(expr.arg, insert=False)
+
+            func, func_type = self.infer(expr.func, insert=True)
+            func_type = normalize(resolve(func_type, self.subst))
+            if not isinstance(func_type, Pi):
+                raise KernelError(f"Expected a function, got "
+                                  f"{pretty(func_type)}")
+            arg, arg_type = self.infer(expr.arg)
+            if not unify(func_type.var_type, arg_type, self.subst):
+                raise KernelError(
+                    f"Type mismatch: expected "
+                    f"{pretty(resolve(func_type.var_type, self.subst))}, got "
+                    f"{pretty(resolve(arg_type, self.subst))}")
+            result = normalize(instantiate(func_type.body, arg))
+            term = App(func, arg)
+            return self.insert_implicits(term, result) if insert else (term, result)
+
+        raise KernelError(f"Cannot elaborate: {expr}")
+
+    def finish(self, expr, what='term'):
+        """Substitute the solutions in, and insist there are none left over."""
+        out = resolve(expr, self.subst)
+        if has_meta(out):
+            raise KernelError(
+                f"Could not infer every implicit argument in the {what}: "
+                f"{pretty(out)}. Supply them with explicit(f)(...)")
+        escaped = sorted(n for n in free_names(out) if n.startswith(self.PREFIX))
+        if escaped:
+            raise KernelError(
+                f"An implicit argument in the {what} would have to mention "
+                f"{escaped[0][1:]}, which is not in scope where it is needed")
+        return out
+
+
+def elaborate(env, term, expected=None):
+    """Fill in the holes, then let the kernel check the result independently.
+
+    Returns (term, type).  The elaborator's own reasoning is never trusted:
+    whatever it produces is type checked from scratch.
+    """
+    el = Elaborator(env)
+    term, actual = el.infer(term)
+    if expected is not None:
+        expected, _ = el.infer(expected)
+        if not unify(expected, actual, el.subst):
+            term = el.finish(term)
+            raise TheoremError(
+                f"stated {pretty(el.finish(expected, 'statement'))}, "
+                f"proved {pretty(resolve(actual, el.subst))}")
+    term = el.finish(term)
+    checked = type_check(env, term)          # the trusted check
+    if expected is not None:
+        expected = el.finish(expected, 'statement')
+        if not definitionally_equal(expected, checked):
+            raise TheoremError(f"stated {pretty(expected)}, "
+                               f"proved {pretty(checked)}")
+    return term, checked
 
 # ------------------------------------------------------------ LaTeX front end
 #
@@ -469,16 +735,17 @@ class LatexTypeParser:
 
     def forall(self):
         self.next()
-        parens = self.peek() == '('
-        if parens:
+        opener = self.peek() if self.peek() in ('(', r'\{') else None
+        implicit = opener == r'\{'
+        if opener:
             self.next()
         name = self.next()
         if name is None or not name.isidentifier():
             raise KernelError(f"Expected a bound variable name, found {name!r}")
         self.expect(*COLON)
         domain = self.arrow_type()
-        if parens:
-            self.expect(')')
+        if opener:
+            self.expect(r'\}' if implicit else ')')
         self.expect(',')
         outer = self.scope.get(name)
         self.scope[name] = domain             # so 'x = x' knows the type of x
@@ -487,7 +754,7 @@ class LatexTypeParser:
             self.scope.pop(name, None)
         else:
             self.scope[name] = outer
-        return Pi(name, domain, body)
+        return Pi(name, domain, body, implicit=implicit)
 
     def equality(self):
         left = self.arrow_type()
@@ -505,9 +772,9 @@ class LatexTypeParser:
         elif isinstance(right, Var) and right.name in self.scope:
             carrier = self.scope[right.name]
         if carrier is None:
-            raise KernelError(
-                "Cannot tell which type this equality is over; bind the "
-                "variable first, as in \\forall x \\in \\text{Nat}, x = x")
+            # nothing in scope pins the type down, so leave a hole and let
+            # the elaborator work it out from the operands
+            carrier = new_meta('A')
         return App(App(App(Var('Eq'), carrier), left), right)
 
     def arrow_type(self):
@@ -521,7 +788,8 @@ class LatexTypeParser:
         expr = self.atom()
         while True:
             t = self.peek()
-            if t is None or t in ARROW or t in COLON or t in (',', ')', '}', '='):
+            if t is None or t in ARROW or t in COLON \
+                    or t in (',', ')', '}', '=', r'\}'):
                 return expr
             if t in FORALL:
                 return expr
@@ -644,12 +912,8 @@ def compile_python_to_lean(func):
             f"cannot read the source of {getattr(func, '__name__', func)}: "
             f"a proof must live in a file, not in an interactive session "
             f"or a -c string ({exc})")
-    if source.lstrip().startswith('@'):
-        # drop the decorator lines, which are not part of the term
-        lines = source.splitlines()
-        while lines and lines[0].lstrip().startswith('@'):
-            lines.pop(0)
-        source = '\n'.join(lines)
+    # the decorator is part of the FunctionDef and is simply ignored; stripping
+    # it by hand breaks as soon as its arguments span more than one line
     tree = ast.parse(source)
     return PythonToLean().visit(tree.body[0])
 
@@ -663,9 +927,14 @@ def _eq_type():
 
 
 def _refl_type():
-    """refl : forall A : Type 0, forall a : A, Eq A a a"""
+    r"""refl : forall {A : Type 0}, forall a : A, Eq A a a
+
+    A is implicit, so a proof is written refl(x) and the elaborator recovers
+    A by unifying the type of x with the expected argument type.  Write
+    explicit(refl)(Nat, x) to supply it by hand.
+    """
     same = App(App(App(Var('Eq'), Var('A')), Var('a')), Var('a'))
-    return Pi('A', Universe(1), Pi('a', Var('A'), same))
+    return Pi('A', Universe(1), Pi('a', Var('A'), same), implicit=True)
 
 
 # A global logical environment for our theorems.  Nat is a Type, not a Prop:
@@ -704,18 +973,19 @@ def theorem(latex_statement, strict=None, env=None, verbose=None):
         say(f"\n--- Checking Theorem: {func.__name__} ---")
         say(f"LaTeX Statement: {latex_statement}")
         try:
-            term = compile_python_to_lean(func)
-            say(f"Compiled Kernel Expr: {term}")
-            actual = type_check(scope, term)
-            say(f"Inferred Type: {actual}")
-
+            surface = compile_python_to_lean(func)
+            say(f"Compiled Kernel Expr: {surface}")
             expected = latex2type(latex_statement)
-            say(f"Stated Type:   {expected}")
-            expect_sort(scope, expected, [], "statement")
-            if not definitionally_equal(expected, actual):
+
+            try:
+                term, actual = elaborate(scope, surface, expected)
+            except TheoremError as exc:
                 raise TheoremError(
-                    f"{func.__name__} does not prove what it claims: stated "
-                    f"{pretty(expected)}, proved {pretty(actual)}")
+                    f"{func.__name__} does not prove what it claims: {exc}")
+            if str(term) != str(surface):
+                say(f"Elaborated:    {term}")
+            say(f"Inferred Type: {actual}")
+            say(f"Stated Type:   {pretty(normalize(actual))}")
 
             func.lean_term = term
             func.lean_type = actual
@@ -825,6 +1095,33 @@ def selftest():
           raises(lambda: type_check(env, App(idf, Universe(1))),
                  'Type mismatch'))
 
+    print('elaboration')
+    subst = {}
+    m = new_meta('A')
+    check('a hole unifies with a concrete type',
+          unify(m, Var('Nat'), subst) and resolve(m, subst) == Var('Nat'))
+    check('and stays solved the same way',
+          unify(m, Var('Nat'), subst))
+    check('a second, different solution is refused',
+          not unify(m, Var('Bool'), subst))
+    m2 = new_meta('B')
+    check('occurs check: ?m := f(?m) is refused',
+          not unify(m2, App(Var('Eq'), m2), {}))
+    check('unification descends into applications',
+          (lambda s: unify(App(Var('Eq'), new_meta('C')),
+                           App(Var('Eq'), Var('Nat')), s))({}) )
+    check('mismatched heads do not unify',
+          not unify(Var('Nat'), Var('Bool'), {}))
+    check('a solution mentioning a loose index is refused',
+          not assign(new_meta('D'), Bound(0), {}))
+    check('the kernel refuses a term with a hole left in it',
+          raises(lambda: type_check(env, new_meta('E')),
+                 'Unsolved metavariable'))
+    check('refl is implicit in its type argument',
+          GLOBAL_ENV['refl'].implicit)
+    check('an implicit argument that cannot be inferred is reported',
+          raises(lambda: elaborate(env, Var('refl')), 'Could not infer'))
+
     print('LaTeX front end')
     cases = [
         (r'\text{Nat}', Var('Nat')),
@@ -849,8 +1146,14 @@ def selftest():
           != arrow(arrow(Var('Nat'), Var('Nat')), Var('Nat')))
     check('a dangling arrow is refused',
           raises(lambda: latex2type(r'\text{Nat} \to'), 'ended early'))
-    check('an unscoped equality is refused',
-          raises(lambda: latex2type('x = x'), 'which type'))
+    check('an unscoped equality leaves a hole for the elaborator',
+          has_meta(latex2type('x = x')))
+    check('an implicit binder parses with braces',
+          latex2type(r'\forall \{A : \text{Type}\}, A \to A')
+          == Pi('A', Universe(1), arrow(Var('A'), Var('A')), implicit=True))
+    check('and implicitness does not change the type it denotes',
+          latex2type(r'\forall \{A : \text{Type}\}, A \to A')
+          == latex2type(r'\forall (A : \text{Type}), A \to A'))
     check('trailing junk is refused',
           raises(lambda: latex2type(r'\text{Nat} )'), 'Unexpected'))
 
@@ -888,9 +1191,29 @@ def selftest():
 
     @theorem(r'\forall x \in \text{Nat}, x = x', verbose=False)
     def reflexivity(x: 'Nat'):
-        return refl(Nat, x)
-    check('refl proves forall x : Nat, x = x',
+        return refl(x)
+    check('refl(x) proves forall x : Nat, x = x, with A inferred',
           reflexivity.lean_type == latex2type(r'\forall x \in \text{Nat}, x = x'))
+    check('and the elaborated term really carries the argument',
+          reflexivity.lean_term
+          == Lambda('x', Var('Nat'), App(App(Var('refl'), Var('Nat')),
+                                         Var('x'))))
+
+    @theorem(r'\forall \{A : \text{Type}\}, \forall a \in A, a = a',
+             verbose=False)
+    def polymorphic_refl(A: 'Type', a: 'A'):
+        return refl(a)
+    check('a hole may be solved by a bound variable',
+          polymorphic_refl.lean_term
+          == Lambda('A', Universe(1),
+                    Lambda('a', Var('A'),
+                           App(App(Var('refl'), Var('A')), Var('a')))))
+
+    @theorem(r'\forall x \in \text{Nat}, x = x', verbose=False)
+    def by_hand(x: 'Nat'):
+        return explicit(refl)(Nat, x)
+    check('explicit(refl) still lets the argument be given by hand',
+          by_hand.lean_term == reflexivity.lean_term)
 
     @theorem(r'\forall (T : \text{Type}), T \to T', verbose=False)
     def polymorphic_id(T: 'Type', a: 'T'):
@@ -948,13 +1271,24 @@ def demo():
     def identity_function(x: 'Nat'):
         return x
 
+    # A is implicit in refl, so the proof is written the way Lean writes it
     @theorem(r"\forall x \in \text{Nat}, x = x")
     def reflexivity(x: 'Nat'):
-        return refl(Nat, x)
+        return refl(x)
 
     @theorem(r"\forall (T : \text{Type}), T \to T")
     def polymorphic_identity(T: 'Type', a: 'T'):
         return a
+
+    # the hole here is solved with a bound variable, not a constant
+    @theorem(r"\forall \{A : \text{Type}\}, \forall a \in A, a = a")
+    def reflexivity_anywhere(A: 'Type', a: 'A'):
+        return refl(a)
+
+    # explicit(f) is Lean's @f: supply the implicit argument by hand
+    @theorem(r"\forall x \in \text{Nat}, x = x")
+    def reflexivity_by_hand(x: 'Nat'):
+        return explicit(refl)(Nat, x)
 
     print("\n--- and a proof that should fail ---")
     try:

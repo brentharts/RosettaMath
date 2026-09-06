@@ -163,7 +163,7 @@ language for stating theorems about Python functions.
 ```python
 @theorem(r'\forall x \in \text{Nat}, x = x')
 def reflexivity(x: 'Nat'):
-    return refl(Nat, x)
+    return refl(x)
 ```
 
 The function is compiled to a kernel term, type checked, and the LaTeX
@@ -189,6 +189,36 @@ The constructors still take names, so terms read the way they always did:
 renames binders that would shadow a free variable, so the output never claims
 a variable is bound when it isn't.
 
+### Implicit arguments
+
+`refl` has type `∀ {A : Type}, ∀ a : A, Eq A a a`. The braces mark `A` as
+implicit, so each use contributes a hole and the proof is written `refl(x)` —
+the way Lean writes it — rather than `refl(Nat, x)`. The hole is solved by
+unifying the expected argument type against the actual one.
+
+The elaborator that does this is **deliberately untrusted**. It fills in the
+holes and then hands the completed term to `type_check`, which verifies it from
+scratch knowing nothing about implicit arguments. A bug in the elaborator can
+therefore cost you a confusing error message, but not a false theorem — the
+same separation Lean maintains between its elaborator and its kernel.
+
+Elaboration runs over *opened* terms: entering a binder replaces the bound
+variable with a fresh free name, and the binder is closed again on the way out.
+That is what lets a hole be solved with a bound variable, as in
+
+```python
+@theorem(r'\forall \{A : \text{Type}\}, \forall a \in A, a = a')
+def reflexivity_anywhere(A: 'Type', a: 'A'):
+    return refl(a)
+```
+
+where `A` is itself bound. A raw de Bruijn index would mean something different
+at every depth it appeared in; a name does not.
+
+Write `explicit(refl)(Nat, x)` — Lean's `@refl` — to supply an implicit
+argument by hand. Unification is first-order, with an occurs check; an argument
+that cannot be inferred is reported rather than guessed.
+
 ### The statement language
 
 | LaTeX | Kernel |
@@ -198,14 +228,15 @@ a variable is bound when it isn't.
 | `A \to B` | function type, right associative |
 | `\forall x \in A, B` / `\forall (x : A), B` | dependent function type |
 | `f x` | application, by juxtaposition |
-| `a = b` | `Eq A a b`, with `A` taken from the binder |
+| `\forall \{A : T\}, B` | implicit binder |
+| `a = b` | `Eq A a b`, with `A` from the binder, or inferred |
 
 The front end is shared with the rest of the project: `rosettaui.tokenize`
 lexes the subset and `rosettamath.unescape` handles `\text{}` content.
 
 ```sh
 make proofs              # check the theorems
-python3 lean4.py --selftest      # 49 kernel and front-end checks
+python3 lean4.py --selftest      # 64 kernel, elaborator and front-end checks
 python3 lean4.py --non-strict    # report failures instead of raising
 ```
 

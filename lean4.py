@@ -2,6 +2,7 @@
 # lean4.py - Version 0.3: The Micro-Kernel, on de Bruijn indices
 import ast
 import sys
+import itertools
 import inspect
 import textwrap
 
@@ -72,12 +73,18 @@ undecidable; outside the fragment the elaborator refuses rather than guesses,
 because a guess here is a proof the user did not write.
 
 Inside the fragment a constraint can still have more than one legal answer:
-?P a = Eq A a a admits both (lam z. Eq A z z) and (lam z. Eq A z a) whenever a
-is in scope where the hole was made.  Such constraints are postponed rather
-than guessed, and settled once every constraint on that hole is known: each
-one proposes its own solution, and only a proposal satisfying all of them is
-accepted.  That is what lets symm be written transport(h, refl(a)) -- the first
-constraint proposes the wrong motive and the second overrules it.
+?P a = Eq A a a admits (lam z. Eq A z z), (lam z. Eq A z a), (lam z. Eq A a z)
+and the constant (lam z. Eq A a a) whenever a is in scope where the hole was
+made.  Such constraints are postponed rather than guessed, and settled once
+every constraint on that hole is known: each proposes the whole family of
+readings, obtained by abstracting any subset of the occurrences, and only a
+reading satisfying all the constraints is accepted.
+
+That is what lets symm be written transport(h, refl(a)), where the first
+constraint's obvious answer is the wrong one, and transport(h, h), where the
+answer abstracts nothing at all.  When more than one reading survives the term
+is still checked by the kernel, so the theorem is proved either way, but the
+choice is reported rather than made quietly.
 '''
 
 
@@ -582,6 +589,75 @@ def readable(expr):
     return pretty(expr)
 
 
+def count_occurrences(expr, name):
+    """How many times the named variable appears free."""
+    if isinstance(expr, Var):
+        return 1 if expr.name == name else 0
+    if isinstance(expr, App):
+        return (count_occurrences(expr.func, name)
+                + count_occurrences(expr.arg, name))
+    if isinstance(expr, Binder):
+        return (count_occurrences(expr.var_type, name)
+                + count_occurrences(expr.body, name))
+    return 0
+
+
+def abstract_at(expr, name, chosen, depth=0, index=0):
+    """Abstract only the selected occurrences of a name, by position.
+
+    abstract() takes every occurrence.  A motive often wants some of them and
+    not others: from Eq A a a the reading (lam z. Eq A z a) abstracts the first
+    occurrence alone, and no amount of abstracting everything will produce it.
+    """
+    if isinstance(expr, Var):
+        if expr.name == name:
+            picked = index in chosen
+            return (Bound(depth) if picked else expr), index + 1
+        return expr, index
+    if isinstance(expr, App):
+        func, index = abstract_at(expr.func, name, chosen, depth, index)
+        arg, index = abstract_at(expr.arg, name, chosen, depth, index)
+        return App(func, arg), index
+    if isinstance(expr, Binder):
+        var_type, index = abstract_at(expr.var_type, name, chosen, depth, index)
+        body, index = abstract_at(expr.body, name, chosen, depth + 1, index)
+        return expr.rebuild(var_type, body), index
+    return expr, index
+
+
+CANDIDATE_LIMIT = 64            # 2^n per variable; refuse to explode
+
+
+def pattern_candidates(names, rhs, ctx):
+    r"""Every way of abstracting the arguments out of the right-hand side.
+
+    Ordered most-abstracted first, so the principal Miller solution is tried
+    before any partial one and the usual cases keep the answer they had.
+    """
+    counts = [count_occurrences(rhs, n) for n in names]
+    total = 1
+    for c in counts:
+        total *= 2 ** c
+    if total > CANDIDATE_LIMIT:
+        counts = None           # too many: offer the full abstraction only
+
+    def subsets(n):
+        if counts is None:
+            return [frozenset(range(n))]
+        out = [frozenset(s) for k in range(n, -1, -1)
+               for s in itertools.combinations(range(n), k)]
+        return out
+
+    choices = [subsets(count_occurrences(rhs, n)) for n in names]
+    for combo in itertools.product(*choices):
+        solution = rhs
+        for name, chosen in zip(reversed(names), reversed(combo)):
+            body, _ = abstract_at(solution, name, chosen)
+            solution = Lambda.raw(strip_local(name),
+                                  ctx.get(name, Universe(0)), body)
+        yield solution
+
+
 def strip_local(name):
     """@a12 -> a, for printing."""
     if not name.startswith(LOCAL_PREFIX):
@@ -702,6 +778,7 @@ class Elaborator:
         self.env = dict(env)
         self.subst = {}
         self.pending = []
+        self.notes = []
         self.counter = 0
 
     def local_names(self):
@@ -851,20 +928,47 @@ class Elaborator:
             if not by_meta:
                 return
             progressed = False
-            for group in by_meta.values():
-                for candidate, head, args in group:
+            for index, group in by_meta.items():
+                fits = []
+                for solution in self.candidates(group):
                     trial = dict(self.subst)
-                    if assign_pattern(head, args, candidate.rhs, trial,
-                                      candidate.ctx) is not True:
-                        continue
+                    trial[index] = solution
                     if all(c.satisfied(trial) for c, _, _ in group):
-                        self.subst = trial
-                        progressed = True
-                        break
-                if progressed:
-                    break
+                        fits.append(solution)
+                        if len(fits) > 1:
+                            break        # one alternative is enough to report
+                if not fits:
+                    continue
+                if len(fits) > 1:
+                    # every survivor proves the stated theorem, since the
+                    # kernel checks the finished term either way -- but the
+                    # reader deserves to know the choice was not forced
+                    self.notes.append(
+                        f"the implicit argument ?{group[0][1].hint} was not "
+                        f"fully determined; took {readable(fits[0])}, and "
+                        f"{readable(fits[1])} would also have done")
+                self.subst = dict(self.subst)
+                self.subst[index] = fits[0]
+                progressed = True
+                break
             if not progressed:
                 return
+
+    def candidates(self, group):
+        """Every solution any constraint on this hole can propose."""
+        seen = set()
+        for constraint, head, args in group:
+            names = is_pattern(args, self.subst)
+            if names is None:
+                continue
+            rhs = resolve(constraint.rhs, self.subst)
+            if has_meta(rhs, head.index) or has_loose_bound(rhs):
+                continue
+            for solution in pattern_candidates(names, rhs, constraint.ctx):
+                if solution.key() in seen:
+                    continue
+                seen.add(solution.key())
+                yield solution
 
     def check_pending(self):
         """Nothing may be left unverified: a postponed constraint that never
@@ -898,6 +1002,7 @@ def elaborate(env, term, expected=None):
     Returns (term, type).  The elaborator's own reasoning is never trusted:
     whatever it produces is type checked from scratch.
     """
+    elaborate.last_notes = []
     el = Elaborator(env)
     if expected is None:
         term, _ = el.infer(term)
@@ -905,6 +1010,7 @@ def elaborate(env, term, expected=None):
         expected, _ = el.infer(expected)
         term = el.check(term, expected)
     el.check_pending()
+    elaborate.last_notes = list(el.notes)
     term = el.finish(term)
     checked = type_check(env, term)          # the trusted check
     if expected is not None:
@@ -1321,6 +1427,9 @@ def theorem(latex_statement, strict=None, env=None, verbose=None):
             say(f"Inferred Type: {actual}")
             say(f"Stated Type:   {pretty(normalize(actual))}")
 
+            for note in getattr(elaborate, 'last_notes', []):
+                say(f"Note: {note}")
+            func.lean_notes = list(getattr(elaborate, 'last_notes', []))
             func.lean_term = term
             func.lean_type = actual
             func.lean_statement = expected
@@ -1527,6 +1636,13 @@ def selftest():
              r'\text{Eq} A a b \to \text{Eq} A b a', verbose=False)
     def symmetry(A: 'Type', a: 'A', b: 'A', h: r'\text{Eq} A a b'):
         return transport(h, refl(a))
+
+    # and here the motive must abstract nothing at all, which no full
+    # abstraction would ever propose
+    @theorem(r'\forall \{A : \text{Type}\}, \forall a \in A, \forall b \in A, '
+             r'\text{Eq} A a b \to \text{Eq} A a b')
+    def rewrite_noop(A: 'Type', a: 'A', b: 'A', h: r'\text{Eq} A a b'):
+        return transport(h, h)
     check('symm proves a = b implies b = a',
           symmetry.lean_type
           == latex2type(r'\forall \{A : \text{Type}\}, \forall a \in A, '
@@ -1543,6 +1659,57 @@ def selftest():
             return transport(h, refl(a))
     check('postponing does not let a false claim through',
           raises(unsatisfiable, 'no single value satisfies'))
+
+    print('partial abstraction')
+    rhs = eq3(Var('A'), Var('@a1'), Var('@a1'))
+    check('occurrences are counted', count_occurrences(rhs, '@a1') == 2)
+    first, _ = abstract_at(rhs, '@a1', {0})
+    check('the first occurrence alone can be abstracted',
+          first == eq3(Var('A'), Bound(0), Var('@a1')))
+    second, _ = abstract_at(rhs, '@a1', {1})
+    check('and so can the second',
+          second == eq3(Var('A'), Var('@a1'), Bound(0)))
+    check('abstracting none leaves the term alone',
+          abstract_at(rhs, '@a1', set())[0] == rhs)
+    cands = list(pattern_candidates(['@a1'], rhs, {'@a1': Var('A')}))
+    check('two occurrences give four candidate motives', len(cands) == 4)
+    check('the fully abstracted one is offered first',
+          normalize(App(cands[0], Var('b')))
+          == eq3(Var('A'), Var('b'), Var('b')))
+    check('the constant one is offered last',
+          normalize(App(cands[-1], Var('b'))) == rhs)
+    check('the partial readings are among them',
+          any(normalize(App(c, Var('b'))) == eq3(Var('A'), Var('b'), Var('@a1'))
+              for c in cands))
+    wide = eq3(Var('A'), Var('@a1'), Var('@a1'))
+    for _ in range(6):
+        wide = App(wide, Var('@a1'))
+    check('an explosion of occurrences falls back to one candidate',
+          len(list(pattern_candidates(['@a1'], wide, {}))) == 1)
+
+    # the motive here must abstract nothing at all: full abstraction from
+    # either constraint gives the wrong answer
+    @theorem(r'\forall \{A : \text{Type}\}, \forall a \in A, \forall b \in A, '
+             r'\text{Eq} A a b \to \text{Eq} A a b', verbose=False)
+    def rewrite_noop(A: 'Type', a: 'A', b: 'A', h: r'\text{Eq} A a b'):
+        return transport(h, h)
+    check('a constant motive is found when nothing may be abstracted',
+          rewrite_noop.lean_type
+          == latex2type(r'\forall \{A : \text{Type}\}, \forall a \in A, '
+                        r'\forall b \in A, \text{Eq} A a b \to '
+                        r'\text{Eq} A a b'))
+    check('and a determined case reports no ambiguity',
+          not rewrite_noop.lean_notes)
+
+    @theorem(r'\forall \{A : \text{Type}\}, \forall a \in A, '
+             r'\text{Eq} A a a \to \text{Eq} A a a', verbose=False)
+    def undetermined(A: 'Type', a: 'A', h: r'\text{Eq} A a a'):
+        return transport(h, h)
+    check('an undetermined motive still proves the theorem',
+          undetermined.lean_type is not None)
+    check('but the choice is reported rather than made quietly',
+          undetermined.lean_notes
+          and 'not fully determined' in undetermined.lean_notes[0])
 
     print('dependent constants')
     for name in ('symm', 'trans', 'congrArg', 'transport'):

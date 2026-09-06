@@ -251,9 +251,10 @@ in scope where the hole was made — so each hole records the scope it was
 created in, and a constraint is only ambiguous when the variable is in it.
 
 Ambiguous constraints are **postponed**, then settled once every constraint on
-that hole is known. Each constraint proposes its own solution, and a proposal
-is accepted only if it satisfies all of them. That is what lets `symm` be
-written the natural way:
+that hole is known. Each constraint proposes not one solution but the whole
+family of them — obtained by abstracting *any subset* of the occurrences, most
+abstracted first — and a proposal is accepted only if it satisfies all the
+constraints. That is what lets `symm` be written the natural way:
 
 ```python
 @theorem(r'\forall \{A : \text{Type}\}, \forall a \in A, \forall b \in A, '
@@ -267,9 +268,33 @@ def symmetry(A: 'Type', a: 'A', b: 'A', h: r'\text{Eq} A a b'):
 symmetry. Solved eagerly, the first proposal wins and the theorem fails with
 `stated Eq A b a, proved Eq A b b`.
 
-A hole that no single value can satisfy is reported rather than left tentative,
-and `type_check` still runs on the finished term either way — postponement can
-cost an error message, never a false theorem.
+Abstracting *every* occurrence is not always right either. In
+
+```python
+@theorem(r'\forall \{A : \text{Type}\}, \forall a \in A, \forall b \in A, '
+         r'\text{Eq} A a b \to \text{Eq} A a b')
+def rewrite_noop(A: 'Type', a: 'A', b: 'A', h: r'\text{Eq} A a b'):
+    return transport(h, h)
+```
+
+the motive must be the *constant* `λz. Eq A a b`, abstracting nothing. Full
+abstraction from either constraint gives the wrong answer, so the candidate
+family includes the partial readings too. With `n` occurrences there are `2ⁿ`
+of them, capped at 64 before falling back to the full abstraction alone.
+
+When several readings survive every constraint, the elaborator takes the most
+abstracted and says so:
+
+```
+Note: the implicit argument ?P was not fully determined; took
+(λ a ⇒ Eq A a a), and (λ a' ⇒ Eq A a' a) would also have done
+```
+
+The theorem is proved either way — `type_check` runs on the finished term
+regardless — but the choice was not forced, and the reader deserves to know.
+
+A hole that no reading can satisfy is reported rather than left tentative, so
+postponement can cost an error message, never a false theorem.
 
 Checking is bidirectional: the expected type is pushed inwards through the
 lambdas rather than compared at the top. Inside the binders both sides are
@@ -297,7 +322,7 @@ lexes the subset and `rosettamath.unescape` handles `\text{}` content.
 
 ```sh
 make proofs              # check the theorems
-python3 lean4.py --selftest      # 90 kernel, elaborator and front-end checks
+python3 lean4.py --selftest      # 103 kernel, elaborator and front-end checks
 python3 lean4.py --non-strict    # report failures instead of raising
 ```
 

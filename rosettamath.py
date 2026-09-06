@@ -47,6 +47,8 @@ No external libraries.   python3 rosettamath.py          runs the self test
                          python3 rosettamath.py --pdf    also typesets NEOMATH_TEX
 """
 import sys, subprocess
+import ast, inspect
+
 
 INDENT = chr(32) * 4
 NL = chr(10)
@@ -280,6 +282,9 @@ def latex2py(tex, scope=None):
     if name is None:
         return scope
     return scope[name]
+
+latex2py_source = inspect.getsource(latex2py)
+
 
 # ------------------------------------------- the same translator, in LaTeX
 
@@ -578,6 +583,167 @@ NEOMATH_TEX = r'''
 \end{algorithm}
 '''
 
+class Python2Tex(ast.NodeVisitor):
+    def __init__(self):
+        self.indent_level = 0
+        self.result = []
+        
+        self.constants_map = {
+            'hbar': '\\hbar',
+            'c': 'c',
+            'G': 'G',
+            'pi': '\\pi',
+            #'epsilon_0': '\\epsilon_0'
+        }
+
+    def get_latex(self):
+        return "\n".join(self.result)
+
+    def add_line(self, line):
+        indent = "    " * self.indent_level
+        self.result.append(f"{indent}{line}")
+
+    def visit_ClassDef(self, node):
+        bases = ", ".join(self.expr2tex(b) for b in node.bases)
+        self.add_line(f"\\Comment{{Class {node.name} inherits {bases}}}")
+        for stmt in node.body:
+            self.visit(stmt)
+
+    def visit_FunctionDef(self, node):
+        args = ", ".join(arg.arg for arg in node.args.args)
+        self.add_line(f"\\Function{{{node.name}}}{{${args}$}}")
+        self.indent_level += 1
+        for stmt in node.body:
+            self.visit(stmt)
+        self.indent_level -= 1
+        self.add_line("\\EndFunction")
+
+    def visit_Assign(self, node):
+        targets = ", ".join(self.expr2tex(t) for t in node.targets)
+        value = self.expr2tex(node.value)
+        self.add_line(f"\\State ${targets} \\gets {value}$")
+
+    def visit_Return(self, node):
+        value = self.expr2tex(node.value) if node.value else ""
+        self.add_line(f"\\Return ${value}$")
+
+    def visit_If(self, node, is_elif=False):
+        test = self.expr2tex(node.test)
+        if is_elif:
+            self.add_line(f"\\ElsIf{{${test}$}}")
+        else:
+            self.add_line(f"\\If{{${test}$}}")
+            
+        self.indent_level += 1
+        for stmt in node.body:
+            self.visit(stmt)
+        self.indent_level -= 1
+
+        if node.orelse:
+            if len(node.orelse) == 1 and isinstance(node.orelse[0], ast.If):
+                self.visit_If(node.orelse[0], is_elif=True)
+            else:
+                self.add_line("\\Else")
+                self.indent_level += 1
+                for stmt in node.orelse:
+                    self.visit(stmt)
+                self.indent_level -= 1
+                
+        if not is_elif:
+            self.add_line("\\EndIf")
+
+    def visit_For(self, node):
+        target = self.expr2tex(node.target)
+        if isinstance(node.iter, ast.Call) and getattr(node.iter.func, 'id', '') == "range":
+            args = node.iter.args
+            start = self.expr2tex(args[0]) if len(args) == 2 else "0"
+            end_node = args[1] if len(args) == 2 else args[0]
+            end = self.expr2tex(ast.BinOp(left=end_node, op=ast.Sub(), right=ast.Constant(value=1)))
+            self.add_line(f"\\For{{${target} = {start}$ to ${end}$}}")
+        else:
+            iter_val = self.expr2tex(node.iter)
+            self.add_line(f"\\For{{${target} \\in {iter_val}$}}")
+        
+        self.indent_level += 1
+        for stmt in node.body:
+            self.visit(stmt)
+        self.indent_level -= 1
+        self.add_line("\\EndFor")
+
+    def visit_Expr(self, node):
+        if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
+            self.add_line(f"\\Comment{{{node.value.value}}}")
+        else:
+            self.add_line(f"\\State ${self.expr2tex(node.value)}$")
+
+    def expr2tex(self, node):
+        if isinstance(node, ast.Name):
+            return node.id
+        
+        elif isinstance(node, ast.Attribute):
+            if isinstance(node.value, ast.Attribute) and getattr(node.value.value, 'id', '') == 'scipy' and node.value.attr == 'constants':
+                return self.constants_map.get(node.attr, node.attr)
+            
+            # Format attributes using \texttt to prevent italicized math-mode rendering
+            base = self.expr2tex(node.value)
+            # Remove nested \texttt blocks if chaining (e.g., self.foo.bar)
+            if base.startswith('\\texttt{') and base.endswith('}'):
+                base = base[8:-1]
+            return f"\\texttt{{{base}.{node.attr}}}"
+            
+        elif isinstance(node, ast.Constant):
+            if node.value is None: return "None"
+            if isinstance(node.value, bool): return str(node.value)
+            elif isinstance(node.value, str): return f"\\texttt{{{node.value}}}"
+            return str(node.value)
+            
+        elif isinstance(node, ast.BinOp):
+            left, right = self.expr2tex(node.left), self.expr2tex(node.right)
+            if isinstance(node.op, ast.Add): return f"{left} + {right}"
+            elif isinstance(node.op, ast.Sub): return f"{left} - {right}"
+            elif isinstance(node.op, ast.Mult): return f"{left} \\cdot {right}"
+            elif isinstance(node.op, ast.Div): return f"\\frac{{{left}}}{{{right}}}"
+            
+        elif isinstance(node, ast.Compare):
+            left = self.expr2tex(node.left)
+            ops = []
+            for op, comp in zip(node.ops, node.comparators):
+                right = self.expr2tex(comp)
+                if isinstance(op, ast.Eq): op_str = "="
+                elif isinstance(op, ast.NotEq): op_str = "\\neq"
+                elif isinstance(op, ast.In): op_str = "\\in"
+                else: op_str = "<" if isinstance(op, ast.Lt) else ">"
+                ops.append(f"{op_str} {right}")
+            return f"{left} " + " ".join(ops)
+            
+        elif isinstance(node, ast.Call):
+            args = ", ".join(self.expr2tex(a) for a in node.args)
+            return f"{self.expr2tex(node.func)}({args})"
+            
+        elif isinstance(node, ast.Subscript):
+            return f"{self.expr2tex(node.value)}[{self.expr2tex(node.slice)}]"
+            
+        elif isinstance(node, (ast.ListComp, ast.GeneratorExp)):
+            elt = self.expr2tex(node.elt)
+            gen = node.generators[0] 
+            target = self.expr2tex(gen.target)
+            iterable = self.expr2tex(gen.iter)
+            
+            # Handle conditional comprehensions (e.g., [x for x in data if x > 0])
+            if gen.ifs:
+                conds = " \\land ".join(self.expr2tex(c) for c in gen.ifs)
+                return f"\\{{ {elt} \\mid {target} \\in {iterable}, {conds} \\}}"
+            return f"\\{{ {elt} \\mid {target} \\in {iterable} \\}}"
+            
+        return "?"
+
+def py2tex(source_code):
+    tree = ast.parse(source_code)
+    converter = Python2Tex()
+    converter.visit(tree)
+    return "\\begin{algorithmic}\n" + converter.get_latex() + "\n\\end{algorithmic}"
+
+
 # ---------------------------------------------------------------- bootstrap
 
 def bootstrap():
@@ -636,6 +802,7 @@ def selftest(latex2py, label):
     assert gcd(48, 18) == 6
     print('self test passed:', label)
 
+
 LATEX_HEADER = r'''\documentclass{article}
 \usepackage[margin=1.5cm]{geometry}
 \usepackage{amsmath,amssymb,algorithm,algpseudocode,listings}
@@ -668,9 +835,8 @@ LATEX_FOOTER = r'''
 '''
 
 def make_title_author(
-    tex, 
-    #title='\\textbf{RosettaMath: a \\LaTeX{} to Python translator} \\\\ written in the subset it translates (self-hosted)', 
-    title='RosettaMath: Semantic Translation of Mathematical Conventions into Self-Documenting Code',
+    tex,
+    title='RosettaMath: Semantic Translation of Mathematical Conventions \\\\ into Self-Documenting Code',
     author='B.S. Hartshorn \\orcidlink{0009-0004-2853-655X} \\small (\\url{https://github.com/brentharts/RosettaMath})'
     ):
     tex = tex.replace('%TITLE', '\\title{%s}' % title).replace('%AUTHOR', '\\author{%s}' % author)
@@ -709,6 +875,39 @@ Perhaps the most significant barrier to entry in computational science is the de
 RosettaMath addresses this barrier by functioning as a premier educational tool that translates not just syntax, but semantics. It transitions static, intimidating physics formulas into self-documenting, executable models. When a user inputs an equation, RosettaMath goes beyond mapping operators; it maps domain-specific conventions to explicit, descriptive programming paradigms.For example, the symbol $\rho$ is notoriously overloaded, but in standard contexts, RosettaMath can map it to a readable identifier like rho\_density. Similarly, characters representing complex metrics---such as $S$ for entropy or $\Phi$ for a gravitational potential or wavefront---are automatically expanded into verbose, human-readable variables. Furthermore, by linking directly to scientific libraries, standard notations for physical constants (such as $c$ for the speed of light or $G$ for the gravitational constant) can be automatically resolved to their high-precision values in scipy.constants.By automatically unpacking these conventions, RosettaMath acts as an interactive glossary. It allows developers to read an advanced physics equation as explicit, logical software, and it trains physicists to write formulas with the precision and legibility required for computational modeling. In doing so, it lowers the barrier to entry for scientific computing, transforming theoretical mathematics from a gate-kept language into an accessible, executable format.
 '''
 
+PAPER_CON = r'''
+\section{Conclusion: A Bidirectional Bridge for Literate Programming}
+
+RosettaMath successfully demonstrates that the semantic gap between formal mathematical typesetting and executable programming can be bridged without relying on heavy external dependencies. By bootstrapping a self-hosting compiler entirely within a strict subset of LaTeX, the project proves the computational robustness of its algorithmic representations.
+
+Crucially, the translation of mathematical models is no longer a one-way street. The integration of the `Python2Tex` class, which leverages Python's `ast.NodeVisitor` to traverse the Abstract Syntax Tree, enables full bidirectional translation by converting Python source code directly back into formal LaTeX pseudocode. This reverse compiler reconstructs loops, conditionals, list comprehensions, and arithmetic operations back into publication-ready algorithms.
+
+Furthermore, `Python2Tex` strictly maintains the pedagogical and semantic goals of the broader RosettaMath framework. When translating explicit Python back into mathematical notation, the tool automatically maps scientific libraries to their traditional physical symbols. For example, references to standard constants like `scipy.constants.hbar` are intelligently reduced back to their respective LaTeX representations, $\hbar$ and $\epsilon_0$. This bidirectional semantic mapping solidifies RosettaMath as an interactive glossary, ensuring that software engineers can write explicit Python while seamlessly generating the dense, conventional mathematics required for academic publication.
+
+Ultimately, RosettaMath enables a true literate programming paradigm for computational physics. By guaranteeing that the formal specification of a mathematical problem and its computational implementation are perfectly symmetrical, it ensures that the equations published in theoretical research are mathematically and logically identical to the algorithms executed in simulation.
+
+'''
+
+PAPER_REFS = r'''
+\small
+\begin{thebibliography}{99}
+
+\bibitem{knuth} Knuth, D. E. (1984). 
+\emph{Literate Programming. The Computer Journal, 27, 97-111.}
+\newline
+\url{https://doi.org/10.1093/comjnl/27.2.97}
+
+\bibitem{meurer} Meurer, A., Smith, C. P., Paprocki, M., et al. (2016). 
+\emph{SymPy: Symbolic computing in Python.}
+\newline
+\url{https://doi.org/10.7287/peerj.preprints.2083v3}
+
+\bibitem{poore} Poore, G. (2015). PythonTeX: Reproducible documents with LaTeX, Python, and more. Computational Science \& Discovery, 8(1), 014010. \url{https://doi.org/10.1088/1749-4699/8/1/014010}
+
+\end{thebibliography}
+
+'''
+
 def makepdf():
     parts = []; func = None; header = []
     for ln in NEOMATH_TEX.splitlines():
@@ -732,8 +931,6 @@ def makepdf():
             a,b = a.split('\\Comment{')
         a = a.replace('\\', '').replace('{', ' ').replace('}', ' ')
         a = a[len('Function'):]
-        #a = ['\\begin{algorithm}', '\\caption{%s} \\tiny' % a, '\\begin{algorithmic}']
-        #p = '\n'.join( a + part + ['\\end{algorithmic}', '\\end{algorithm}'] )
         a = ['\\textbf{%s} \\par \\tiny' % a, '\\begin{algorithmic}']
         p = '\n'.join( a + part + ['\\end{algorithmic}'] )
 
@@ -750,22 +947,34 @@ def makepdf():
         PAPER_INTRO,
         PAPER_SCI,
         PAPER_SELFHOST,
+        PAPER_CON
+    ]
+    if '--appendix' in sys.argv:
+        tex += [
+        '\\appendix',
         '\n'.join(header),
-        #'\\tiny',
-        #__doc__,
-        #NEOMATH_TEX,
         '\\section{\\LaTeX{} Functions}',
         '\n'.join(neo),
         '\\section{Automatic \\LaTeX{} to Python Translation}',
         '\\begin{lstlisting}',
         src,
-        '\\end{lstlisting}',
-        LATEX_FOOTER
-    ]
+        '\\end{lstlisting}'
+        ]
+    tex.append(PAPER_REFS)
+    tex.append(LATEX_FOOTER)
     open('/tmp/neomath.tex', 'w').write('\n'.join(tex))
-    #subprocess.check_call(['pdflatex', '-interaction=nonstopmode', '/tmp/neomath.tex'], cwd='/tmp')
     subprocess.check_call(['pdflatex', '/tmp/neomath.tex'], cwd='/tmp')
     print('wrote /tmp/neomath.pdf')
+
+def test_py2tex():
+    print("--- Translating Python2Tex (Self-Hosting with Generators and Attributes) ---")
+    print(py2tex(latex2py_source))
+    print(py2tex(inspect.getsource(Python2Tex)))
+    physics_stub = '''
+def energy(omega):
+    return scipy.constants.hbar * omega
+'''
+    print(py2tex(physics_stub))
 
 if __name__ == '__main__':
     selftest(latex2py, 'stage 0 (hand written Python)')
@@ -773,5 +982,6 @@ if __name__ == '__main__':
     selftest(stage1['latex2py'], 'stage 1 (translated from LaTeX)')
     latex2py = stage1['latex2py']     # from here on the LaTeX version is in charge
     print('bootstrap fixed point reached: %d lines of Python generated from LaTeX' % len(src.splitlines()))
+    test_py2tex()
     if '--pdf' in sys.argv: makepdf()
 

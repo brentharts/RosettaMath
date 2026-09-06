@@ -1,4 +1,24 @@
-# lean4.py - Version 0.1: The Micro-Kernel
+# lean4.py - Version 0.2: The Micro-Kernel
+import ast
+import inspect
+
+__doc__ = r'''
+The lean4.py Micro-Kernel:
+a mathematical engine capable of understanding that a function takes an argument of type $A$ and returns something of type $B$. This is the Calculus of Constructions (CoC), the foundation of Lean, Coq, and dependent type theory.  Inspired by:
+ https://github.com/leanprover/lean4
+ https://xenaproject.wordpress.com/2019/02/11/lean-in-latex/
+
+LaTeX Native:
+By treating LaTeX not as an output format (like the Xena project did), but as an input language, you are essentially creating a literate programming environment where mathematics and Python code live together seamlessly.
+
+Modern Lean 4 is a massive, heavily engineered beast:
+While its scale is necessary for verifying complex modern mathematics (like the Liquid Tensor Experiment), it is fundamentally overkill because our goal is just to have a lightweight, hackable engine to play with dependent types, Python code verification, and LaTeX formatting.
+
+The Xena Project blog post (above) highlights a crucial idea: making formal proofs readable to humans by bridging Lean and LaTeX/HTML. Patrick Massot’s format_lean tool took Lean code and rendered the "tactic state" (the step-by-step logic) into a beautiful, mathematician-friendly format.
+
+We propose flipping that bridge: Using a subset of LaTeX as the input language to write proofs about Python code, powered by a minimalist Python-based theorem prover.
+
+'''
 
 class Expr:
     """Base class for all logical expressions."""
@@ -21,7 +41,7 @@ class Var(Expr):
         return self.name
 
 class Pi(Expr):
-    """Dependent function type: \forall (x : A), B"""
+    """Dependent function type: \\forall (x : A), B"""
     def __init__(self, var_name, var_type, body):
         self.var_name = var_name
         self.var_type = var_type
@@ -30,7 +50,7 @@ class Pi(Expr):
         return f"(∀ {self.var_name} : {self.var_type}, {self.body})"
 
 class Lambda(Expr):
-    """Anonymous function: \x : A => body"""
+    """Anonymous function: \\x : A => body"""
     def __init__(self, var_name, var_type, body):
         self.var_name = var_name
         self.var_type = var_type
@@ -118,6 +138,88 @@ def type_check(ctx: dict, expr: Expr) -> Expr:
 
     raise TypeError(f"Cannot typecheck: {expr}")
 
+
+
+# --- Python AST to Lean Kernel Bridge ---
+
+class PythonToLean(ast.NodeVisitor):
+    """Compiles Python AST nodes into Lean Kernel Expressions."""
+    
+    def visit_FunctionDef(self, node: ast.FunctionDef) -> Expr:
+        # For our micro-kernel, we assume the function body is a single return statement
+        if len(node.body) != 1 or not isinstance(node.body[0], ast.Return):
+            raise NotImplementedError("Currently only single 'return' statements are supported.")
+        
+        # Parse the return value
+        body_expr = self.visit(node.body[0].value)
+        
+        # Build the lambdas from the arguments (right to left)
+        expr = body_expr
+        for arg in reversed(node.args.args):
+            arg_name = arg.arg
+            # If there's a type hint (e.g., x: Nat), use it. Otherwise default to a base Type.
+            if arg.annotation and isinstance(arg.annotation, ast.Name):
+                arg_type = Var(arg.annotation.id)
+            else:
+                arg_type = Universe(0) 
+            
+            expr = Lambda(arg_name, arg_type, expr)
+            
+        return expr
+
+    def visit_Name(self, node: ast.Name) -> Expr:
+        """Variables like 'x' become Var('x')"""
+        return Var(node.id)
+
+    def generic_visit(self, node):
+        raise SyntaxError(f"Unsupported Python syntax for theorem prover: {type(node).__name__}")
+
+def compile_python_to_lean(func) -> Expr:
+    """Takes a Python function and returns its Lean Kernel representation."""
+    source = inspect.getsource(func)
+    # Dedent in case the function is defined inside another block
+    import textwrap
+    source = textwrap.dedent(source)
+    
+    tree = ast.parse(source)
+    # The root is a Module, the first body item is the FunctionDef
+    translator = PythonToLean()
+    return translator.visit(tree.body[0])
+
+# --- The Decorator ---
+
+# A global logical environment for our theorems
+GLOBAL_ENV = {
+    "Nat": Universe(0),
+    "Prop": Universe(0)
+}
+
+def theorem(latex_statement: str):
+    """
+    Decorator to verify a Python function against a logical statement.
+    """
+    def decorator(func):
+        print(f"\n--- Checking Theorem: {func.__name__} ---")
+        print(f"LaTeX Statement: {latex_statement}")
+        
+        try:
+            # 1. Compile Python to Lean AST
+            lean_expr = compile_python_to_lean(func)
+            print(f"Compiled Kernel Expr: {lean_expr}")
+            
+            # 2. Type-check the expression
+            expr_type = type_check(GLOBAL_ENV, lean_expr)
+            print(f"Inferred Type: {expr_type}")
+            
+            # (Future step: verify the inferred type matches the latex_statement)
+            
+            print("Status: VALID (Type Checks)")
+        except Exception as e:
+            print(f"Status: FAILED - {e}")
+            
+        return func
+    return decorator
+
 # --- Test the Engine ---
 if __name__ == "__main__":
     print("--- Lean4 Micro-Kernel Initialized ---")
@@ -147,3 +249,14 @@ if __name__ == "__main__":
     print(f"\nExpression: {app2}")
     print(f"Evaluates to: {normalize(app2)}")
     print(f"Typechecks as: {type_check(environment, app2)}")
+    
+    print("\n\n=== Testing the Python Bridge ===")
+
+    # We use a dummy LaTeX string for now until we connect the LaTeX parser
+    @theorem(r"\forall x \in \text{Nat}, x = x")
+    def identity_function(x: 'Nat'):
+        return x
+
+    @theorem(r"\text{Shows that returning an undeclared variable fails}")
+    def faulty_function(x: 'Nat'):
+        return y

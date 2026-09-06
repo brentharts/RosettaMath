@@ -39,6 +39,22 @@ nearly one-to-one with Python.  Everything not listed is ignored (\begin,
       $f(x) = \begin{cases} a & \text{if } c \\ .. \end{cases}$
                                                def f(x): if c: return a ..
 
+Reverse direction
+-----------------
+Python2Tex walks a Python AST back into algpseudocode.  It is plain Python and
+not part of the bootstrap, so unlike everything above it exists only once.
+
+Two rules make the output survive the journey back through tex2py:
+precedence is made explicit with parentheses, because a tree knows that
+$(a+b)\cdot c$ groups and a flat string does not; and Python keywords step
+outside math mode, because inside $...$ a space between two names is implicit
+multiplication, so "x is None" would come back as x*is*None.  Writing
+$x$ is $None$ puts the keyword in a text segment instead.
+
+Anything the subset cannot express is reported as a \Comment and collected in
+a warnings list, never dropped in silence.  roundtrip_test() checks the whole
+thing by behaviour rather than by eye.
+
 Bootstrap
 ---------
 The translator exists twice: in plain Python (stage 0, below) and in the
@@ -755,17 +771,74 @@ NEOMATH_TEX = r'''
 \end{algorithm}
 '''
 
+# ---------------------------------------------------------------- Python2Tex
+#
+# The reverse direction.  Unlike the translator above this is plain Python
+# only: it is not part of the bootstrap, so it need not exist twice.
+
+# The inverse of unescape(), so a string constant survives the round trip.
+LATEX_ESCAPES = {
+    '\\': '\\textbackslash ', '{': '\\{', '}': '\\}', '_': '\\_',
+    '$': '\\$', '%': '\\%', '&': '\\&', '#': '\\#',
+    '^': '\\^{}', '~': '\\~{}',
+}
+
+def escape(s):
+    out = ''
+    for ch in s:
+        out += LATEX_ESCAPES.get(ch, ch)
+    return out
+
+# operator -> (LaTeX, Python precedence).  Division and exponentiation are
+# handled separately because they change shape rather than just spelling.
+BINOPS = {
+    ast.Add: ('+', 9), ast.Sub: ('-', 9),
+    ast.Mult: ('\\cdot', 10), ast.Mod: ('\\%', 10),
+    ast.FloorDiv: ('//', 10), ast.MatMult: ('@', 10),
+}
+CMPOPS = {
+    ast.Eq: '=', ast.NotEq: '\\neq', ast.Lt: '<', ast.LtE: '\\leq',
+    ast.Gt: '>', ast.GtE: '\\geq', ast.In: '\\in', ast.NotIn: '\\notin',
+}
+P_LAMBDA, P_IFEXP, P_OR, P_AND, P_NOT = 0.2, 0.4, 1, 2, 3
+P_CMP, P_ADD, P_MUL, P_UNARY, P_POW, P_ATOM = 4, 9, 10, 11, 12, 100
+
 class Python2Tex(ast.NodeVisitor):
-    def __init__(self):
+    r"""Python source -> algpseudocode, the reverse of tex2py.
+
+    Two rules govern the output.
+
+    Precedence is explicit.  The tree knows that $(a+b)\cdot c$ groups, but a
+    flat string does not, so every operand that binds more loosely than its
+    parent is parenthesised on the way out.
+
+    Python keywords leave math mode.  Inside $...$ a space between two names is
+    implicit multiplication, so "x is None" would translate back as x*is*None.
+    Emitting $x$ is $None$ instead puts the keyword in a text segment, which
+    state2py passes through untouched -- the same trick the hand-written LaTeX
+    in NEOMATH_TEX uses.
+
+    Anything the subset cannot express is reported as a \Comment and recorded
+    in self.warnings, never dropped in silence.
+    """
+
+    def __init__(self, display=False):
         self.indent_level = 0
         self.result = []
-        
+        self.warnings = []
+        # set-builder notation reads better in a paper but cannot be read back,
+        # so it is opt-in
+        self.display = display
+
         self.constants_map = {
             'hbar': '\\hbar',
             'c': 'c',
             'G': 'G',
             'pi': '\\pi',
-            #'epsilon_0': '\\epsilon_0'
+            'epsilon_0': '\\epsilon_0',
+            'mu_0': '\\mu_0',
+            'k': 'k_B',
+            'N_A': 'N_A',
         }
 
     def get_latex(self):
@@ -775,29 +848,125 @@ class Python2Tex(ast.NodeVisitor):
         indent = "    " * self.indent_level
         self.result.append(f"{indent}{line}")
 
+    def warn(self, message):
+        """Record a gap and make it visible in the output."""
+        self.warnings.append(message)
+        self.comment(message)
+
+    def comment(self, text):
+        r"""A standalone note.
+
+        \Comment is an attachment in algpseudocode, not a line of its own, so it
+        is hung off a \State or LaTeX complains about a missing \item.  And
+        since tex2py reads one line at a time, the text must not wrap.
+        """
+        self.add_line("\\State \\Comment{" + escape(" ".join(text.split())) + "}")
+
+    def text(self, s):
+        r"""Step outside math mode, so a Python keyword survives math2py."""
+        return f"${s}$"
+
+    def name(self, s):
+        r"""An identifier in math mode.
+
+        A bare underscore is a subscript, so __name__ is a double subscript and
+        LaTeX refuses it; and indent_level would silently render as indent
+        followed by a subscripted l.  OPS maps \_ back to _, so escaping keeps
+        both the typesetting and the round trip honest.
+        """
+        return s.replace('_', '\\_')
+
+    def body(self, statements):
+        self.indent_level += 1
+        for stmt in statements:
+            self.visit(stmt)
+        self.indent_level -= 1
+
+    # ------------------------------------------------------------ statements
+
+    def visit_Module(self, node):
+        for stmt in node.body:
+            self.visit(stmt)
+
     def visit_ClassDef(self, node):
         bases = ", ".join(self.expr2tex(b) for b in node.bases)
-        self.add_line(f"\\Comment{{Class {node.name} inherits {bases}}}")
+        self.comment(f"Class {node.name} inherits {bases}")
+        for d in node.decorator_list:
+            self.warn(f"decorator on class {node.name} is not represented")
         for stmt in node.body:
             self.visit(stmt)
 
     def visit_FunctionDef(self, node):
-        args = ", ".join(arg.arg for arg in node.args.args)
-        self.add_line(f"\\Function{{{node.name}}}{{${args}$}}")
-        self.indent_level += 1
-        for stmt in node.body:
-            self.visit(stmt)
-        self.indent_level -= 1
+        for d in node.decorator_list:
+            self.warn(f"decorator on {node.name} is not represented")
+        self.add_line(f"\\Function{{{escape(node.name)}}}{{${self.params(node.args)}$}}")
+        self.body(node.body)
         self.add_line("\\EndFunction")
 
+    visit_AsyncFunctionDef = visit_FunctionDef
+
+    def params(self, a):
+        """An argument list, with defaults written as \\gets."""
+        names = [self.name(arg.arg) for arg in a.posonlyargs + a.args]
+        defaults = list(a.defaults)
+        pad = [None] * (len(names) - len(defaults))
+        parts = []
+        for name, default in zip(names, pad + defaults):
+            if default is None:
+                parts.append(name)
+            else:
+                parts.append(f"{name} \\gets {self.expr2tex(default)}")
+        if a.vararg:
+            parts.append("*" + self.name(a.vararg.arg))
+        for arg, default in zip(a.kwonlyargs, a.kw_defaults):
+            parts.append(self.name(arg.arg) if default is None
+                         else f"{self.name(arg.arg)} \\gets {self.expr2tex(default)}")
+        if a.kwarg:
+            parts.append("**" + self.name(a.kwarg.arg))
+        return ", ".join(parts)
+
     def visit_Assign(self, node):
-        targets = ", ".join(self.expr2tex(t) for t in node.targets)
+        # a = b = 1 is a chain, not a tuple: join the targets with \gets
+        targets = " \\gets ".join(self.expr2tex(t) for t in node.targets)
         value = self.expr2tex(node.value)
+        if isinstance(node.value, ast.IfExp):
+            return self.expand_ifexp(node.value, lambda v: f"{targets} \\gets {v}")
         self.add_line(f"\\State ${targets} \\gets {value}$")
 
+    def visit_AnnAssign(self, node):
+        if node.value is None:
+            return self.warn("bare type annotation carries no value")
+        target = self.expr2tex(node.target)
+        self.add_line(f"\\State ${target} \\gets {self.expr2tex(node.value)}$")
+
+    def visit_AugAssign(self, node):
+        """x += 1 is written out in full, the way mathematics would."""
+        target = self.expr2tex(node.target)
+        expanded = ast.BinOp(left=node.target, op=node.op, right=node.value)
+        self.add_line(f"\\State ${target} \\gets {self.expr2tex(expanded)}$")
+
     def visit_Return(self, node):
+        if isinstance(node.value, ast.IfExp):
+            return self.expand_ifexp(node.value, None)
         value = self.expr2tex(node.value) if node.value else ""
         self.add_line(f"\\Return ${value}$")
+
+    def expand_ifexp(self, node, assign):
+        """x = a if c else b becomes a real branch: clearer, and it reads back."""
+        self.add_line(f"\\If{{${self.expr2tex(node.test)}$}}")
+        self.indent_level += 1
+        for branch in (node.body, node.orelse):
+            value = self.expr2tex(branch)
+            if assign is None:
+                self.add_line(f"\\Return ${value}$")
+            else:
+                self.add_line(f"\\State ${assign(value)}$")
+            if branch is node.body:
+                self.indent_level -= 1
+                self.add_line("\\Else")
+                self.indent_level += 1
+        self.indent_level -= 1
+        self.add_line("\\EndIf")
 
     def visit_If(self, node, is_elif=False):
         test = self.expr2tex(node.test)
@@ -805,28 +974,25 @@ class Python2Tex(ast.NodeVisitor):
             self.add_line(f"\\ElsIf{{${test}$}}")
         else:
             self.add_line(f"\\If{{${test}$}}")
-            
-        self.indent_level += 1
-        for stmt in node.body:
-            self.visit(stmt)
-        self.indent_level -= 1
+
+        self.body(node.body)
 
         if node.orelse:
             if len(node.orelse) == 1 and isinstance(node.orelse[0], ast.If):
                 self.visit_If(node.orelse[0], is_elif=True)
             else:
                 self.add_line("\\Else")
-                self.indent_level += 1
-                for stmt in node.orelse:
-                    self.visit(stmt)
-                self.indent_level -= 1
-                
+                self.body(node.orelse)
+
         if not is_elif:
             self.add_line("\\EndIf")
 
     def visit_For(self, node):
+        if node.orelse:
+            self.warn("for/else: the else branch is not represented")
         target = self.expr2tex(node.target)
-        if isinstance(node.iter, ast.Call) and getattr(node.iter.func, 'id', '') == "range":
+        if isinstance(node.iter, ast.Call) and getattr(node.iter.func, 'id', '') == "range" \
+                and len(node.iter.args) <= 2:
             args = node.iter.args
             start = self.expr2tex(args[0]) if len(args) == 2 else "0"
             end_node = args[1] if len(args) == 2 else args[0]
@@ -835,84 +1001,325 @@ class Python2Tex(ast.NodeVisitor):
         else:
             iter_val = self.expr2tex(node.iter)
             self.add_line(f"\\For{{${target} \\in {iter_val}$}}")
-        
-        self.indent_level += 1
+
+        self.body(node.body)
+        self.add_line("\\EndFor")
+
+    visit_AsyncFor = visit_For
+
+    def visit_While(self, node):
+        if node.orelse:
+            self.warn("while/else: the else branch is not represented")
+        self.add_line(f"\\While{{${self.expr2tex(node.test)}$}}")
+        self.body(node.body)
+        self.add_line("\\EndWhile")
+
+    def visit_Break(self, node):
+        self.add_line("\\State break")
+
+    def visit_Continue(self, node):
+        self.add_line("\\State continue")
+
+    def visit_Pass(self, node):
+        self.add_line("\\State pass")
+
+    def visit_Raise(self, node):
+        if node.cause:
+            self.warn("raise ... from ...: the cause is not represented")
+        exc = f" ${self.expr2tex(node.exc)}$" if node.exc else ""
+        self.add_line(f"\\State raise{exc}")
+
+    def visit_Assert(self, node):
+        msg = f", ${self.expr2tex(node.msg)}$" if node.msg else ""
+        self.add_line(f"\\State assert ${self.expr2tex(node.test)}${msg}")
+
+    def visit_Delete(self, node):
+        targets = ", ".join(self.expr2tex(t) for t in node.targets)
+        self.add_line(f"\\State del ${targets}$")
+
+    def visit_Global(self, node):
+        names = ", ".join(self.name(n) for n in node.names)
+        self.add_line(f"\\State global ${names}$")
+
+    def visit_Nonlocal(self, node):
+        names = ", ".join(self.name(n) for n in node.names)
+        self.add_line(f"\\State nonlocal ${names}$")
+
+    def visit_Import(self, node):
+        for alias in node.names:
+            tail = f" as ${self.name(alias.asname)}$" if alias.asname else ""
+            self.add_line(f"\\State import ${self.name(alias.name)}${tail}")
+
+    def visit_ImportFrom(self, node):
+        names = ", ".join(self.name(a.name)
+                          + (f"$ as ${self.name(a.asname)}" if a.asname else "")
+                          for a in node.names)
+        self.add_line(f"\\State from ${self.name(node.module or '')}$ import ${names}$")
+
+    def visit_With(self, node):
+        """No \\With in the subset, so the body is inlined and the fact noted."""
+        items = ", ".join(self.expr2tex(i.context_expr) for i in node.items)
+        self.warn("with-block inlined; the context manager is not represented")
+        self.comment(f"context: {items}")
         for stmt in node.body:
             self.visit(stmt)
-        self.indent_level -= 1
-        self.add_line("\\EndFor")
+
+    visit_AsyncWith = visit_With
+
+    def visit_Try(self, node):
+        self.warn("try-block inlined; exception handling is not represented")
+        for stmt in node.body:
+            self.visit(stmt)
+        for handler in node.handlers:
+            name = self.expr2tex(handler.type) if handler.type else "any"
+            self.comment(f"on failure ({name})")
+            for stmt in handler.body:
+                self.visit(stmt)
+        for stmt in node.finalbody:
+            self.visit(stmt)
 
     def visit_Expr(self, node):
         if isinstance(node.value, ast.Constant) and isinstance(node.value.value, str):
-            self.add_line(f"\\Comment{{{node.value.value}}}")
+            self.comment(node.value.value)
         else:
             self.add_line(f"\\State ${self.expr2tex(node.value)}$")
 
-    def expr2tex(self, node):
-        if isinstance(node, ast.Name):
-            return node.id
-        
-        elif isinstance(node, ast.Attribute):
-            if isinstance(node.value, ast.Attribute) and getattr(node.value.value, 'id', '') == 'scipy' and node.value.attr == 'constants':
-                return self.constants_map.get(node.attr, node.attr)
-            
-            # Format attributes using \texttt to prevent italicized math-mode rendering
-            base = self.expr2tex(node.value)
-            # Remove nested \texttt blocks if chaining (e.g., self.foo.bar)
-            if base.startswith('\\texttt{') and base.endswith('}'):
-                base = base[8:-1]
-            return f"\\texttt{{{base}.{node.attr}}}"
-            
-        elif isinstance(node, ast.Constant):
-            if node.value is None: return "None"
-            if isinstance(node.value, bool): return str(node.value)
-            elif isinstance(node.value, str): return f"\\texttt{{{node.value}}}"
-            return str(node.value)
-            
-        elif isinstance(node, ast.BinOp):
-            left, right = self.expr2tex(node.left), self.expr2tex(node.right)
-            if isinstance(node.op, ast.Add): return f"{left} + {right}"
-            elif isinstance(node.op, ast.Sub): return f"{left} - {right}"
-            elif isinstance(node.op, ast.Mult): return f"{left} \\cdot {right}"
-            elif isinstance(node.op, ast.Div): return f"\\frac{{{left}}}{{{right}}}"
-            
-        elif isinstance(node, ast.Compare):
-            left = self.expr2tex(node.left)
-            ops = []
-            for op, comp in zip(node.ops, node.comparators):
-                right = self.expr2tex(comp)
-                if isinstance(op, ast.Eq): op_str = "="
-                elif isinstance(op, ast.NotEq): op_str = "\\neq"
-                elif isinstance(op, ast.In): op_str = "\\in"
-                else: op_str = "<" if isinstance(op, ast.Lt) else ">"
-                ops.append(f"{op_str} {right}")
-            return f"{left} " + " ".join(ops)
-            
-        elif isinstance(node, ast.Call):
-            args = ", ".join(self.expr2tex(a) for a in node.args)
-            return f"{self.expr2tex(node.func)}({args})"
-            
-        elif isinstance(node, ast.Subscript):
-            return f"{self.expr2tex(node.value)}[{self.expr2tex(node.slice)}]"
-            
-        elif isinstance(node, (ast.ListComp, ast.GeneratorExp)):
-            elt = self.expr2tex(node.elt)
-            gen = node.generators[0] 
-            target = self.expr2tex(gen.target)
-            iterable = self.expr2tex(gen.iter)
-            
-            # Handle conditional comprehensions (e.g., [x for x in data if x > 0])
-            if gen.ifs:
-                conds = " \\land ".join(self.expr2tex(c) for c in gen.ifs)
-                return f"\\{{ {elt} \\mid {target} \\in {iterable}, {conds} \\}}"
-            return f"\\{{ {elt} \\mid {target} \\in {iterable} \\}}"
-            
-        return "?"
+    def generic_visit(self, node):
+        """Nothing disappears quietly: unknown statements say so."""
+        if isinstance(node, ast.stmt):
+            self.warn(f"unsupported statement: {type(node).__name__}")
+        else:
+            super().generic_visit(node)
 
-def py2tex(source_code):
+    # ----------------------------------------------------------- expressions
+
+    def paren(self, text, mine, ctx):
+        return f"({text})" if mine < ctx else text
+
+    def expr2tex(self, node, ctx=0):
+        if node is None:
+            return ""
+
+        if isinstance(node, ast.Name):
+            return self.name(node.id)
+
+        elif isinstance(node, ast.Attribute):
+            # scipy.constants.hbar is reduced to its conventional symbol
+            if isinstance(node.value, ast.Attribute) \
+                    and getattr(node.value.value, 'id', '') == 'scipy' \
+                    and node.value.attr == 'constants':
+                return self.constants_map.get(node.attr, node.attr)
+            # plain dotted access: \texttt would turn it into a string literal
+            return f"{self.expr2tex(node.value, P_ATOM)}.{self.name(node.attr)}"
+
+        elif isinstance(node, ast.Constant):
+            if node.value is None:
+                return "None"
+            if isinstance(node.value, bool):
+                return str(node.value)
+            if isinstance(node.value, str):
+                return self.string_literal(node.value, ctx)
+            if isinstance(node.value, complex):
+                return str(node.value)
+            return str(node.value)
+
+        elif isinstance(node, ast.BinOp):
+            op = type(node.op)
+            if op is ast.Div:
+                left = self.expr2tex(node.left)
+                right = self.expr2tex(node.right)
+                return self.paren(f"\\frac{{{left}}}{{{right}}}", P_MUL, ctx)
+            if op is ast.Pow:
+                left = self.expr2tex(node.left, P_POW + 1)
+                right = self.expr2tex(node.right, P_POW)
+                return self.paren(f"{left}^{{{right}}}", P_POW, ctx)
+            if op in BINOPS:
+                sym, prec = BINOPS[op]
+                left = self.expr2tex(node.left, prec)
+                right = self.expr2tex(node.right, prec + 1)
+                return self.paren(f"{left} {sym} {right}", prec, ctx)
+            self.warnings.append(f"unsupported operator: {op.__name__}")
+            return self.expr2tex(node.left)
+
+        elif isinstance(node, ast.UnaryOp):
+            op = type(node.op)
+            if op is ast.Not:
+                inner = self.expr2tex(node.operand, P_NOT)
+                return self.paren(f"\\lnot {inner}", P_NOT, ctx)
+            sym = {ast.USub: '-', ast.UAdd: '+', ast.Invert: '\\sim'}.get(op, '')
+            if op is ast.Invert:
+                sym = '~'                     # \sim is not in OPS; ~ passes through
+            inner = self.expr2tex(node.operand, P_UNARY)
+            return self.paren(f"{sym}{inner}", P_UNARY, ctx)
+
+        elif isinstance(node, ast.BoolOp):
+            sym, prec = ('\\land', P_AND) if isinstance(node.op, ast.And) \
+                else ('\\lor', P_OR)
+            parts = [self.expr2tex(v, prec + 1) for v in node.values]
+            return self.paren(f" {sym} ".join(parts), prec, ctx)
+
+        elif isinstance(node, ast.Compare):
+            out = self.expr2tex(node.left, P_CMP + 1)
+            for op, comp in zip(node.ops, node.comparators):
+                right = self.expr2tex(comp, P_CMP + 1)
+                kind = type(op)
+                if kind is ast.Is:
+                    out += self.text(" is ") + right
+                elif kind is ast.IsNot:
+                    out += self.text(" is not ") + right
+                elif kind in CMPOPS:
+                    out += f" {CMPOPS[kind]} {right}"
+                else:
+                    self.warnings.append(f"unsupported comparison: {kind.__name__}")
+                    out += f" = {right}"
+            return self.paren(out, P_CMP, ctx)
+
+        elif isinstance(node, ast.Call):
+            args = [self.expr2tex(a) for a in node.args]
+            for kw in node.keywords:
+                if kw.arg is None:
+                    args.append("**" + self.expr2tex(kw.value))
+                else:
+                    # \gets, not =, because = becomes == in math mode
+                    args.append(f"{self.name(kw.arg)} \\gets {self.expr2tex(kw.value)}")
+            return f"{self.expr2tex(node.func, P_ATOM)}({', '.join(args)})"
+
+        elif isinstance(node, ast.Subscript):
+            return f"{self.expr2tex(node.value, P_ATOM)}[{self.expr2tex(node.slice)}]"
+
+        elif isinstance(node, ast.Slice):
+            lower = self.expr2tex(node.lower) if node.lower else ""
+            upper = self.expr2tex(node.upper) if node.upper else ""
+            out = f"{lower}:{upper}"
+            if node.step:
+                out += f":{self.expr2tex(node.step)}"
+            return out
+
+        elif isinstance(node, ast.Starred):
+            return "*" + self.expr2tex(node.value, P_UNARY)
+
+        elif isinstance(node, ast.Tuple):
+            return "(" + ", ".join(self.expr2tex(e) for e in node.elts) + ")"
+
+        elif isinstance(node, ast.List):
+            return "[" + ", ".join(self.expr2tex(e) for e in node.elts) + "]"
+
+        elif isinstance(node, ast.Set):
+            return "\\{" + ", ".join(self.expr2tex(e) for e in node.elts) + "\\}"
+
+        elif isinstance(node, ast.Dict):
+            pairs = []
+            for k, v in zip(node.keys, node.values):
+                if k is None:
+                    pairs.append("**" + self.expr2tex(v))
+                else:
+                    pairs.append(f"{self.expr2tex(k)}: {self.expr2tex(v)}")
+            return "\\{" + ", ".join(pairs) + "\\}"
+
+        elif isinstance(node, ast.IfExp):
+            body = self.expr2tex(node.body, P_IFEXP + 1)
+            test = self.expr2tex(node.test, P_IFEXP + 1)
+            orelse = self.expr2tex(node.orelse, P_IFEXP)
+            out = body + self.text(" if ") + test + self.text(" else ") + orelse
+            return self.paren(out, P_IFEXP, ctx)
+
+        elif isinstance(node, ast.Lambda):
+            out = self.text("lambda ") + f"{self.params(node.args)}: " \
+                + self.expr2tex(node.body)
+            return self.paren(out, P_LAMBDA, ctx)
+
+        elif isinstance(node, ast.JoinedStr):
+            # an f-string is a concatenation; writing it as one reads back
+            parts = []
+            for piece in node.values:
+                if isinstance(piece, ast.Constant):
+                    parts.append(f"\\texttt{{{escape(str(piece.value))}}}")
+                elif isinstance(piece, ast.FormattedValue):
+                    inner = self.expr2tex(piece.format_spec.values[0]) \
+                        if piece.format_spec else None
+                    if inner is not None:
+                        parts.append(f"format({self.expr2tex(piece.value)}, {inner})")
+                    else:
+                        parts.append(f"str({self.expr2tex(piece.value)})")
+            return self.paren(" + ".join(parts) if parts else "\\texttt{}",
+                              P_ADD, ctx)
+
+        elif isinstance(node, (ast.ListComp, ast.SetComp, ast.GeneratorExp,
+                               ast.DictComp)):
+            return self.comprehension(node, ctx)
+
+        elif isinstance(node, ast.NamedExpr):
+            self.warnings.append("walrus operator rewritten as assignment")
+            return f"{self.expr2tex(node.target)} \\gets {self.expr2tex(node.value)}"
+
+        self.warnings.append(f"unsupported expression: {type(node).__name__}")
+        return f"\\texttt{{{escape(type(node).__name__)}}}"
+
+    def string_literal(self, value, ctx=0):
+        r"""A string constant.
+
+        \texttt cannot hold a newline -- the LaTeX would not compile and tex2py
+        reads line by line -- so control characters are lifted out as chr()
+        calls, which costs nothing and still reads back exactly.
+        """
+        parts = []
+        buf = ''
+        for ch in value:
+            if ord(ch) < 32:
+                parts.append("\\texttt{" + escape(buf) + "}")
+                parts.append(f"chr({ord(ch)})")
+                buf = ''
+            else:
+                buf += ch
+        parts.append("\\texttt{" + escape(buf) + "}")
+        if len(parts) > 1:
+            parts = [p for p in parts if p != "\\texttt{}"] or ["\\texttt{}"]
+        if len(parts) == 1:
+            return parts[0]
+        return self.paren(" + ".join(parts), P_ADD, ctx)
+
+    def comprehension(self, node, ctx=0):
+        """Comprehensions, either as set-builder or in a form that reads back."""
+        if isinstance(node, ast.DictComp):
+            elt = f"{self.expr2tex(node.key)}: {self.expr2tex(node.value)}"
+        else:
+            elt = self.expr2tex(node.elt)
+
+        if self.display:
+            # set-builder: correct mathematics, but \mid is not an OPS operator
+            # so this direction is one-way
+            gen = node.generators[0]
+            out = (f"{elt} \\mid {self.expr2tex(gen.target)} \\in "
+                   f"{self.expr2tex(gen.iter)}")
+            if gen.ifs:
+                out += ", " + " \\land ".join(self.expr2tex(c) for c in gen.ifs)
+            body = out
+        else:
+            body = elt
+            for gen in node.generators:
+                body += (self.text(" for ") + self.expr2tex(gen.target)
+                         + f" \\in {self.expr2tex(gen.iter, P_CMP + 1)}")
+                for cond in gen.ifs:
+                    body += self.text(" if ") + self.expr2tex(cond, P_CMP + 1)
+
+        if isinstance(node, ast.ListComp):
+            return f"[{body}]"
+        if isinstance(node, ast.GeneratorExp):
+            return f"({body})"
+        return "\\{" + body + "\\}"
+
+def py2tex(source_code, display=False, warnings=None):
+    """Python source -> an algorithmic block.
+
+    display=True switches comprehensions to set-builder notation, which reads
+    better on paper but cannot be translated back.  Anything the subset cannot
+    express is appended to warnings, if a list is given.
+    """
     tree = ast.parse(source_code)
-    converter = Python2Tex()
+    converter = Python2Tex(display=display)
     converter.visit(tree)
+    if warnings is not None:
+        warnings.extend(converter.warnings)
     return "\\begin{algorithmic}\n" + converter.get_latex() + "\n\\end{algorithmic}"
 
 
@@ -1167,7 +1574,87 @@ def makepdf():
     subprocess.check_call(['pdflatex', '/tmp/neomath.tex'], cwd='/tmp')
     print('wrote /tmp/neomath.pdf')
 
+# (source, argument sets) -- the reverse translation is checked by behaviour,
+# because LaTeX that looks right and means something else is the failure mode.
+ROUNDTRIP_CASES = [
+    ("def f(a, b):\n    return (a + b) * (a - b) / 2\n", [(7, 3), (2, 5)]),
+    ("def f(a, b, c):\n    return a + b * c - (a + b) / (c + 1)\n",
+     [(1, 2, 3), (4, 5, 6)]),
+    ("def f(a, b):\n    return -a ** 2 + (a + b) ** 3 % 7 // 2\n",
+     [(3, 4), (2, 5)]),
+    ("def f(x):\n    if x is None:\n        return -1\n"
+     "    if x >= 10 and not x == 12:\n        return 2\n    return 0\n",
+     [(None,), (11,), (12,), (3,)]),
+    ("def f(x, xs):\n    return x not in xs and x in [1, 2, 3]\n",
+     [(1, [9]), (5, [5])]),
+    ("def f(n):\n    t = 0\n    i = 1\n    while i <= n:\n"
+     "        t += i * i\n        i += 1\n    return t\n", [(5,), (1,)]),
+    ("def f(n):\n    out = 0\n    for i in range(0, n):\n        if i == 3:\n"
+     "            break\n        if i == 1:\n            continue\n"
+     "        out += i\n    return out\n", [(7,), (2,)]),
+    ("def f(s):\n    return s + 'a\\\\b{c}_d$e%f^g~h#i&j' + chr(9)\n", [('x',)]),
+    ("def f(s):\n    return s.upper().replace('A', 'B')\n", [('ab',)]),
+    ("def f(n):\n    d = {'k': n}\n    t = (n, n * 2)\n    l = [n, n + 1]\n"
+     "    return d['k'] + t[1] + l[1] + len({n, n + 1})\n", [(3,), (0,)]),
+    ("def f(s):\n    return s[1:3] + s[:2] + s[-1:] + s[::2]\n", [('abcdef',)]),
+    ("def f(n):\n    return sum([i * i for i in range(0, n) if i % 2 == 0])\n",
+     [(6,), (1,)]),
+    ("def f(x):\n    y = 1 if x > 0 else -1\n    return y * 10\n",
+     [(5,), (-5,)]),
+    ("def f(a):\n    return round(a, ndigits=2)\n", [(3.14159,)]),
+    ("def f(a):\n    return f'v={a} end'\n", [(7,)]),
+    ("def f(a):\n    x = y = a + 1\n    return x + y\n", [(4,)]),
+    ("def f(a, b=10):\n    return a + b\n", [(1,), (1, 2)]),
+    ("def f(a):\n    g = lambda x: x + 1\n    return g(a)\n", [(4,)]),
+    ("def f(a, b):\n    return (a / b) ** 2 + a / (b * 2)\n", [(8.0, 2.0)]),
+    ("def f(long_name_a, other_b):\n    return long_name_a * other_b\n",
+     [(3, 4)]),
+    ("def f(a):\n    if a < 0:\n        raise ValueError('negative')\n"
+     "    return a\n", [(3,)]),
+]
+
+
+def roundtrip_test():
+    r"""py2tex then tex2py must give a function that behaves identically.
+
+    This is the only real check on the reverse direction: it is easy to emit
+    LaTeX that looks right and means something else, and precedence is exactly
+    where that happens.
+    """
+    for i, (source, argsets) in enumerate(ROUNDTRIP_CASES):
+        latex = py2tex(source)
+        back = tex2py(latex)
+        original, restored = {}, {}
+        exec(source, original)
+        try:
+            exec(back, restored)
+        except SyntaxError as exc:
+            raise AssertionError('case %d did not read back: %s\n%s'
+                                 % (i, exc, back))
+        for args in argsets:
+            want = original['f'](*args)
+            got = restored['f'](*args)
+            if want != got:
+                raise AssertionError('case %d changed meaning: f%r gave %r, '
+                                     'now %r\n%s' % (i, args, want, got, back))
+
+    # the escape/unescape pair must be exact, or string constants drift
+    for probe in ('a{b}c', 'back\\slash', 'under_score', '$math$', '100%',
+                  'a&b#c^d~e', '\\textbackslash', ''):
+        if unescape(escape(probe)) != probe:
+            raise AssertionError('escape/unescape is not an inverse: %r' % probe)
+
+    # nothing may vanish: every function here should translate without warnings
+    warnings = []
+    py2tex(inspect.getsource(Python2Tex), warnings=warnings)
+    if warnings:
+        raise AssertionError('self translation warned: %r' % warnings)
+    return len(ROUNDTRIP_CASES)
+
+
 def test_py2tex():
+    print('py2tex round trip passed: %d cases survive the return journey'
+          % roundtrip_test())
     print("--- Translating Python2Tex (Self-Hosting with Generators and Attributes) ---")
     print(py2tex(latex2py_source))
     print(py2tex(inspect.getsource(Python2Tex)))

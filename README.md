@@ -44,8 +44,9 @@ the interface and for typesetting the paper.
     environments, including `\Function`, `\If`, `\Else`, `\For` and `\While`.
 *   **Math-Mode Parsing:** Maps `\frac{a}{b}` to `(a)/(b)`, `\geq` to `>=`, and
     juxtaposition to multiplication.
-*   **Bidirectional:** `Python2Tex` walks a Python AST back into publication
-    ready pseudocode.
+*   **Bidirectional and verified:** `Python2Tex` walks a Python AST back into
+    publication ready pseudocode, and a round-trip test checks that the
+    function still *behaves* the same after the return journey.
 *   **Interactive:** `rosettaui.py` makes every glyph of an equation clickable,
     identifies the equation, and shows the Python it becomes.
 
@@ -122,6 +123,32 @@ python3 rosettaui.py --tex '$E=mc^2$'   # launch on a given equation
 python3 rosettaui.py --selftest         # headless checks, no display needed
 python3 rosettaui.py --render-test      # offscreen render to /tmp/rosettaui.png
 ```
+
+---
+
+## The reverse direction
+
+`Python2Tex` turns Python back into `algpseudocode`. Getting this right is
+harder than it looks, because LaTeX that reads correctly can still mean
+something else:
+
+*   **Precedence is made explicit.** A tree knows that `(a + b) * c` groups; a
+    flat string does not. Every operand that binds more loosely than its parent
+    is parenthesised on the way out.
+*   **Keywords leave math mode.** Inside `$...$` a space between two names is
+    implicit multiplication, so `x is None` would translate back as
+    `x*is*None`. Writing `$x$ is $None$` puts the keyword in a text segment,
+    the same trick the hand-written LaTeX uses.
+*   **Underscores are escaped.** A bare `_` is a subscript, so `__name__` is a
+    double subscript that LaTeX rejects. `OPS` maps `\_` back to `_`.
+*   **Nothing is dropped silently.** Constructs outside the subset — `with`,
+    `try`, decorators — are reported as a `\Comment` and collected in a
+    warnings list.
+
+`roundtrip_test()` checks 21 cases by behaviour rather than by eye: each is
+translated to LaTeX, read back with `tex2py`, executed, and compared against
+the original. Every function in `rosettamath.py` itself survives that journey,
+including `math2py`.
 
 ---
 

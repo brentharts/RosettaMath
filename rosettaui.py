@@ -1856,12 +1856,32 @@ def python_health(py):
                        'usually enough.' % exc.msg)
 
 
-def from_python(source_code):
-    """Reverse direction, via rosettamath's Python2Tex."""
+def from_python(source_code, display=False):
+    """Reverse direction, via rosettamath's Python2Tex.
+
+    Returns (latex, warnings).  Warnings name the constructs the pseudocode
+    subset cannot express, which is more useful than silently approximating.
+    """
+    warnings = []
     try:
-        return rosettamath.py2tex(source_code)
+        tex = rosettamath.py2tex(source_code, display=display,
+                                 warnings=warnings)
     except Exception as exc:
-        return '%% py2tex failed: %s: %s' % (type(exc).__name__, exc)
+        return '%% py2tex failed: %s: %s' % (type(exc).__name__, exc), []
+    return tex, warnings
+
+
+def check_roundtrip(source_code):
+    """Does the generated pseudocode read back as compilable Python?"""
+    tex, _ = from_python(source_code)
+    if tex.startswith('%'):
+        return False, 'translation failed'
+    try:
+        back = rosettamath.tex2py(tex)
+        compile(back, '<roundtrip>', 'exec')
+    except Exception as exc:
+        return False, '%s: %s' % (type(exc).__name__, exc)
+    return True, back
 
 
 # ---------------------------------------------------------------- Qt layer
@@ -2903,9 +2923,19 @@ if QT_OK:
             out.setFont(QFont(pick_family(MONO_STACK), 10))
             lay.addWidget(out)
             row = QHBoxLayout()
+            def translate():
+                tex, warns = from_python(src.toPlainText())
+                ok, back = check_roundtrip(src.toPlainText())
+                notes = ''
+                if warns:
+                    notes += '\n\n% not represented in the subset:\n' + \
+                        '\n'.join('%   - ' + w for w in dict.fromkeys(warns))
+                notes += ('\n\n% reads back as compilable Python'
+                          if ok else '\n\n% does NOT read back: ' + back)
+                out.setPlainText(tex + notes)
+
             b = QPushButton('Translate')
-            b.clicked.connect(
-                lambda: out.setPlainText(from_python(src.toPlainText())))
+            b.clicked.connect(translate)
             row.addWidget(b)
             row.addStretch(1)
             c = QPushButton('Close')
@@ -3048,8 +3078,22 @@ def selftest():
     scope = {'c': 299792458}
     fn = rosettamath.latex2py(r'$E(m) = m \cdot c^2$', scope)
     check('and the result executes', fn(1) == 299792458 ** 2)
-    check('py2tex round trip returns pseudocode',
-          '\\Function' in from_python('def f(x):\n    return x + 1\n'))
+    tex, warns = from_python('def f(x):\n    return x + 1\n')
+    check('py2tex round trip returns pseudocode', '\\Function' in tex)
+    check('and reports no warnings for a simple function', not warns)
+    # compare behaviour, not text: \frac comes back with explicit parentheses,
+    # which is the same function written differently
+    original = 'def f(a, b):\n    return (a + b) * a / 2 - b ** 2\n'
+    ok, back = check_roundtrip(original)
+    scope_a, scope_b = {}, {}
+    if ok:
+        exec(original, scope_a)
+        exec(back, scope_b)
+    check('precedence survives the return journey',
+          ok and all(scope_a['f'](*v) == scope_b['f'](*v)
+                     for v in ((3, 4), (7, 2), (1, 5))))
+    ok2, _ = check_roundtrip('def f(x):\n    return x is None\n')
+    check('an is-comparison reads back', ok2)
     good, _ = python_health(to_python(r'$K(m, v) = \frac{1}{2} \cdot m \cdot v^2$'))
     check('a function-form equation compiles', good)
     py = to_python(r'$S = \frac{k_B c^3 A}{4 G \hbar}$')

@@ -46,6 +46,23 @@ proof checker comparing types is how every decision gets made.
 The constructors still take names, so terms read the way they always did:
 Lambda("T", Universe(0), Var("T")) abstracts the T for you.
 
+Definitions and inductive types
+-------------------------------
+A global name may carry a value as well as a type, so a definition unfolds
+(delta reduction); and an inductive type may be declared with its constructors,
+from which the recursor and its computation rule are generated (iota
+reduction).  Nat is declared rather than assumed:
+
+    inductive(env, 'Nat', [('zero', []), ('succ', [REC])])
+
+which gives zero, succ, Nat.rec for defining functions and Nat.ind for proving
+theorems -- two recursors because there is no universe polymorphism here.  With
+add defined by recursion on its second argument, add 2 3 computes to 5, and
+m + 0 = m holds by computation alone, while 0 + n = n is stuck until n is a
+constructor and needs the induction principle.  @definition adds a checked
+Python function to the environment, so proofs can be built on earlier ones
+instead of standing alone.
+
 Implicit arguments
 ------------------
 A binder may be implicit, written \forall {A : Type}, ... in a statement.  Each
@@ -277,6 +294,19 @@ def free_names(expr, acc=None):
     return acc
 
 
+def as_numeral(expr):
+    """succ (succ zero) -> 2, or None if it is not a closed numeral."""
+    count = 0
+    while isinstance(expr, App):
+        if not (isinstance(expr.func, Var) and expr.func.name == 'succ'):
+            return None
+        count += 1
+        expr = expr.arg
+    if isinstance(expr, Var) and expr.name == 'zero':
+        return count
+    return None
+
+
 def fresh(hint, names, avoid=()):
     """A binder name that shadows nothing visible.
 
@@ -301,6 +331,9 @@ def pretty(expr, names=None):
     if isinstance(expr, Meta):
         return f"?{expr.hint}{expr.index}"
     if isinstance(expr, App):
+        digits = as_numeral(expr)
+        if digits is not None:
+            return str(digits)          # succ(succ(zero)) reads badly as a type
         return f"{pretty(expr.func, names)}({pretty(expr.arg, names)})"
     if isinstance(expr, Pi):
         dom = pretty(expr.var_type, names)
@@ -380,22 +413,104 @@ def substitute(expr, var_name, replacement):
     return expr
 
 
-def normalize(expr):
-    """Full beta-normalisation, including under binders."""
+def normalize(expr, env=None):
+    """Full normalisation: beta, plus delta and iota when an environment is given.
+
+    beta   applying a lambda
+    delta  unfolding a name that abbreviates a term
+    iota   firing a recursor that has reached a constructor
+
+    Without an environment only beta fires, which is what the kernel did
+    before definitions existed and is still the right behaviour for a term
+    whose constants are all opaque.
+    """
     if isinstance(expr, App):
-        func = normalize(expr.func)
-        arg = normalize(expr.arg)
+        func = normalize(expr.func, env)
+        arg = normalize(expr.arg, env)
         if isinstance(func, Lambda):
-            return normalize(instantiate(func.body, arg))
-        return App(func, arg)
+            return normalize(instantiate(func.body, arg), env)
+        whole = App(func, arg)
+        reduced = reduce_head(whole, env)
+        return normalize(reduced, env) if reduced is not None else whole
     if isinstance(expr, Binder):
-        return expr.rebuild(normalize(expr.var_type), normalize(expr.body))
+        return expr.rebuild(normalize(expr.var_type, env),
+                            normalize(expr.body, env))
+    if isinstance(expr, Var):
+        value = value_of(env, expr.name)
+        return normalize(value, env) if value is not None else expr
     return expr
 
 
-def definitionally_equal(a, b):
+def reduce_head(expr, env):
+    """One delta or iota step at the head of an application, or None."""
+    if env is None:
+        return None
+    head, args = spine(expr)
+    if not isinstance(head, Var):
+        return None
+    decl = decl_of(env, head.name)
+    if decl is None:
+        return None
+    if decl.rule is not None:
+        return decl.rule(env, args)
+    if decl.value is not None:
+        out = decl.value
+        for a in args:
+            out = App(out, a)
+        return out
+    return None
+
+
+def definitionally_equal(a, b, env=None):
     """Types are the same if they normalise to the same term."""
-    return normalize(a) == normalize(b)
+    return normalize(a, env) == normalize(b, env)
+
+
+# ------------------------------------------------------------- declarations
+
+class Decl:
+    """What a global name means.
+
+    Until now the environment mapped a name only to its type, so every
+    constant was opaque: nothing could be unfolded, and a definition was
+    impossible to state.  A declaration may now also carry
+
+      value  -- a term the name abbreviates, unfolded during normalisation
+               (delta reduction)
+      rule   -- a computation rule for a recursor, fired when it is applied
+               to a constructor (iota reduction)
+    """
+
+    def __init__(self, name, type_, value=None, rule=None, kind='constant'):
+        self.name = name
+        self.type = type_
+        self.value = value
+        self.rule = rule
+        self.kind = kind
+
+    def __repr__(self):
+        return f"<{self.kind} {self.name} : {pretty(self.type)}>"
+
+
+def as_decl(name, entry):
+    """Accept a bare type as well as a Decl, so old environments still work."""
+    return entry if isinstance(entry, Decl) else Decl(name, entry)
+
+
+def decl_of(env, name):
+    if env is None or name not in env:
+        return None
+    return as_decl(name, env[name])
+
+
+def type_of(env, name):
+    d = decl_of(env, name)
+    return None if d is None else d.type
+
+
+def value_of(env, name):
+    d = decl_of(env, name)
+    return None if d is None else d.value
 
 
 # --------------------------------------------------------------- type checker
@@ -416,9 +531,10 @@ def type_check(env, expr, local=None):
         return Universe(expr.level + 1)
 
     if isinstance(expr, Var):
-        if expr.name not in env:
+        declared = type_of(env, expr.name)
+        if declared is None:
             raise KernelError(f"Unknown identifier: {expr.name}")
-        return env[expr.name]
+        return declared
 
     if isinstance(expr, Bound):
         if expr.index >= len(local):
@@ -441,28 +557,149 @@ def type_check(env, expr, local=None):
         return Universe(max(domain.level, codomain.level))
 
     if isinstance(expr, App):
-        func_type = normalize(type_check(env, expr.func, local))
+        func_type = normalize(type_check(env, expr.func, local), env)
         if not isinstance(func_type, Pi):
             raise KernelError(f"Expected a function, got {func_type}")
         arg_type = type_check(env, expr.arg, local)
-        if not definitionally_equal(func_type.var_type, arg_type):
+        if not definitionally_equal(func_type.var_type, arg_type, env):
             raise KernelError(f"Type mismatch: expected "
-                              f"{pretty(func_type.var_type)}, "
-                              f"got {pretty(arg_type)}")
-        return normalize(instantiate(func_type.body, expr.arg))
+                              f"{readable(func_type.var_type)}, "
+                              f"got {readable(arg_type)}")
+        return normalize(instantiate(func_type.body, expr.arg), env)
 
     raise KernelError(f"Cannot typecheck: {expr}")
 
 
 def expect_sort(env, expr, local, role):
     """A type must itself have a sort; anything else is a category error."""
-    sort = normalize(type_check(env, expr, local))
+    sort = normalize(type_check(env, expr, local), env)
     if not isinstance(sort, Universe):
         raise KernelError(f"The {role} {pretty(expr)} is not a type "
                           f"(it has type {pretty(sort)})")
     return sort
 
 
+
+
+# --------------------------------------------------- building an environment
+
+REC = 'recursive'      # marks a constructor argument of the type being defined
+
+
+def declare(env, name, type_, value=None, rule=None, kind='constant'):
+    """Add a name to an environment, checking what can be checked."""
+    if name in env:
+        raise KernelError(f"{name} is already declared")
+    expect_sort(env, type_, [], f"type of {name}")
+    if value is not None:
+        if name in free_names(value):
+            raise KernelError(
+                f"{name} is defined in terms of itself; recursion belongs in a "
+                f"recursor, so that unfolding always terminates")
+        actual = type_check(env, value)
+        if not definitionally_equal(type_, actual, env):
+            raise KernelError(f"{name} is declared {readable(type_)} but its "
+                              f"definition has type {readable(actual)}")
+    env[name] = Decl(name, type_, value, rule, kind)
+    return env[name]
+
+
+def define(env, name, type_, value):
+    r"""A name that abbreviates a term, unfolded by delta reduction."""
+    return declare(env, name, type_, value=value, kind='definition')
+
+
+def axiom(env, name, type_):
+    """An opaque constant: something assumed, never unfolded."""
+    return declare(env, name, type_, kind='axiom')
+
+
+def inductive(env, name, constructors, level=1):
+    r"""Declare an inductive type, its constructors, and its recursors.
+
+    A constructor is (name, [argument types]), where the marker REC stands for
+    a recursive occurrence of the type being defined:
+
+        inductive(env, 'Nat', [('zero', []), ('succ', [REC])])
+
+    Two recursors are generated because there is no universe polymorphism
+    here: T.rec eliminates into Type, for defining functions, and T.ind into
+    Prop, for proving theorems.  They share one computation rule.
+
+    Restrictions, stated rather than hidden: no parameters, no indices, and a
+    recursive argument must be the type itself rather than a function into it.
+    That is enough for Nat and Bool, which is enough to have induction.
+    """
+    declare(env, name, Universe(level), kind='inductive')
+    self_type = Var(name)
+    for cname, args in constructors:
+        ctype = self_type
+        for spec in reversed(args):
+            ctype = arrow(self_type if spec is REC else spec, ctype)
+        declare(env, cname, ctype, kind='constructor')
+
+    for suffix, target in (('rec', Universe(1)), ('ind', Universe(0))):
+        rname = f'{name}.{suffix}'
+        declare(env, rname,
+                recursor_type(name, constructors, target),
+                rule=recursor_rule(rname, constructors), kind='recursor')
+    return env
+
+
+def recursor_type(name, constructors, target):
+    """forall {C : T -> target}, <minor premises> -> forall t : T, C t"""
+    self_type = Var(name)
+    body = Pi('t', self_type, App(Var('C'), Var('t')))
+    for i, (cname, args) in reversed(list(enumerate(constructors))):
+        minor = minor_premise_for(name, cname, args)
+        body = arrow(minor, body)
+    return Pi('C', arrow(self_type, target), body, implicit=True)
+
+
+def minor_premise_for(name, cname, args):
+    self_type = Var(name)
+    names = [f'a{i}' for i in range(len(args))]
+    applied = Var(cname)
+    for n in names:
+        applied = App(applied, Var(n))
+    body = App(Var('C'), applied)
+    for n, spec in reversed(list(zip(names, args))):
+        if spec is REC:
+            body = arrow(App(Var('C'), Var(n)), body)
+    for n, spec in reversed(list(zip(names, args))):
+        body = Pi(n, self_type if spec is REC else spec, body)
+    return body
+
+
+def recursor_rule(rname, constructors):
+    """Iota: once the scrutinee is a constructor, take the matching case."""
+    def rule(env, args):
+        needed = 1 + len(constructors) + 1          # motive, cases, scrutinee
+        if len(args) < needed:
+            return None
+        motive, cases = args[0], args[1:1 + len(constructors)]
+        scrutinee, rest = args[needed - 1], args[needed:]
+        head, cargs = spine(normalize(scrutinee, env))
+        if not isinstance(head, Var):
+            return None
+        for case, (cname, spec) in zip(cases, constructors):
+            if head.name != cname or len(cargs) != len(spec):
+                continue
+            out = case
+            for a in cargs:
+                out = App(out, a)
+            for a, kind in zip(cargs, spec):
+                if kind is REC:
+                    sub = Var(rname)
+                    sub = App(sub, motive)
+                    for c in cases:
+                        sub = App(sub, c)
+                    out = App(out, App(sub, a))
+            for a in rest:
+                out = App(out, a)
+            return out
+        return None
+    return rule
 
 # ------------------------------------------------------------- elaboration
 #
@@ -695,15 +932,16 @@ def is_ambiguous(meta, names, rhs, subst):
     return any(n in free and n in meta.context for n in names)
 
 
-def unify(a, b, subst, ctx=None, pending=None):
+def unify(a, b, subst, ctx=None, pending=None, env=None):
     """Unification up to normalisation, over Miller's pattern fragment.
 
     With a pending list, a constraint whose solution is not yet determined is
     recorded instead of guessed, and settled later by solve_pending.
     """
     ctx = ctx if ctx is not None else {}
-    a = normalize(resolve(a, subst))
-    b = normalize(resolve(b, subst))
+    env = env if env is not None else ctx
+    a = normalize(resolve(a, subst), env)
+    b = normalize(resolve(b, subst), env)
     if a == b:
         return True
 
@@ -727,11 +965,11 @@ def unify(a, b, subst, ctx=None, pending=None):
                 return solved
 
     if isinstance(a, App) and isinstance(b, App):
-        return (unify(a.func, b.func, subst, ctx, pending)
-                and unify(a.arg, b.arg, subst, ctx, pending))
+        return (unify(a.func, b.func, subst, ctx, pending, env)
+                and unify(a.arg, b.arg, subst, ctx, pending, env))
     if isinstance(a, Binder) and isinstance(b, Binder) and a.tag == b.tag:
-        return (unify(a.var_type, b.var_type, subst, ctx, pending)
-                and unify(a.body, b.body, subst, ctx, pending))
+        return (unify(a.var_type, b.var_type, subst, ctx, pending, env)
+                and unify(a.body, b.body, subst, ctx, pending, env))
     return False
 
 
@@ -743,13 +981,13 @@ class Constraint:
         self.rhs = rhs
         self.ctx = ctx
 
-    def head(self, subst):
+    def head(self, subst, env=None):
         head, args = spine(normalize(resolve(self.lhs, subst)))
         return head, args
 
-    def satisfied(self, subst):
+    def satisfied(self, subst, env=None):
         return definitionally_equal(resolve(self.lhs, subst),
-                                    resolve(self.rhs, subst))
+                                    resolve(self.rhs, subst), env)
 
     def __str__(self):
         return f"{readable(self.lhs)} = {readable(self.rhs)}"
@@ -790,11 +1028,11 @@ class Elaborator:
 
     def insert_implicits(self, term, type_):
         """Apply the term to a fresh hole for each leading implicit binder."""
-        type_ = normalize(resolve(type_, self.subst))
+        type_ = normalize(resolve(type_, self.subst), self.env)
         while isinstance(type_, Pi) and type_.implicit:
             hole = new_meta(type_.var_name, self.local_names())
             term = App(term, hole)
-            type_ = normalize(instantiate(type_.body, hole))
+            type_ = normalize(instantiate(type_.body, hole), self.env)
         return term, type_
 
     def binder(self, expr):
@@ -822,11 +1060,11 @@ class Elaborator:
         after both sides are closed again, would leave de Bruijn indices facing
         each other with no name to abstract over.
         """
-        expected = normalize(resolve(expected, self.subst))
+        expected = normalize(resolve(expected, self.subst), self.env)
         if isinstance(expr, Lambda) and isinstance(expected, Pi):
             domain, _ = self.infer(expr.var_type)
             if not unify(domain, expected.var_type, self.subst,
-                         self.env, self.pending):
+                         self.env, self.pending, self.env):
                 raise TheoremError(
                     f"argument '{expr.var_name}' is declared "
                     f"{readable(resolve(domain, self.subst))} but the "
@@ -843,7 +1081,8 @@ class Elaborator:
             return expr.rebuild(domain, body)
 
         term, actual = self.infer(expr)
-        if not unify(expected, actual, self.subst, self.env, self.pending):
+        if not unify(expected, actual, self.subst, self.env, self.pending,
+                     self.env):
             raise TheoremError(
                 f"stated {readable(resolve(expected, self.subst))}, "
                 f"proved {readable(resolve(actual, self.subst))}")
@@ -861,9 +1100,10 @@ class Elaborator:
             return expr, Universe(expr.level + 1)
 
         if isinstance(expr, Var):
-            if expr.name not in self.env:
+            declared = type_of(self.env, expr.name)
+            if declared is None:
                 raise KernelError(f"Unknown identifier: {expr.name}")
-            term, type_ = expr, self.env[expr.name]
+            term, type_ = expr, declared
             return self.insert_implicits(term, type_) if insert else (term, type_)
 
         if isinstance(expr, Bound):
@@ -885,18 +1125,18 @@ class Elaborator:
                 return self.infer(expr.arg, insert=False)
 
             func, func_type = self.infer(expr.func, insert=True)
-            func_type = normalize(resolve(func_type, self.subst))
+            func_type = normalize(resolve(func_type, self.subst), self.env)
             if not isinstance(func_type, Pi):
                 raise KernelError(f"Expected a function, got "
                                   f"{pretty(func_type)}")
             arg, arg_type = self.infer(expr.arg)
             if not unify(func_type.var_type, arg_type, self.subst,
-                         self.env, self.pending):
+                         self.env, self.pending, self.env):
                 raise KernelError(
                     f"Type mismatch: expected "
                     f"{readable(resolve(func_type.var_type, self.subst))}, got "
                     f"{readable(resolve(arg_type, self.subst))}")
-            result = normalize(instantiate(func_type.body, arg))
+            result = normalize(instantiate(func_type.body, arg), self.env)
             term = App(func, arg)
             return self.insert_implicits(term, result) if insert else (term, result)
 
@@ -917,12 +1157,12 @@ class Elaborator:
         """
         for _ in range(len(self.pending) + 2):
             self.pending = [c for c in self.pending
-                            if not c.satisfied(self.subst)]
+                            if not c.satisfied(self.subst, self.env)]
             if not self.pending:
                 return
             by_meta = {}
             for c in self.pending:
-                head, args = c.head(self.subst)
+                head, args = c.head(self.subst, self.env)
                 if isinstance(head, Meta) and head.index not in self.subst:
                     by_meta.setdefault(head.index, []).append((c, head, args))
             if not by_meta:
@@ -933,7 +1173,7 @@ class Elaborator:
                 for solution in self.candidates(group):
                     trial = dict(self.subst)
                     trial[index] = solution
-                    if all(c.satisfied(trial) for c, _, _ in group):
+                    if all(c.satisfied(trial, self.env) for c, _, _ in group):
                         fits.append(solution)
                         if len(fits) > 1:
                             break        # one alternative is enough to report
@@ -974,7 +1214,7 @@ class Elaborator:
         """Nothing may be left unverified: a postponed constraint that never
         got settled is an implicit argument we could not work out."""
         self.solve_pending()
-        unmet = [c for c in self.pending if not c.satisfied(self.subst)]
+        unmet = [c for c in self.pending if not c.satisfied(self.subst, self.env)]
         if unmet:
             raise KernelError(
                 f"Could not work out an implicit argument: no single value "
@@ -1015,7 +1255,7 @@ def elaborate(env, term, expected=None):
     checked = type_check(env, term)          # the trusted check
     if expected is not None:
         expected = el.finish(expected, 'statement')
-        if not definitionally_equal(expected, checked):
+        if not definitionally_equal(expected, checked, env):
             raise TheoremError(f"stated {pretty(expected)}, "
                                f"proved {pretty(checked)}")
     return term, checked
@@ -1176,6 +1416,8 @@ class LatexTypeParser:
             return self.named(self.braced())
         if t.startswith('\\'):
             return self.named(t[1:])
+        if t.isdigit():
+            return numeral(int(t))
         if t.isidentifier():
             # tokenize() splits Nat into N, a, t and juxtaposition already
             # means application, so a multi-letter name must be written
@@ -1187,6 +1429,14 @@ class LatexTypeParser:
 def latex2type(statement):
     r"""A LaTeX statement -> the kernel type it denotes."""
     return LatexTypeParser(rosettaui.tokenize(statement)).parse()
+
+
+def numeral(n):
+    """3 is succ (succ (succ zero)); writing it out is what a numeral is."""
+    out = Var('zero')
+    for _ in range(n):
+        out = App(Var('succ'), out)
+    return out
 
 
 def parse_type(text):
@@ -1255,6 +1505,18 @@ class PythonToLean(ast.NodeVisitor):
         """Variables like 'x' become Var('x')"""
         return Var(node.id)
 
+    def visit_Attribute(self, node):
+        """Nat.ind is one dotted name, as it is in Lean."""
+        parts = []
+        cur = node
+        while isinstance(cur, ast.Attribute):
+            parts.append(cur.attr)
+            cur = cur.value
+        if not isinstance(cur, ast.Name):
+            raise KernelError("only a dotted name may be used as a constant")
+        parts.append(cur.id)
+        return Var('.'.join(reversed(parts)))
+
     def visit_Call(self, node):
         """f(a, b) is curried application: App(App(f, a), b)."""
         if node.keywords:
@@ -1263,6 +1525,11 @@ class PythonToLean(ast.NodeVisitor):
         for arg in node.args:
             expr = App(expr, self.visit(arg))
         return expr
+
+    def visit_Constant(self, node):
+        if isinstance(node.value, int) and node.value >= 0:
+            return numeral(node.value)
+        raise KernelError(f"{node.value!r} is not a term the kernel knows")
 
     def visit_Return(self, node):
         return self.visit(node.value)
@@ -1377,8 +1644,6 @@ def _transport_type():
 # declaring it a Prop is what let the old identity example typecheck for the
 # wrong reason.
 GLOBAL_ENV = {
-    "Nat": Universe(1),
-    "Bool": Universe(1),
     "Real": Universe(1),
     "Eq": _eq_type(),
     "refl": _refl_type(),
@@ -1388,8 +1653,54 @@ GLOBAL_ENV = {
     "transport": _transport_type(),
 }
 
+# Nat and Bool are declared properly rather than assumed: with constructors and
+# a recursor, so that a function can compute and a theorem can be proved by
+# induction.  add recurses on its second argument, which is why add m zero
+# reduces on its own and add zero n needs an induction.
+inductive(GLOBAL_ENV, 'Bool', [('true', []), ('false', [])])
+inductive(GLOBAL_ENV, 'Nat', [('zero', []), ('succ', [REC])])
+
+_NAT = Var('Nat')
+define(GLOBAL_ENV, 'add', arrow(_NAT, arrow(_NAT, _NAT)),
+       Lambda('m', _NAT, Lambda('n', _NAT,
+              App(App(App(App(Var('Nat.rec'), Lambda('_', _NAT, _NAT)),
+                          Var('m')),
+                      Lambda('k', _NAT, Lambda('ih', _NAT,
+                                               App(Var('succ'), Var('ih'))))),
+                  Var('n')))))
+
 STRICT = True                 # a failed theorem raises; --non-strict prints
 VERBOSE = True
+
+
+def definition(latex_type, env=None, verbose=None, name=None):
+    r"""Add a Python function to the environment as a checked definition.
+
+    Same machinery as @theorem -- compile, elaborate, check against a type
+    written in LaTeX -- but the result is kept, so later proofs can use it.
+    That is what turns a fixed list of constants into a library one can build:
+
+        @definition(r'\text{Nat} \to \text{Nat}')
+        def double(n: 'Nat'):
+            return add(n, n)
+    """
+    def decorator(func):
+        loud = VERBOSE if verbose is None else verbose
+        scope = GLOBAL_ENV if env is None else env
+        label = name or func.__name__
+        surface = compile_python_to_lean(func)
+        stated = latex2type(latex_type)
+        term, actual = elaborate(scope, surface, stated)
+        folded = latex2type(latex_type)          # unelaborated, so still folded
+        if not has_meta(folded) and definitionally_equal(folded, actual, scope):
+            actual = folded
+        define(scope, label, actual, term)
+        if loud:
+            print(f"defined {label} : {readable(actual)}")
+        func.lean_term = term
+        func.lean_type = actual
+        return func
+    return decorator
 
 
 def theorem(latex_statement, strict=None, env=None, verbose=None):
@@ -1423,9 +1734,9 @@ def theorem(latex_statement, strict=None, env=None, verbose=None):
                 raise TheoremError(
                     f"{func.__name__} does not prove what it claims: {exc}")
             if str(term) != str(surface):
-                say(f"Elaborated:    {term}")
-            say(f"Inferred Type: {actual}")
-            say(f"Stated Type:   {pretty(normalize(actual))}")
+                say(f"Elaborated:    {readable(term)}")
+            say(f"Stated Type:   {readable(expected)}")
+            say(f"Proved Type:   {readable(actual)}")
 
             for note in getattr(elaborate, 'last_notes', []):
                 say(f"Note: {note}")
@@ -1777,6 +2088,81 @@ def selftest():
               "def f(x: 'Nat'):\n    y = x\n    return y\n").body[0]),
               'single return'))
 
+    print('declarations, delta and iota')
+    check('a bare type still works as an environment entry',
+          type_check(env, Var('x')) == Var('Nat'))
+    scratch = dict(GLOBAL_ENV)
+    define(scratch, 'two', Var('Nat'), numeral(2))
+    check('a definition unfolds', normalize(Var('two'), scratch) == numeral(2))
+    check('and does not unfold without an environment',
+          normalize(Var('two')) == Var('two'))
+    check('a definition is refused if it mentions itself',
+          raises(lambda: define(scratch, 'loop', Var('Nat'),
+                                App(Var('succ'), Var('loop'))),
+                 'in terms of itself'))
+    check('a definition is refused if it has the wrong type',
+          raises(lambda: define(scratch, 'bad', Var('Bool'), numeral(1)),
+                 'but its definition has type'))
+    check('a name cannot be declared twice',
+          raises(lambda: define(scratch, 'two', Var('Nat'), numeral(2)),
+                 'already declared'))
+    check('an axiom stays opaque',
+          (lambda: (axiom(scratch, 'ax', Var('Nat')),
+                    normalize(Var('ax'), scratch) == Var('ax'))[1])())
+
+    print('inductive types')
+    check('Nat is a Type', type_check(GLOBAL_ENV, Var('Nat')) == Universe(1))
+    check('zero is a Nat', type_check(GLOBAL_ENV, Var('zero')) == Var('Nat'))
+    check('succ takes a Nat to a Nat',
+          type_check(GLOBAL_ENV, Var('succ'))
+          == arrow(Var('Nat'), Var('Nat')))
+    check('the recursor eliminates into Type',
+          type_of(GLOBAL_ENV, 'Nat.rec').var_type
+          == arrow(Var('Nat'), Universe(1)))
+    check('and the induction principle into Prop',
+          type_of(GLOBAL_ENV, 'Nat.ind').var_type
+          == arrow(Var('Nat'), Universe(0)))
+    check('the motive is implicit in both',
+          type_of(GLOBAL_ENV, 'Nat.rec').implicit
+          and type_of(GLOBAL_ENV, 'Nat.ind').implicit)
+    check('Bool has two constructors that are not equal terms',
+          Var('true') != Var('false')
+          and type_check(GLOBAL_ENV, Var('true')) == Var('Bool'))
+
+    print('computation')
+    plus = lambda a, b: App(App(Var('add'), a), b)
+    check('2 + 3 = 5 by iota alone',
+          normalize(plus(numeral(2), numeral(3)), GLOBAL_ENV) == numeral(5))
+    check('0 + 0 = 0', normalize(plus(numeral(0), numeral(0)), GLOBAL_ENV)
+          == numeral(0))
+    withm = dict(GLOBAL_ENV, m=Var('Nat'), n=Var('Nat'))
+    check('m + 0 reduces to m, because add recurses on the right',
+          normalize(plus(Var('m'), Var('zero')), withm) == Var('m'))
+    check('0 + n is stuck, which is why induction is needed',
+          normalize(plus(Var('zero'), Var('n')), withm)
+          != Var('n'))
+    check('a recursor with too few arguments does not fire',
+          isinstance(normalize(App(Var('Nat.rec'), Var('Nat')), GLOBAL_ENV),
+                     App))
+    check('a numeral in a statement is a stack of succs',
+          latex2type(r'\text{Eq} \text{Nat} (\text{add} 2 3) 5')
+          == App(App(App(Var('Eq'), Var('Nat')),
+                     plus(numeral(2), numeral(3))), numeral(5)))
+    check('and that statement is a true proposition',
+          type_check(GLOBAL_ENV,
+                     latex2type(r'\text{Eq} \text{Nat} (\text{add} 2 3) 5'))
+          == Universe(0))
+
+    print('the Python bridge, extended')
+    check('a dotted name is one constant',
+          PythonToLean().visit(ast.parse("def f(n: 'Nat'):\n"
+                                         "    return Nat.ind(n)\n").body[0])
+          .body.func == Var('Nat.ind'))
+    check('an integer literal is a numeral',
+          PythonToLean().visit(ast.parse("def f(n: 'Nat'):\n"
+                                         "    return add(n, 2)\n").body[0])
+          .body.arg == numeral(2))
+
     print('theorems end to end')
 
     @theorem(r'\forall x \in \text{Nat}, \text{Nat}', verbose=False)
@@ -1839,6 +2225,55 @@ def selftest():
         return congrArg(refl(x))
     check('congrArg infers the function it is congruent over',
           congr_demo.lean_type is not None)
+
+    # add recurses on its second argument, so this holds by computation alone
+    @theorem(r'\forall m \in \text{Nat}, \text{Eq} \text{Nat} '
+             r'(\text{add} m \text{zero}) m', verbose=False)
+    def add_zero_right(m: 'Nat'):
+        return refl(m)
+    check('m + 0 = m needs no induction, only iota',
+          add_zero_right.lean_type is not None)
+
+    @theorem(r'\text{Eq} \text{Nat} (\text{add} 2 3) 5', verbose=False)
+    def two_plus_three():
+        return refl(5)
+    check('2 + 3 = 5 is proved by refl, since both sides compute',
+          two_plus_three.lean_type is not None)
+
+    # 0 + n is stuck, so this one genuinely needs the induction principle
+    proofs = dict(GLOBAL_ENV)
+
+    @definition(r'\text{Nat} \to \text{Prop}', env=proofs, verbose=False)
+    def motive(k: 'Nat'):
+        return Eq(Nat, add(zero, k), k)
+
+    @definition(r'\forall k \in \text{Nat}, '
+                r'\text{Eq} \text{Nat} (\text{add} \text{zero} k) k \to '
+                r'\text{Eq} \text{Nat} (\text{add} \text{zero} (\text{succ} k)) '
+                r'(\text{succ} k)', env=proofs, verbose=False)
+    def step(k: 'Nat', ih: r'\text{Eq} \text{Nat} (\text{add} \text{zero} k) k'):
+        return congrArg(ih)
+    check('a definition is added to the environment and reusable',
+          type_of(proofs, 'step') is not None
+          and type_of(proofs, 'motive') is not None)
+
+    @theorem(r'\forall n \in \text{Nat}, \text{Eq} \text{Nat} '
+             r'(\text{add} \text{zero} n) n', env=proofs, verbose=False)
+    def add_zero_left(n: 'Nat'):
+        return explicit(Nat.ind)(motive, refl(zero), step, n)
+    check('0 + n = n is proved by induction',
+          add_zero_left.lean_type is not None)
+    check('and the proof really goes through the induction principle',
+          'Nat.ind' in str(add_zero_left.lean_term))
+
+    def bad_base():
+        @theorem(r'\forall n \in \text{Nat}, \text{Eq} \text{Nat} '
+                 r'(\text{add} \text{zero} n) n', env=dict(proofs),
+                 verbose=False)
+        def wrong(n: 'Nat'):
+            return explicit(Nat.ind)(motive, refl(1), step, n)
+    check('an induction with the wrong base case is rejected',
+          raises(bad_base, 'Type mismatch'))
 
     def wrong_claim():
         @theorem(r'\forall x \in \text{Nat}, x = x', verbose=False)
@@ -1926,6 +2361,37 @@ def demo():
              r'\text{Eq} A a b \to \text{Eq} A b a')
     def symmetry(A: 'Type', a: 'A', b: 'A', h: r'\text{Eq} A a b'):
         return transport(h, refl(a))
+
+    print("\n=== Computation, and a proof by induction ===")
+
+    # add recurses on its second argument, so m + 0 = m holds by computation
+    @theorem(r"\forall m \in \text{Nat}, \text{Eq} \text{Nat} "
+             r"(\text{add} m \text{zero}) m")
+    def add_zero_right(m: 'Nat'):
+        return refl(m)
+
+    @theorem(r"\text{Eq} \text{Nat} (\text{add} 2 3) 5")
+    def two_plus_three():
+        return refl(5)
+
+    # 0 + n is stuck until n is a constructor, so this one needs induction
+    @definition(r"\text{Nat} \to \text{Prop}")
+    def add_zero_motive(k: 'Nat'):
+        return Eq(Nat, add(zero, k), k)
+
+    @definition(r"\forall k \in \text{Nat}, "
+                r"\text{Eq} \text{Nat} (\text{add} \text{zero} k) k \to "
+                r"\text{Eq} \text{Nat} (\text{add} \text{zero} (\text{succ} k)) "
+                r"(\text{succ} k)")
+    def add_zero_induction_step(k: 'Nat',
+                                ih: r"\text{Eq} \text{Nat} (\text{add} \text{zero} k) k"):
+        return congrArg(ih)
+
+    @theorem(r"\forall n \in \text{Nat}, \text{Eq} \text{Nat} "
+             r"(\text{add} \text{zero} n) n")
+    def add_zero_left(n: 'Nat'):
+        return explicit(Nat.ind)(add_zero_motive, refl(zero),
+                                 add_zero_induction_step, n)
 
     print("\n--- and a proof that should fail ---")
     try:

@@ -306,6 +306,39 @@ name to abstract over.
 The environment ships `Eq`, `refl`, `symm`, `trans`, `congrArg` and
 `transport`.
 
+### Definitions and inductive types
+
+A global name may carry a value as well as a type, so a definition **unfolds**
+(delta reduction), and an inductive type may be declared with its constructors,
+from which the recursor and its computation rule are generated (iota
+reduction). `Nat` is declared rather than assumed:
+
+```python
+inductive(env, 'Nat', [('zero', []), ('succ', [REC])])
+```
+
+which gives `zero`, `succ`, `Nat.rec` for defining functions and `Nat.ind` for
+proving theorems — two recursors because there is no universe polymorphism
+here. With `add` defined by recursion on its second argument, `add 2 3`
+computes to `5`; `m + 0 = m` holds by computation alone, and `0 + n = n` is
+stuck until `n` is a constructor, so it needs induction:
+
+```python
+@definition(r'\text{Nat} \to \text{Prop}')
+def add_zero_motive(k: 'Nat'):
+    return Eq(Nat, add(zero, k), k)
+
+@theorem(r'\forall n \in \text{Nat}, \text{Eq} \text{Nat} (\text{add} \text{zero} n) n')
+def add_zero_left(n: 'Nat'):
+    return explicit(Nat.ind)(add_zero_motive, refl(zero), add_zero_induction_step, n)
+```
+
+`@definition` adds a checked function to the environment, so later proofs can
+build on earlier ones instead of standing alone. Restrictions are stated rather
+than hidden: inductive types take no parameters and no indices, and a
+definition may not mention itself, so unfolding always terminates — recursion
+belongs in the recursor.
+
 ### The statement language
 
 | LaTeX | Kernel |
@@ -317,13 +350,14 @@ The environment ships `Eq`, `refl`, `symm`, `trans`, `congrArg` and
 | `f x` | application, by juxtaposition |
 | `\forall \{A : T\}, B` | implicit binder |
 | `a = b` | `Eq A a b`, with `A` from the binder, or inferred |
+| `0`, `1`, `2` | numerals, as stacks of `succ` over `zero` |
 
 The front end is shared with the rest of the project: `rosettaui.tokenize`
 lexes the subset and `rosettamath.unescape` handles `\text{}` content.
 
 ```sh
 make proofs              # check the theorems
-python3 lean4.py --selftest      # 103 kernel, elaborator and front-end checks
+python3 lean4.py --selftest      # 132 kernel, elaborator and front-end checks
 python3 lean4.py --non-strict    # report failures instead of raising
 ```
 

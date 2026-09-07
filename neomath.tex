@@ -53,13 +53,13 @@ conventional meaning, click it for an offline explanation, right-click it for
 the encyclopedia article; the whole equation is identified against a library of
 well-known physics and mathematics, and the Python it becomes is shown alongside
 with physical constants resolved to \texttt{scipy.constants}.
-\texttt{lean4.py} is a Calculus of Constructions kernel in under two thousand
-lines, with de Bruijn indices, an untrusted elaborator that infers implicit
-arguments by Miller pattern unification with postponed constraints, and a
-\LaTeX{} statement language, so that a theorem about a Python function is
-stated as \verb|\forall x \in \text{Nat}, x = x|
-and checked by a kernel small
-enough to read in one sitting. We argue that these three pieces, precisely
+\texttt{lean4.py} is a Calculus of Constructions kernel with de Bruijn
+indices, declared inductive types and generated recursors, an untrusted
+elaborator that infers implicit arguments by Miller pattern unification with
+postponed constraints, and a \LaTeX{} statement language, so that a theorem
+about a Python function is stated as
+\verb|\forall x \in \text{Nat}, x = x|, or proved by induction, and checked
+by a kernel small enough to read in one sitting. We argue that these three pieces, precisely
 because they are small, local, open and written in the language students
 already learn, form a practical foundation for mathematics and programming
 education at every level---from a child clicking on a Greek letter to an
@@ -136,7 +136,9 @@ automatic identification of what an equation ``looks like'' (\S\ref{sec:rosettau
 \item a \textbf{dependent-type micro-kernel}, \texttt{lean4.py}, that checks
 proofs about Python functions against theorems stated in \LaTeX{}, with an
 elaborator separated from a trusted core, implicit arguments, pattern
-unification and constraint postponement (\S\ref{sec:lean4});
+unification, constraint postponement, and inductive types with generated
+recursors, so that $0 + n = n$ can be proved by induction
+(\S\ref{sec:lean4});
 \item an \textbf{argument} that these pieces, being local, open and modifiable,
 are a better foundation for mathematics education than the client--server
 applications and proprietary systems that currently dominate it
@@ -579,15 +581,58 @@ readings survive, the theorem is still proved---the kernel checks the finished
 term either way---but the elaborator reports that the choice was not forced.
 A hole no reading can satisfy is reported, not left tentative.
 
+\subsection{Definitions, inductive types, and induction}
+
+A global name may now carry a value as well as a type, so a definition unfolds
+during normalisation (delta reduction); and an inductive type may be declared
+with its constructors, from which the recursor and its computation rule are
+generated (iota reduction). $\mathrm{Nat}$ is declared rather than assumed:
+\begin{lstlisting}
+inductive(env, 'Nat', [('zero', []), ('succ', [REC])])
+\end{lstlisting}
+which yields \verb|zero|, \verb|succ|, a recursor \verb|Nat.rec| eliminating
+into $\mathrm{Type}$ for defining functions, and an induction principle
+\verb|Nat.ind| eliminating into $\mathrm{Prop}$ for proving theorems. There are
+two because there is no universe polymorphism here; they share one computation
+rule. Definitions may not mention themselves---recursion belongs in the
+recursor---so unfolding always terminates.
+
+With addition defined by recursion on its second argument, the two halves of a
+familiar pair of facts come apart in a way that is worth showing a student.
+$\mathrm{add}\;2\;3$ computes to $5$, and $m + 0 = m$ holds by computation
+alone, so \verb|refl| proves it; the checker reports the claim as
+$\mathrm{Eq}\;\mathrm{Nat}\;(\mathrm{add}\;m\;\mathrm{zero})\;m$ and what was
+proved as $\mathrm{Eq}\;\mathrm{Nat}\;m\;m$, making visible that the gap was
+closed by reduction. But $0 + n$ is stuck until $n$ is a constructor, so
+$0 + n = n$ requires the induction principle:
+\begin{lstlisting}
+@definition(r'\text{Nat} \to \text{Prop}')
+def add_zero_motive(k: 'Nat'):
+    return Eq(Nat, add(zero, k), k)
+
+@theorem(r'\forall n \in \text{Nat}, \text{Eq} \text{Nat} (\text{add} \text{zero} n) n')
+def add_zero_left(n: 'Nat'):
+    return explicit(Nat.ind)(add_zero_motive, refl(zero), add_zero_step, n)
+\end{lstlisting}
+That two superficially symmetric statements need different proofs, and that the
+asymmetry comes from which argument the definition recurses on, is a lesson
+about computation that a student can now discover by trying both.
+
+\verb|@definition| adds a checked Python function to the environment, so a
+proof can build on earlier ones; before this the environment was a fixed list
+of constants and every theorem stood alone.
+
 \subsection{What it does and does not do}
 
 The environment ships $\mathrm{Eq}$, \verb|refl|, \verb|symm|, \verb|trans|,
-\verb|congrArg| and \verb|transport|; the test suite runs 103 checks, each a
-regression from a bug the kernel used to have or a construction it can now do,
-and each of the elaboration features is verified to be doing the work by
-disabling it and watching the corresponding theorem fail. The kernel has no
-inductive types, no universe polymorphism, no definitional unfolding of
-constants, and no tactics; every proof is a term. The constraint solver is
+\verb|congrArg|, \verb|transport|, and the inductive types $\mathrm{Nat}$ and
+$\mathrm{Bool}$; the test suite runs 132 checks, each a regression from a bug
+the kernel used to have or a construction it can now do, and each of the
+elaboration features is verified to be doing the work by disabling it and
+watching the corresponding theorem fail. The kernel has no universe
+polymorphism, no inductive families---no parameters and no indices, so
+$\mathrm{Nat}$ and $\mathrm{Bool}$ but not $\mathrm{List}\;\alpha$---and no
+tactics; every proof is a term. The constraint solver is
 greedy across holes. None of that is hidden, and all of it is the point: a
 student can read \texttt{lean4.py} in an afternoon and understand exactly what
 it means for a machine to have checked a proof, and then go to Lean knowing
@@ -637,6 +682,12 @@ $\mathrm{Nat}\to\mathrm{Nat}$ instead. That is a better tutor than most. And
 because the kernel is readable, the student can then be asked to read it, and
 to answer the question that separates people who have used a proof assistant
 from people who understand one: what, exactly, is the machine trusting?
+
+\paragraph{Computing.} The pair $m + 0 = m$ and $0 + n = n$ is the smallest
+example we know of a lesson that only a proof checker can teach properly. Both
+are obvious; one is proved by reduction and the other needs induction; and the
+difference is a consequence of a choice made in the definition of addition,
+which the student can change and watch the difficulty move to the other side.
 
 \paragraph{Graduating.} The statement language uses Lean's spellings
 deliberately---\verb|\forall|, braces for implicit arguments, \verb|refl|,
@@ -748,9 +799,9 @@ bare math-mode operators; matrices, integrals and limits are typeset but not
 translated. The classifier is a signature matcher and will be confused by
 equations that share symbols with unrelated ones; it says ``looks like'' for a
 reason. The knowledge base is written by one author and has one author's
-emphases. The kernel lacks inductive types and universe polymorphism, so it
-cannot state induction on the naturals, and its constraint solver is greedy
-across holes. The explorer's rendering is serviceable, not beautiful, and
+emphases. The kernel has induction on the naturals but no universe
+polymorphism and no inductive families, so it cannot express a type with
+parameters such as a list; its constraint solver is greedy across holes. The explorer's rendering is serviceable, not beautiful, and
 degrades to a \texttt{pdflatex} image for anything demanding. None of these are
 hidden in the code, and the test suites---the translator's bootstrap and 21
 round-trip cases, the explorer's 53 checks and the kernel's 103---name what is

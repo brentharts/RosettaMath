@@ -23,8 +23,14 @@ self-hosted and is not written in the translatable LaTeX subset.
 
     python3 rosettaui.py                  launch the GUI
     python3 rosettaui.py --selftest       headless test of parser/classifier
-    python3 rosettaui.py --render-test    offscreen render to /tmp/rosettaui.png
+    python3 rosettaui.py --check-deps     report what is installed, and how to
+                                          install whatever is not
+    python3 rosettaui.py --render-test    offscreen render to a PNG in the
+                                          system temp directory
     python3 rosettaui.py --tex '$E=mc^2$' launch with a given equation
+
+Runs on Linux, macOS and Windows.  On Windows the command is `python`, not
+`python3`, and quoting for --tex uses double quotes; see README.md.
 """
 import os
 import sys
@@ -40,6 +46,88 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import rosettamath
 
 WIKI = 'https://en.wikipedia.org/wiki/'
+
+# ---------------------------------------------------------------- platform
+
+WINDOWS = sys.platform.startswith('win')
+MACOS = sys.platform == 'darwin'
+
+# Directories to search when a tool is installed but not on PATH.  This is the
+# normal case rather than the exception on the other two platforms:
+#
+#   macOS ..... MacTeX symlinks its binaries into /Library/TeX/texbin, and adds
+#               that to PATH from a file in /etc/paths.d.  Shells started
+#               before the install -- and GUI processes generally, which do not
+#               read login shell config at all -- never see it.
+#   Windows ... both MiKTeX and TeX Live offer to edit PATH, but a per-user
+#               MiKTeX install only edits the *user* PATH, which an already
+#               open cmd.exe will not pick up until it is restarted.
+#
+# Rather than tell people to fix their PATH, look where the installers put
+# things.  Empty on Linux, where the package manager gets this right.
+if MACOS:
+    _EXTRA_PATH = [
+        '/Library/TeX/texbin',              # MacTeX / BasicTeX
+        '/usr/local/texlive/2026/bin/universal-darwin',
+        '/usr/local/texlive/2025/bin/universal-darwin',
+        '/usr/local/texlive/2024/bin/universal-darwin',
+        '/opt/homebrew/bin',                # Homebrew, Apple silicon
+        '/usr/local/bin',                   # Homebrew, Intel
+        '/opt/local/bin',                   # MacPorts
+    ]
+elif WINDOWS:
+    _local = os.environ.get('LOCALAPPDATA', '')
+    _progs = os.environ.get('ProgramFiles', r'C:\Program Files')
+    _EXTRA_PATH = [
+        os.path.join(_local, 'Programs', 'MiKTeX', 'miktex', 'bin', 'x64'),
+        os.path.join(_progs, 'MiKTeX', 'miktex', 'bin', 'x64'),
+        r'C:\texlive\2026\bin\windows',
+        r'C:\texlive\2025\bin\windows',
+        r'C:\texlive\2024\bin\windows',
+        os.path.join(_progs, 'gs', 'gs10.03.1', 'bin'),
+    ]
+else:
+    _EXTRA_PATH = []
+
+_which_cache = {}
+
+
+def _which(name):
+    """shutil.which, plus the places installers put things on macOS/Windows.
+
+    One extra wrinkle: on Windows `convert` is a *Microsoft* program -- the
+    FAT-to-NTFS filesystem converter in System32 -- and it has been there since
+    Windows NT.  Asking for it by that name finds the wrong tool, which is why
+    ImageMagick 7 renamed its own driver to `magick`.  Never look for the bare
+    name on Windows; a `convert.exe` on PATH there is almost certainly the
+    filesystem tool, and handing it a PDF is at best a confusing error.
+    """
+    if name in _which_cache:
+        return _which_cache[name]
+    if WINDOWS and name == 'convert':
+        _which_cache[name] = None
+        return None
+    found = shutil.which(name)
+    if found is None and _EXTRA_PATH:
+        found = shutil.which(name, path=os.pathsep.join(_EXTRA_PATH))
+    _which_cache[name] = found
+    return found
+
+
+def _no_window():
+    """subprocess kwargs that stop a console flashing up on Windows.
+
+    pythonw.exe has no console, so each pdflatex call would otherwise allocate
+    and flash one -- several times over for a single equation, since pdflatex
+    and the rasteriser are separate processes.
+    """
+    if not WINDOWS:
+        return {}
+    flags = getattr(subprocess, 'CREATE_NO_WINDOW', 0x08000000)
+    si = subprocess.STARTUPINFO()
+    si.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+    return {'creationflags': flags, 'startupinfo': si}
+
 
 # ---------------------------------------------------------------- fonts
 
@@ -102,6 +190,50 @@ def pick_family(stack):
             break
     _font_cache[key] = chosen
     return chosen
+
+
+# The OTF files behind SERIF_STACK/MATH_STACK/MONO_STACK, by the names TeX
+# knows them under.  kpsewhich resolves these against the texmf tree.
+TEX_FONTS = ['latinmodern-math.otf', 'lmroman10-regular.otf',
+             'lmroman10-italic.otf', 'lmroman10-bold.otf',
+             'lmromanslant10-regular.otf', 'lmmono10-regular.otf']
+
+
+def register_tex_fonts():
+    """Load Latin Modern out of the TeX installation, if it is not a system font.
+
+    On Debian, fonts-lmodern installs these into /usr/share/fonts and Qt finds
+    them by itself.  MacTeX and MiKTeX do not do that -- the OTFs exist, but
+    only inside the texmf tree, where the system font database never looks.
+    Without this the maths font silently degrades to whatever Qt substitutes,
+    which is exactly the mismatched-typeface problem supports() exists to
+    avoid, and it makes the same equation look different on each platform.
+
+    Must be called after QApplication exists but before any glyph is laid out.
+    Cheap and harmless when the fonts are already installed.
+    """
+    from PyQt5.QtGui import QFontDatabase
+    if 'Latin Modern Math' in set(QFontDatabase().families()):
+        return 0                                  # system already has them
+    kpsewhich = _which('kpsewhich')
+    if not kpsewhich:
+        return 0
+    loaded = 0
+    for name in TEX_FONTS:
+        try:
+            out = subprocess.run([kpsewhich, name], capture_output=True,
+                                 text=True, timeout=15, **_no_window())
+        except (subprocess.TimeoutExpired, OSError):
+            break
+        path = out.stdout.strip()
+        if path and os.path.exists(path):
+            if QFontDatabase.addApplicationFont(path) != -1:
+                loaded += 1
+    if loaded:
+        _font_cache.clear()                       # picks made before this stand
+        _probe_cache.clear()
+        _support_cache.clear()
+    return loaded
 
 
 # ---------------------------------------------------------------- symbols
@@ -1703,28 +1835,33 @@ def have_tools():
     installed; poppler's pdftoppm/pdftocairo rasterise them directly and are
     far more commonly present.  Try whatever is here.
     """
-    raster = (shutil.which('pdftoppm') or shutil.which('pdftocairo') or
-              shutil.which('magick') or shutil.which('convert'))
-    return shutil.which('pdflatex') is not None, raster
+    raster = (_which('pdftoppm') or _which('pdftocairo') or
+              _which('magick') or _which('convert'))
+    return _which('pdflatex') is not None, raster
 
 
 def _rasterise(pdf, png, density):
-    """PDF -> PNG by whichever backend exists.  True on success."""
-    tool = shutil.which('pdftoppm')
+    """PDF -> PNG by whichever backend exists.  True on success.
+
+    pdftoppm and pdftocairo both ship inside MiKTeX and MacTeX, so on those
+    platforms the poppler path is usually available without installing poppler
+    separately -- it just is not on PATH, which _which handles.
+    """
+    tool = _which('pdftoppm')
     if tool:
         # -singlefile makes it write exactly png, not png-1.png
         stem = png[:-4] if png.endswith('.png') else png
         if _run([tool, '-png', '-r', str(density), '-singlefile', pdf, stem]):
             return os.path.exists(png)
-    tool = shutil.which('pdftocairo')
+    tool = _which('pdftocairo')
     if tool:
         stem = png[:-4] if png.endswith('.png') else png
         if _run([tool, '-png', '-r', str(density), '-singlefile', pdf, stem]):
             return os.path.exists(png)
-    tool = shutil.which('magick') or shutil.which('convert')
+    tool = _which('magick') or _which('convert')
     if tool:
         cmd = [tool]
-        if os.path.basename(tool) == 'magick':
+        if os.path.splitext(os.path.basename(tool))[0] == 'magick':
             cmd.append('convert')
         cmd += ['-density', str(density), pdf, '-quality', '90', png]
         if _run(cmd):
@@ -1734,11 +1871,11 @@ def _rasterise(pdf, png, density):
 
 def _trim(png):
     """Crop the page margins away if ImageMagick is around.  Best effort."""
-    tool = shutil.which('magick') or shutil.which('convert')
+    tool = _which('magick') or _which('convert')
     if not tool:
         return
     cmd = [tool]
-    if os.path.basename(tool) == 'magick':
+    if os.path.splitext(os.path.basename(tool))[0] == 'magick':
         cmd.append('convert')
     cmd += [png, '-trim', '+repage', '-bordercolor', 'white', '-border', '14',
             png]
@@ -1748,7 +1885,8 @@ def _trim(png):
 def _run(cmd, cwd=None, timeout=60):
     try:
         subprocess.run(cmd, cwd=cwd, stdout=subprocess.DEVNULL,
-                       stderr=subprocess.DEVNULL, timeout=timeout, check=True)
+                       stderr=subprocess.DEVNULL, timeout=timeout, check=True,
+                       **_no_window())
         return True
     except (subprocess.CalledProcessError, subprocess.TimeoutExpired, OSError):
         return False
@@ -1774,10 +1912,12 @@ def render_latex_png(src, density=200):
         return png
     work = tempfile.mkdtemp(prefix='rosettaui-')
     try:
-        with open(os.path.join(work, 'eq.tex'), 'w') as fh:
+        # Explicit encoding: Python on Windows would otherwise write cp1252 and
+        # raise on any non-ASCII character the fragment happens to contain.
+        with open(os.path.join(work, 'eq.tex'), 'w', encoding='utf-8') as fh:
             fh.write(TEX_DOC % src)
-        if not _run(['pdflatex', '-interaction=nonstopmode', '-halt-on-error',
-                     'eq.tex'], cwd=work, timeout=30):
+        if not _run([_which('pdflatex'), '-interaction=nonstopmode',
+                     '-halt-on-error', 'eq.tex'], cwd=work, timeout=30):
             return None
         if not _rasterise(os.path.join(work, 'eq.pdf'), png, density):
             return None
@@ -3122,12 +3262,78 @@ def selftest():
     return 0 if ok else 1
 
 
-def render_test(path='/tmp/rosettaui.png',
+def check_deps():
+    """Report what is installed, in a way that works on all three platforms.
+
+    The Makefile can do this with kpsewhich and command -v, but neither the
+    .bat file nor a Mac user without make can, and the answer should not differ
+    by who is asking.  Reports rather than fails: a missing rasteriser costs
+    you the typeset previews, not the program.
+    """
+    hint = {
+        'linux': ('apt install %s', {
+            'PyQt5': 'python3-pyqt5', 'pdflatex': 'texlive-latex-base',
+            'raster': 'poppler-utils', 'scipy': 'python3-scipy',
+            'magick': 'imagemagick'}),
+        'darwin': ('%s', {
+            # Not "pip3 install": both Apple's Python and Homebrew's refuse to
+            # be installed into (PEP 668, "externally-managed-environment").
+            # install_apple builds a virtualenv, which is the way through.
+            'PyQt5': 'make install_apple',
+            'pdflatex': 'brew install --cask mactex-no-gui',
+            'raster': 'brew install poppler',
+            'scipy': 'make install_apple',
+            'magick': 'brew install imagemagick'}),
+        'win32': ('%s', {
+            # The .bat is the documented route: it uses the py launcher and
+            # installs --user, neither of which is obvious to type by hand.
+            'PyQt5': 'double-click install_windows.bat',
+            'pdflatex': 'winget install MiKTeX.MiKTeX',
+            'raster': 'comes with MiKTeX; reopen your terminal',
+            'scipy': 'double-click install_windows.bat',
+            'magick': 'winget install ImageMagick.ImageMagick'}),
+    }
+    fmt, pkg = hint.get('darwin' if MACOS else 'win32' if WINDOWS else 'linux')
+
+    def line(label, ok, key, required=True):
+        if ok:
+            print('  %-16s ok' % label)
+            return True
+        print('  %-16s %s  (%s)' % (label, 'MISSING' if required else 'missing',
+                                    fmt % pkg[key]))
+        return False
+
+    print('platform: %s (%s)' % (sys.platform, sys.version.split()[0]))
+    print('required:')
+    ok = line('PyQt5', QT_OK, 'PyQt5')
+    has_tex, raster = have_tools()
+    ok &= line('pdflatex', has_tex, 'pdflatex')
+    ok &= line('pdf rasteriser', bool(raster), 'raster')
+    print('optional:')
+    try:
+        import scipy                                       # noqa: F401
+        line('scipy', True, 'scipy', False)
+    except ImportError:
+        line('scipy', False, 'scipy', False)
+    line('imagemagick', bool(_which('magick') or _which('convert')),
+         'magick', False)
+    if has_tex:
+        print('  %-16s %s' % ('pdflatex path', _which('pdflatex')))
+    if raster:
+        print('  %-16s %s' % ('rasteriser path', raster))
+    print('\n%s' % ('everything required is present -- run: python%s '
+                    'rosettaui.py' % ('' if WINDOWS else '3')
+                    if ok else 'install the MISSING items above'))
+    return 0 if ok else 1
+
+
+def render_test(path=os.path.join(tempfile.gettempdir(), 'rosettaui.png'),
                 tex=r'-\frac{\hbar^2}{2m} \nabla^2 \psi + V \psi = E \psi'):
     """Lay the equation out offscreen and save it, to check the layout engine."""
     os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
     from PyQt5.QtGui import QImage
     app = QApplication(sys.argv[:1])
+    register_tex_fonts()          # so the reference render matches the GUI
     scene = QGraphicsScene()
     scene.setBackgroundBrush(QColor(252, 251, 248))
     tree = parse_latex(tex)
@@ -3151,6 +3357,8 @@ def render_test(path='/tmp/rosettaui.png',
 def main(argv):
     if '--selftest' in argv:
         return selftest()
+    if '--check-deps' in argv:
+        return check_deps()
     tex = DEFAULT_EQUATION
     if '--tex' in argv:
         tex = argv[argv.index('--tex') + 1]
@@ -3158,10 +3366,22 @@ def main(argv):
         return render_test(tex=tex)
     if not QT_OK:
         print('PyQt5 is required for the GUI: %s' % QT_ERROR, file=sys.stderr)
-        print('Try: pip install PyQt5   (or apt install python3-pyqt5)',
-              file=sys.stderr)
+        if MACOS:
+            print('Try: pip3 install PyQt5   (or: make install_apple)',
+                  file=sys.stderr)
+        elif WINDOWS:
+            print('Try: pip install PyQt5   (or run install_windows.bat)',
+                  file=sys.stderr)
+        else:
+            print('Try: pip install PyQt5   (or apt install python3-pyqt5)',
+                  file=sys.stderr)
         return 1
+    # Qt5 does not scale for the display by default.  Without these the window
+    # is unreadably small on a Retina Mac and on any Windows box set to 150%.
+    QApplication.setAttribute(Qt.AA_EnableHighDpiScaling, True)
+    QApplication.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
     app = QApplication(argv)
+    register_tex_fonts()
     win = RosettaWindow(tex)
     win.show()
     return app.exec_()

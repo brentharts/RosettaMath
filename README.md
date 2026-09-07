@@ -23,8 +23,29 @@ The project is two files:
 
 ## Install
 
+Nothing but Python 3 is needed for the translator itself. The packages below
+are for the interface and for typesetting the paper, and they split into two
+groups:
+
+*   **PyQt5** — required for the graphical explorer. Without it `rosettaui.py`
+    still runs `--selftest` and `--check-deps`, but there is no window.
+*   **A TeX installation and a PDF rasteriser** — optional. Without them the
+    explorer runs and every symbol is still clickable; only the *Typeset with
+    pdflatex* button goes grey, and `make pdf` cannot build the paper.
+
+On any platform, this reports what you have and what you are missing:
+
 ```sh
-make install       # Ubuntu/Debian: PyQt5, TeX Live, Latin Modern, poppler
+python3 rosettaui.py --check-deps
+```
+
+It names the exact install command for whichever platform it is run on, so it
+is the fastest way to find out what is wrong.
+
+### Linux (Ubuntu/Debian)
+
+```sh
+make install       # PyQt5, TeX Live, Latin Modern, poppler
 make check-deps    # report what is present and what is missing
 make ui            # launch the explorer
 ```
@@ -32,8 +53,81 @@ make ui            # launch the explorer
 `make install-all` adds the optional extras (scipy, ImageMagick, Ghostscript).
 `make help` lists every target.
 
-Nothing but Python 3 is needed for the translator itself; the packages are for
-the interface and for typesetting the paper.
+### macOS
+
+Needs [Homebrew](https://brew.sh). Then:
+
+```sh
+make install_apple   # poppler + MacTeX, and a .venv holding PyQt5
+make check-deps
+make ui
+```
+
+Two things differ from Linux, and both are handled for you:
+
+*   **PyQt5 goes into a virtualenv** (`.venv`, created by the target). macOS
+    has no system package for PyQt5, and both Apple's Python and Homebrew's
+    refuse `pip install` into themselves — that is PEP 668, the
+    `externally-managed-environment` error. Every `make` target picks the
+    virtualenv up automatically once it exists, so `make ui` just works.
+*   **MacTeX installs to `/Library/TeX/texbin`**, which is added to `PATH` by a
+    file in `/etc/paths.d` that only *login* shells read. A terminal you had
+    open before installing will not see `pdflatex`, and neither will an app
+    launched from Finder. `rosettaui.py` looks in that directory itself, so it
+    finds TeX either way — but `which pdflatex` may still come up empty until
+    you open a new terminal, which is expected rather than a broken install.
+
+`make install_apple-all` adds ImageMagick and Ghostscript.
+
+MacTeX is about a 5 GB download. If that is too much, BasicTeX plus the four
+packages this project actually uses is around 100 MB:
+
+```sh
+brew install --cask basictex
+sudo tlmgr update --self
+sudo tlmgr install orcidlink algorithms algorithmicx listings lm lm-math
+```
+
+To run without `make`:
+
+```sh
+.venv/bin/python rosettaui.py
+```
+
+### Windows
+
+There is no `make` on Windows, and none is needed. Open the folder in File
+Explorer and double-click, in order:
+
+| File | What it does |
+| --- | --- |
+| `install_windows.bat` | Installs PyQt5 and scipy, and offers to install MiKTeX |
+| `run_windows.bat` | Starts the explorer |
+
+`install_windows.bat` installs everything into your own account, so it never
+asks for administrator rights, and it prints a summary of what it found at the
+end. If it reports that Python is missing, install it first — either from
+[python.org](https://www.python.org/downloads/), **ticking "Add python.exe to
+PATH" on the installer's first screen**, or by running `winget install
+Python.Python.3.12` in Windows Terminal.
+
+MiKTeX is optional and is a ~200 MB download, so the installer asks before
+fetching it. It bundles `pdftoppm` as well as `pdflatex`, so it covers both TeX
+requirements at once. MiKTeX also downloads individual LaTeX packages on first
+use, so your first typeset may pause and show a progress box — that is normal.
+
+If you would rather use the command line, note that the interpreter is called
+`python`, not `python3`, and that arguments need double quotes:
+
+```bat
+python rosettaui.py --check-deps
+python rosettaui.py
+python rosettaui.py --tex "E = mc^2"
+```
+
+If `run_windows.bat` flashes and no window appears, run `python rosettaui.py`
+from a Command Prompt in this folder — the launcher is deliberately
+console-free, so that is where the error message will be.
 
 ---
 
@@ -124,8 +218,13 @@ you read and the code you run are the same artefact.
 python3 rosettaui.py                    # launch
 python3 rosettaui.py --tex '$E=mc^2$'   # launch on a given equation
 python3 rosettaui.py --selftest         # headless checks, no display needed
-python3 rosettaui.py --render-test      # offscreen render to /tmp/rosettaui.png
+python3 rosettaui.py --check-deps       # what is installed, and how to get the rest
+python3 rosettaui.py --render-test      # offscreen render to a PNG in the temp dir
 ```
+
+On Windows the interpreter is `python` rather than `python3`, and `--tex` takes
+double quotes: `python rosettaui.py --tex "E = mc^2"`. On macOS, after
+`make install_apple`, use `.venv/bin/python` in place of `python3`.
 
 ---
 

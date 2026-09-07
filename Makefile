@@ -1,4 +1,13 @@
+# macOS has no system package for PyQt5, and both Homebrew's Python and Apple's
+# refuse `pip install` into themselves (PEP 668, "externally-managed
+# environment").  install_apple therefore builds a virtualenv here, and every
+# target below picks it up automatically once it exists.  Linux is unaffected:
+# without a .venv this is plain python3, exactly as before.
+ifeq ($(wildcard .venv/bin/python),)
 PYTHON ?= python3
+else
+PYTHON ?= .venv/bin/python
+endif
 
 # What each package is actually needed for:
 #   python3-pyqt5 ............ the rosettaui.py interface
@@ -34,6 +43,7 @@ default:
 help:
 	@echo 'make install        install everything needed (Ubuntu/Debian)'
 	@echo 'make install-all    the above, plus the optional extras'
+	@echo 'make install_apple  install everything needed (macOS, via Homebrew)'
 	@echo 'make check-deps     report what is present and what is missing'
 	@echo 'make ui             launch the interactive explorer'
 	@echo 'make test           run every self test'
@@ -41,6 +51,9 @@ help:
 	@echo 'make pdf            typeset the paper to /tmp/neomath.pdf'
 	@echo 'make paper          the paper with the source appendix'
 	@echo 'make clean          remove caches and build products'
+	@echo
+	@echo 'Windows has no make: double-click install_windows.bat, then'
+	@echo 'run_windows.bat.  See the Install section of README.md.'
 
 install:
 	sudo apt-get update
@@ -51,7 +64,78 @@ install:
 install-all: install
 	sudo apt-get install -y --no-install-recommends $(APT_OPTIONAL)
 
+# ------------------------------------------------------------------ macOS
+#
+# What the Homebrew names correspond to:
+#   mactex-no-gui ... the full TeX Live, minus the GUI apps we never invoke.
+#                     It is a large download (~5 GB) but it is the only cask
+#                     that contains everything the paper needs -- orcidlink,
+#                     algpseudocode and listings are not in BasicTeX.  It also
+#                     ships pdftoppm and the Latin Modern OTFs, so it covers
+#                     the rasteriser and the fonts at the same time.
+#   poppler ......... pdftoppm on its own, as a fallback and for a lighter
+#                     install; harmless alongside MacTeX.
+#
+# PyQt5 goes into a virtualenv rather than the system Python: see the note at
+# the top of this file.  The cask install will ask for your password, since
+# TeX Live installs outside your home directory.
+#
+# Lighter alternative, if 5 GB is too much:
+#   brew install --cask basictex
+#   sudo tlmgr update --self
+#   sudo tlmgr install orcidlink algorithms algorithmicx listings lm lm-math
+APPLE_BREW = poppler
+APPLE_BREW_OPTIONAL = imagemagick ghostscript
+
+install_apple:
+	@command -v brew >/dev/null 2>&1 || { \
+		echo 'Homebrew is required.  Install it with:'; \
+		echo; \
+		echo '  /bin/bash -c "$$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"'; \
+		echo; \
+		echo 'then run "make install_apple" again.'; \
+		exit 1; }
+	brew install $(APPLE_BREW)
+	brew install --cask mactex-no-gui
+	python3 -m venv .venv
+	.venv/bin/python -m pip install --upgrade pip
+	.venv/bin/python -m pip install PyQt5 scipy
+	@echo
+	@echo 'Installed.  MacTeX puts its binaries in /Library/TeX/texbin, which'
+	@echo 'this shell will not have on PATH until you open a new one --'
+	@echo 'rosettaui.py looks there directly, so it works either way.'
+	@echo
+	@echo 'Run "make check-deps" to verify, "make ui" to start.'
+
+# Same, plus the extras that only improve the typeset previews.
+install_apple-all: install_apple
+	brew install $(APPLE_BREW_OPTIONAL)
+
+# Dash-spelled alias, to match install-all.
+install-apple: install_apple
+
+# ---------------------------------------------------------------- Windows
+#
+# make is not present on a stock Windows box, so this target exists only to
+# answer someone who found the Makefile first and tried the obvious thing.
+install_windows:
+	@echo 'Windows does not use make.  In File Explorer, open this folder and'
+	@echo 'double-click:'
+	@echo
+	@echo '    install_windows.bat     installs the dependencies'
+	@echo '    run_windows.bat         starts the explorer'
+	@echo
+	@echo 'See the Install section of README.md for the details.'
+
+install-windows: install_windows
+
 # Reports rather than fails, so it stays useful on a partly configured machine.
+#
+# The extra PATH entry is where MacTeX symlinks its binaries.  It is added to
+# the real PATH by /etc/paths.d, which only login shells read, so make cannot
+# rely on having inherited it.  On Linux the directory does not exist and the
+# entry is simply ignored.
+check-deps: PATH := $(PATH):/Library/TeX/texbin
 check-deps:
 	@echo 'required:'
 	@$(PYTHON) -c 'import PyQt5' 2>/dev/null \
@@ -64,8 +148,12 @@ check-deps:
 		&& echo '  orcidlink       ok' || echo '  orcidlink       MISSING  (texlive-latex-extra)'
 	@kpsewhich listings.sty >/dev/null 2>&1 \
 		&& echo '  listings        ok' || echo '  listings        MISSING  (texlive-latex-recommended)'
-	@fc-list 2>/dev/null | grep -qi 'latinmodern-math' \
-		&& echo '  Latin Modern    ok' || echo '  Latin Modern    MISSING  (fonts-lmodern)'
+	@# kpsewhich first: macOS has no fontconfig, and rosettaui.py loads these
+	@# straight out of the texmf tree anyway, so presence there is what counts.
+	@{ kpsewhich latinmodern-math.otf >/dev/null 2>&1 \
+		|| fc-list 2>/dev/null | grep -qi 'latinmodern-math'; } \
+		&& echo '  Latin Modern    ok' \
+		|| echo '  Latin Modern    MISSING  (fonts-lmodern / MacTeX)'
 	@command -v pdftoppm >/dev/null \
 		&& echo '  pdftoppm        ok' || echo '  pdftoppm        MISSING  (poppler-utils)'
 	@echo 'optional:'
@@ -105,4 +193,6 @@ clean:
 	rm -f /tmp/neomath.aux /tmp/neomath.log /tmp/neomath.out /tmp/neomath.tex
 
 .PHONY: default help install install-all check-deps ui test proofs \
-	render-test pdf paper clean
+	render-test pdf paper clean \
+	install_apple install-apple install_apple-all \
+	install_windows install-windows

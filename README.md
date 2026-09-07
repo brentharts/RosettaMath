@@ -1,6 +1,7 @@
 # RosettaMath
 
 *Bridging the gap between mathematical notation and executable Python.*
+- https://doi.org/10.5281/zenodo.22646969 "RosettaMath: Reading, Running and Proving Mathematics from LATEX"
 
 ## Overview
 

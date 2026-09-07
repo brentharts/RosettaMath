@@ -31,7 +31,7 @@
 \title{RosettaMath: Reading, Running and Proving Mathematics from \LaTeX{}\\
 \large A self-hosting translator, an interactive explorer, and a dependent-type
 micro-kernel, as a foundation for open mathematics education from school to research}
-\author{B.S. Hartshorn \orcidlink{0009-0004-2853-655X}\\
+\author{Brent S. Hartshorn \orcidlink{0009-0004-2853-655X} \small \url{brenthartshorn@proton.me} \\
 \small \url{https://github.com/brentharts/RosettaMath}}
 \date{September 2026}
 
@@ -39,39 +39,24 @@ micro-kernel, as a foundation for open mathematics education from school to rese
 \maketitle
 
 \begin{abstract}
-Mathematics is written in \LaTeX{} and computed in Python, and the two are
-connected by hand. RosettaMath closes that gap with three small, dependency-free
-Python programs that treat \LaTeX{} as an \emph{input} language rather than a
-typesetting target. \texttt{rosettamath.py} translates a strict subset of
-\LaTeX{}---math mode and \texttt{algpseudocode}---into executable Python and back
-again; it is self-hosting, written in the very subset it translates, and
-bootstraps to a byte-identical fixed point, while the reverse direction is
-verified by round-tripping functions and checking that they still behave the
-same. \texttt{rosettaui.py} renders an equation glyph by glyph in a desktop
-window in which every symbol is a live object: hover it for its name, origin and
-conventional meaning, click it for an offline explanation, right-click it for
-the encyclopedia article; the whole equation is identified against a library of
-well-known physics and mathematics, and the Python it becomes is shown alongside
-with physical constants resolved to \texttt{scipy.constants}.
-\texttt{lean4.py} is a Calculus of Constructions kernel with de Bruijn
-indices, inductive families with generated recursors---equality among
-them---an untrusted
+The translation of theoretical mathematical models into executable code remains a persistent bottleneck in computational science. While \LaTeX{} serves as the standard for sharing algebraic equations and algorithms, its representation is fundamentally disconnected from the explicit logic required by programming languages like Python. We present RosettaMath, a zero-dependency translator that converts a strict subset of LaTeX---specifically mathematical expressions and algorithmic pseudocode---directly into functional Python. Notably, RosettaMath is self-hosting; the core translation engine is written in the very \LaTeX{} subset it processes and bootstraps itself to a fixed point without external libraries. Beyond its mechanical translation capabilities, RosettaMath is designed as an educational bridge. By semantically mapping dense physics and mathematical conventions to explicitly named variables and scientific libraries (such as mapping standard symbols to scipy.constants), the tool demystifies standard notation for software developers while simultaneously teaching programmatic logic to mathematicians. RosettaMath offers a novel approach to literate programming, ensuring that the equations published in research are the exact algorithms executed in simulation.
+
+RosettaMath provides a custom PyQt interface for interactive exploration of equations, 
+and its own LEAN engine (\texttt{lean4.py}) a Calculus of Constructions kernel with de Bruijn
+indices, inductive families with generated recursors---equality among them---an untrusted
 elaborator that infers implicit arguments by Miller pattern unification with
 postponed constraints, and a \LaTeX{} statement language, so that a theorem
 about a Python function is stated as
 \verb|\forall x \in \text{Nat}, x = x|, or proved by induction, and checked
-by a kernel small enough to read in one sitting. We argue that these three pieces, precisely
-because they are small, local, open and written in the language students
+by a kernel small enough to read in one sitting. 
+
+We argue that these three pieces, precisely because they are small, local, open and written in the language students
 already learn, form a practical foundation for mathematics and programming
 education at every level---from a child clicking on a Greek letter to an
 undergraduate proving symmetry of equality to a researcher graduating to
 Lean---and that the same small trusted kernel points toward verified systems
-software when its statement language becomes the contract language of a
-self-contained compiler toolchain. We situate the work against the rapid
-mechanisation of mathematics, in which AI systems now formalise Fermat's Last
-Theorem in eleven days, and argue that what that moment most needs is not
-another prover but tools with which people can read, run and check
-mathematics on their own machines.
+software when its statement language becomes the contract language.
+
 \end{abstract}
 
 \section{Introduction}
@@ -102,7 +87,7 @@ International Mathematical Olympiad with proofs checked in Lean
 \cite{hubert2025}; a succession of open models followed
 \cite{ren2025,wang2025kimina,chen2025seed,lin2025goedel,achim2025aristotle};
 the strong Prime Number Theorem, which had stalled for eighteen months of expert
-effort, was formalised by an autoformalisation agent in three weeks
+effort, was formalised by an auto-formalisation agent in three weeks
 \cite{mathinc2025gauss}; AI systems began to find counterexamples to conjectures
 that had stood for a century \cite{buzzard2026counter}; and days before this
 paper was finished, a swarm of language-model agents produced the first complete,
@@ -125,9 +110,9 @@ proving will increasingly be done by machines and the understanding must still
 be done by people.
 
 \medskip
-\noindent The contributions since the previous draft are:
+\noindent The contributions:
 \begin{itemize}
-\item a \textbf{self-hosting translator} extended with implicit multiplication,
+\item a \textbf{self-hosting translator}, \texttt{rosettamath.py}, extended with implicit multiplication,
 inferred parameters, and a reverse translator whose output is verified by
 behaviour rather than by eye (\S\ref{sec:rosettamath});
 \item an \textbf{interactive explorer}, \texttt{rosettaui.py}, in which every
@@ -428,7 +413,7 @@ not---but that it is a \emph{local} one, in a single Python file, that a
 teacher can open and extend with the symbols and equations their own course
 uses.
 
-\subsection{Rendering, honestly}
+\subsection{The Rendering Engine}
 
 Rendering \LaTeX{} in a desktop widget is harder than it looks. The explorer
 uses its own two-pass layout engine---measure the tree, then place real
@@ -745,8 +730,8 @@ cannot read how it renders an equation, cannot correct an entry, cannot add
 their teacher's notation, and takes nothing with them when the licence ends.
 The alternative is not a worse proprietary tool but the same model that built
 the systems mathematics itself now runs on: Linux, Python, \LaTeX{}, and now
-Lean, whose stewards intend to become a foundation in the footsteps of Rust and
-Linux \cite{simons2026}. These are also, not coincidentally, the tools of a
+Lean, whose stewards intend to become a foundation in the footsteps of Linux 
+\cite{simons2026}. These are also, not coincidentally, the tools of a
 working scientist. A student who learns mathematics on them learns the
 workbench along with the subject.
 
@@ -815,28 +800,11 @@ believe \cite{anthropic2026flt}. That principle scales down as well as up.
 This is future work, and we do not claim more than the shape of it here. But it
 is why the kernel was built to be honest about what it trusts.
 
-\section{Limitations}
-
-The \LaTeX{} subset is deliberately small, and there are conventions it does
-not read: summation and product notation are handled in pseudocode but not as
-bare math-mode operators; matrices, integrals and limits are typeset but not
-translated. The classifier is a signature matcher and will be confused by
-equations that share symbols with unrelated ones; it says ``looks like'' for a
-reason. The knowledge base is written by one author and has one author's
-emphases. The kernel has inductive families with parameters and
-indices, but no universe polymorphism, so every type lives at a fixed level and
-each family needs a separate recursor for eliminating into $\mathrm{Type}$ and
-into $\mathrm{Prop}$; its constraint solver is greedy across holes. The explorer's rendering is serviceable, not beautiful, and
-degrades to a \texttt{pdflatex} image for anything demanding. None of these are
-hidden in the code, and the test suites---the translator's bootstrap and 21
-round-trip cases, the explorer's 53 checks and the kernel's 103---name what is
-covered.
-
 \section{Conclusion}
 
 The equations published in a paper and the code executed in a simulation should
-be the same artefact; a student should be able to click on any symbol in that
-artefact and be told what it means; and a claim about the code should be
+be the same artifact; a student should be able to click on any symbol in that
+artifact and be told what it means; and a claim about the code should be
 checkable by a kernel small enough to read. RosettaMath is a working example of
 all three, built as three small, local, open Python programs, and offered as a
 foundation for mathematics and programming education at every level in a

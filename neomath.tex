@@ -54,7 +54,8 @@ the encyclopedia article; the whole equation is identified against a library of
 well-known physics and mathematics, and the Python it becomes is shown alongside
 with physical constants resolved to \texttt{scipy.constants}.
 \texttt{lean4.py} is a Calculus of Constructions kernel with de Bruijn
-indices, declared inductive types and generated recursors, an untrusted
+indices, inductive families with generated recursors---equality among
+them---an untrusted
 elaborator that infers implicit arguments by Miller pattern unification with
 postponed constraints, and a \LaTeX{} statement language, so that a theorem
 about a Python function is stated as
@@ -136,9 +137,9 @@ automatic identification of what an equation ``looks like'' (\S\ref{sec:rosettau
 \item a \textbf{dependent-type micro-kernel}, \texttt{lean4.py}, that checks
 proofs about Python functions against theorems stated in \LaTeX{}, with an
 elaborator separated from a trusted core, implicit arguments, pattern
-unification, constraint postponement, and inductive types with generated
-recursors, so that $0 + n = n$ can be proved by induction
-(\S\ref{sec:lean4});
+unification, constraint postponement, and inductive families with generated
+recursors, so that $0 + n = n$ is proved by induction and equality itself is a
+declared type rather than an axiom (\S\ref{sec:lean4});
 \item an \textbf{argument} that these pieces, being local, open and modifiable,
 are a better foundation for mathematics education than the client--server
 applications and proprietary systems that currently dominate it
@@ -597,6 +598,28 @@ two because there is no universe polymorphism here; they share one computation
 rule. Definitions may not mention themselves---recursion belongs in the
 recursor---so unfolding always terminates.
 
+A family may also take \emph{parameters}, fixed across all constructors, and
+\emph{indices}, which vary from one constructor to the next. Parameters give
+$\mathrm{List}$: they are implicit in the constructors, so a list is written
+\verb|cons(7, cons(8, nil))| and its element type is inferred rather than
+spelled out, and a \verb|length| defined from \verb|List.rec| reduces
+$\mathrm{length}\;(\mathrm{cons}\;7\;(\mathrm{cons}\;8\;\mathrm{nil}))$ to $2$.
+
+Indices are what make equality expressible rather than assumed:
+\begin{lstlisting}
+inductive(env, 'Eq', [('refl', [], [Var('a')])],
+          params=[('A', Universe(1)), ('a', Var('A'), False)],
+          indices=[('b', Var('A'))], level=0)
+\end{lstlisting}
+$\mathrm{Eq}\;A\;a\;b$ is the family whose single constructor only ever builds
+the case where the index $b$ is $a$---which is the entire content of
+equality---and whose recursor is the J rule. Consequently
+\verb|symm|, \verb|trans|, \verb|congrArg| and \verb|transport|, which were
+declared as axioms in the previous version of this system, are now
+\emph{proved} from that recursor and checked like any other definition. The
+distinction is not decorative: an axiom is something a reader has to trust, and
+a definition is not. The trusted base is the kernel and nothing else.
+
 With addition defined by recursion on its second argument, the two halves of a
 familiar pair of facts come apart in a way that is worth showing a student.
 $\mathrm{add}\;2\;3$ computes to $5$, and $m + 0 = m$ holds by computation
@@ -624,15 +647,16 @@ of constants and every theorem stood alone.
 
 \subsection{What it does and does not do}
 
-The environment ships $\mathrm{Eq}$, \verb|refl|, \verb|symm|, \verb|trans|,
-\verb|congrArg|, \verb|transport|, and the inductive types $\mathrm{Nat}$ and
-$\mathrm{Bool}$; the test suite runs 132 checks, each a regression from a bug
-the kernel used to have or a construction it can now do, and each of the
+The environment ships the inductive types $\mathrm{Nat}$, $\mathrm{Bool}$,
+$\mathrm{List}$ and $\mathrm{Eq}$, with \verb|refl| as a constructor and
+\verb|symm|, \verb|trans|, \verb|congrArg| and \verb|transport| proved from
+\verb|Eq.ind|; the test suite runs 153 checks, each a regression from a bug the
+kernel used to have or a construction it can now do, and each of the
 elaboration features is verified to be doing the work by disabling it and
 watching the corresponding theorem fail. The kernel has no universe
-polymorphism, no inductive families---no parameters and no indices, so
-$\mathrm{Nat}$ and $\mathrm{Bool}$ but not $\mathrm{List}\;\alpha$---and no
-tactics; every proof is a term. The constraint solver is
+polymorphism and no tactics; every proof is a term. A recursive argument is
+allowed only in a family without indices, since the induction hypothesis would
+otherwise have to name the indices of that occurrence. The constraint solver is
 greedy across holes. None of that is hidden, and all of it is the point: a
 student can read \texttt{lean4.py} in an afternoon and understand exactly what
 it means for a machine to have checked a proof, and then go to Lean knowing
@@ -799,9 +823,10 @@ bare math-mode operators; matrices, integrals and limits are typeset but not
 translated. The classifier is a signature matcher and will be confused by
 equations that share symbols with unrelated ones; it says ``looks like'' for a
 reason. The knowledge base is written by one author and has one author's
-emphases. The kernel has induction on the naturals but no universe
-polymorphism and no inductive families, so it cannot express a type with
-parameters such as a list; its constraint solver is greedy across holes. The explorer's rendering is serviceable, not beautiful, and
+emphases. The kernel has inductive families with parameters and
+indices, but no universe polymorphism, so every type lives at a fixed level and
+each family needs a separate recursor for eliminating into $\mathrm{Type}$ and
+into $\mathrm{Prop}$; its constraint solver is greedy across holes. The explorer's rendering is serviceable, not beautiful, and
 degrades to a \texttt{pdflatex} image for anything demanding. None of these are
 hidden in the code, and the test suites---the translator's bootstrap and 21
 round-trip cases, the explorer's 53 checks and the kernel's 103---name what is

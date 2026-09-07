@@ -63,6 +63,22 @@ constructor and needs the induction principle.  @definition adds a checked
 Python function to the environment, so proofs can be built on earlier ones
 instead of standing alone.
 
+A family may take parameters, fixed across the constructors, and indices, which
+vary from one to the next:
+
+    inductive(env, 'List', [('nil', []), ('cons', [Var('A'), REC])],
+              params=[('A', Universe(1))])
+
+    inductive(env, 'Eq', [('refl', [], [Var('a')])],
+              params=[('A', Universe(1)), ('a', Var('A'), False)],
+              indices=[('b', Var('A'))], level=0)
+
+Equality is therefore no longer assumed.  It is the family whose single
+constructor is refl, its recursor is the J rule, and symm, trans, congrArg and
+transport are proved from it rather than declared as axioms -- which is worth
+knowing, because an axiom is something you have to trust and a definition is
+not.
+
 Implicit arguments
 ------------------
 A binder may be implicit, written \forall {A : Type}, ... in a statement.  Each
@@ -325,7 +341,7 @@ def pretty(expr, names=None):
     if isinstance(expr, Universe):
         return "Prop" if expr.level == 0 else f"Type {expr.level - 1}"
     if isinstance(expr, Var):
-        return expr.name
+        return '0' if expr.name == 'zero' else expr.name
     if isinstance(expr, Bound):
         return names[expr.index] if expr.index < len(names) else f"#{expr.index}"
     if isinstance(expr, Meta):
@@ -614,83 +630,172 @@ def axiom(env, name, type_):
     return declare(env, name, type_, kind='axiom')
 
 
-def inductive(env, name, constructors, level=1):
-    r"""Declare an inductive type, its constructors, and its recursors.
+def binding(spec, implicit=True):
+    """(name, type) or (name, type, implicit) -> a uniform triple."""
+    if len(spec) == 3:
+        return spec
+    return (spec[0], spec[1], implicit)
 
-    A constructor is (name, [argument types]), where the marker REC stands for
-    a recursive occurrence of the type being defined:
 
-        inductive(env, 'Nat', [('zero', []), ('succ', [REC])])
+def constructor_parts(spec):
+    """(name, args) or (name, args, index values) -> a uniform triple."""
+    if len(spec) == 3:
+        return spec
+    return (spec[0], spec[1], [])
+
+
+def inductive(env, name, constructors, params=(), indices=(), level=1):
+    r"""Declare an inductive family, its constructors, and its recursors.
+
+    A constructor is (name, [argument types]) or, for a family with indices,
+    (name, [argument types], [index values]).  The marker REC stands for a
+    recursive occurrence.  Parameters are fixed across all constructors and
+    default to implicit there; indices vary from constructor to constructor,
+    which is what makes equality expressible:
+
+        inductive(env, 'List', [('nil', []), ('cons', [Var('A'), REC])],
+                  params=[('A', Universe(1))])
+
+        inductive(env, 'Eq', [('refl', [], [Var('a')])],
+                  params=[('A', Universe(1)), ('a', Var('A'), False)],
+                  indices=[('b', Var('A'))], level=0)
 
     Two recursors are generated because there is no universe polymorphism
     here: T.rec eliminates into Type, for defining functions, and T.ind into
     Prop, for proving theorems.  They share one computation rule.
 
-    Restrictions, stated rather than hidden: no parameters, no indices, and a
-    recursive argument must be the type itself rather than a function into it.
-    That is enough for Nat and Bool, which is enough to have induction.
+    The one restriction left, stated rather than hidden: a recursive argument
+    is only allowed in a family without indices, since the induction
+    hypothesis would otherwise have to name the indices of that occurrence.
     """
-    declare(env, name, Universe(level), kind='inductive')
-    self_type = Var(name)
-    for cname, args in constructors:
-        ctype = self_type
-        for spec in reversed(args):
-            ctype = arrow(self_type if spec is REC else spec, ctype)
+    params = [binding(p) for p in params]
+    indices = [binding(i, implicit=False) for i in indices]
+    constructors = [constructor_parts(c) for c in constructors]
+    if indices and any(REC in args for _, args, _ in constructors):
+        raise KernelError(f"{name}: a recursive argument in an indexed family "
+                          f"is not supported")
+
+    former = Universe(level)
+    for iname, itype, _ in reversed(indices):
+        former = Pi(iname, itype, former)
+    for pname, ptype, _ in reversed(params):
+        former = Pi(pname, ptype, former)
+    declare(env, name, former, kind='inductive')
+
+    for cname, args, ivals in constructors:
+        ctype = applied(name, params, ivals)
+        names = arg_names(args)
+        for n, spec in reversed(list(zip(names, args))):
+            ctype = Pi(n, applied(name, params, []) if spec is REC else spec,
+                       ctype)
+        for pname, ptype, imp in reversed(params):
+            ctype = Pi(pname, ptype, ctype, implicit=imp)
         declare(env, cname, ctype, kind='constructor')
 
     for suffix, target in (('rec', Universe(1)), ('ind', Universe(0))):
         rname = f'{name}.{suffix}'
         declare(env, rname,
-                recursor_type(name, constructors, target),
-                rule=recursor_rule(rname, constructors), kind='recursor')
+                recursor_type(name, constructors, params, indices, target),
+                rule=recursor_rule(rname, constructors, len(params),
+                                   len(indices)),
+                kind='recursor')
     return env
 
 
-def recursor_type(name, constructors, target):
-    """forall {C : T -> target}, <minor premises> -> forall t : T, C t"""
-    self_type = Var(name)
-    body = Pi('t', self_type, App(Var('C'), Var('t')))
-    for i, (cname, args) in reversed(list(enumerate(constructors))):
-        minor = minor_premise_for(name, cname, args)
-        body = arrow(minor, body)
-    return Pi('C', arrow(self_type, target), body, implicit=True)
+def applied(name, params, indices):
+    """T p1 .. pn i1 .. ik, as it appears in a constructor's result."""
+    out = Var(name)
+    for pname, _, _ in params:
+        out = App(out, Var(pname))
+    for i in indices:
+        out = App(out, i)
+    return out
 
 
-def minor_premise_for(name, cname, args):
-    self_type = Var(name)
-    names = [f'a{i}' for i in range(len(args))]
-    applied = Var(cname)
-    for n in names:
-        applied = App(applied, Var(n))
-    body = App(Var('C'), applied)
-    for n, spec in reversed(list(zip(names, args))):
-        if spec is REC:
-            body = arrow(App(Var('C'), Var(n)), body)
-    for n, spec in reversed(list(zip(names, args))):
-        body = Pi(n, self_type if spec is REC else spec, body)
+def arg_names(args):
+    return [f'a{i}' for i in range(len(args))]
+
+
+def motive_type(name, params, indices, target):
+    """C : forall indices, T params indices -> target"""
+    body = arrow(applied(name, params, [Var(n) for n, _, _ in indices]), target)
+    for iname, itype, _ in reversed(indices):
+        body = Pi(iname, itype, body)
     return body
 
 
-def recursor_rule(rname, constructors):
-    """Iota: once the scrutinee is a constructor, take the matching case."""
+def apply_motive(indices_vals, scrutinee):
+    out = Var('C')
+    for v in indices_vals:
+        out = App(out, v)
+    return App(out, scrutinee)
+
+
+def minor_premise_for(name, cname, args, ivals, params):
+    """The recursor's case for one constructor."""
+    names = arg_names(args)
+    built = Var(cname)
+    for pname, _, _ in params:
+        built = App(built, Var(pname))
+    for n in names:
+        built = App(built, Var(n))
+    body = apply_motive(ivals, built)
+    for n, spec in reversed(list(zip(names, args))):
+        if spec is REC:
+            body = arrow(apply_motive([], Var(n)), body)
+    for n, spec in reversed(list(zip(names, args))):
+        body = Pi(n, applied(name, params, []) if spec is REC else spec, body)
+    return body
+
+
+def recursor_type(name, constructors, params, indices, target):
+    """forall {params} {C}, <minor premises> -> forall indices t, C indices t"""
+    index_vars = [Var(n) for n, _, _ in indices]
+    body = Pi('t', applied(name, params, index_vars),
+              apply_motive(index_vars, Var('t')))
+    for iname, itype, _ in reversed(indices):
+        body = Pi(iname, itype, body)
+    for cname, args, ivals in reversed(constructors):
+        body = arrow(minor_premise_for(name, cname, args, ivals, params), body)
+    body = Pi('C', motive_type(name, params, indices, target), body,
+              implicit=True)
+    for pname, ptype, _ in reversed(params):
+        body = Pi(pname, ptype, body, implicit=True)
+    return body
+
+
+def recursor_rule(rname, constructors, nparams=0, nindices=0):
+    """Iota: once the scrutinee is a constructor, take the matching case.
+
+    The arguments arrive as parameters, motive, cases, indices, scrutinee --
+    the same order the recursor's type quantifies them.
+    """
+    ncases = len(constructors)
+
     def rule(env, args):
-        needed = 1 + len(constructors) + 1          # motive, cases, scrutinee
+        needed = nparams + 1 + ncases + nindices + 1
         if len(args) < needed:
             return None
-        motive, cases = args[0], args[1:1 + len(constructors)]
-        scrutinee, rest = args[needed - 1], args[needed:]
+        params = args[:nparams]
+        motive = args[nparams]
+        cases = args[nparams + 1:nparams + 1 + ncases]
+        scrutinee = args[needed - 1]
+        rest = args[needed:]
         head, cargs = spine(normalize(scrutinee, env))
         if not isinstance(head, Var):
             return None
-        for case, (cname, spec) in zip(cases, constructors):
-            if head.name != cname or len(cargs) != len(spec):
+        for case, (cname, spec, _ivals) in zip(cases, constructors):
+            if head.name != cname or len(cargs) != nparams + len(spec):
                 continue
+            fields = cargs[nparams:]        # the constructor's own arguments
             out = case
-            for a in cargs:
+            for a in fields:
                 out = App(out, a)
-            for a, kind in zip(cargs, spec):
+            for a, kind in zip(fields, spec):
                 if kind is REC:
                     sub = Var(rname)
+                    for p in params:
+                        sub = App(sub, p)
                     sub = App(sub, motive)
                     for c in cases:
                         sub = App(sub, c)
@@ -1123,8 +1228,14 @@ class Elaborator:
             # explicit(f) turns insertion off for this head, Lean's @f
             if isinstance(expr.func, Var) and expr.func.name == EXPLICIT:
                 return self.infer(expr.arg, insert=False)
+            # ...and for every argument of it, not just the first: otherwise
+            # insertion creeps back in after each application and the second
+            # explicit argument meets a hole where its binder should be
+            head, _ = spine(expr)
+            if isinstance(head, Var) and head.name == EXPLICIT:
+                insert = False
 
-            func, func_type = self.infer(expr.func, insert=True)
+            func, func_type = self.infer(expr.func, insert=insert)
             func_type = normalize(resolve(func_type, self.subst), self.env)
             if not isinstance(func_type, Pi):
                 raise KernelError(f"Expected a function, got "
@@ -1556,107 +1667,35 @@ def compile_python_to_lean(func):
 
 # --------------------------------------------------------- global environment
 
-def _eq_type():
-    """Eq : forall A : Type 0, A -> A -> Prop"""
-    return Pi('A', Universe(1),
-              Pi('a', Var('A'), Pi('b', Var('A'), Universe(0))))
-
-
-def _refl_type():
-    r"""refl : forall {A : Type 0}, forall a : A, Eq A a a
-
-    A is implicit, so a proof is written refl(x) and the elaborator recovers
-    A by unifying the type of x with the expected argument type.  Write
-    explicit(refl)(Nat, x) to supply it by hand.
-    """
-    same = App(App(App(Var('Eq'), Var('A')), Var('a')), Var('a'))
-    return Pi('A', Universe(1), Pi('a', Var('A'), same), implicit=True)
-
-
 def _eq(t, x, y):
     return App(App(App(Var('Eq'), t), x), y)
 
 
-def _symm_type():
-    r"""symm : forall {A} {a b : A}, Eq A a b -> Eq A b a"""
-    return Pi('A', Universe(1),
-              Pi('a', Var('A'),
-                 Pi('b', Var('A'),
-                    arrow(_eq(Var('A'), Var('a'), Var('b')),
-                          _eq(Var('A'), Var('b'), Var('a'))),
-                    implicit=True),
-                 implicit=True),
-              implicit=True)
+def _refl(t, x):
+    return App(App(Var('refl'), t), x)
 
 
-def _trans_type():
-    r"""trans : forall {A} {a b c : A}, Eq A a b -> Eq A b c -> Eq A a c"""
-    inner = arrow(_eq(Var('A'), Var('a'), Var('b')),
-                  arrow(_eq(Var('A'), Var('b'), Var('c')),
-                        _eq(Var('A'), Var('a'), Var('c'))))
-    return Pi('A', Universe(1),
-              Pi('a', Var('A'),
-                 Pi('b', Var('A'),
-                    Pi('c', Var('A'), inner, implicit=True),
-                    implicit=True),
-                 implicit=True),
-              implicit=True)
+def _J(t, a, motive, base, b, h):
+    """Eq.ind: induction on a proof of equality, the J rule."""
+    out = App(App(App(App(Var('Eq.ind'), t), a), motive), base)
+    return App(App(out, b), h)
 
 
-def _congr_type():
-    r"""congrArg : forall {A B} {f : A -> B} {a b : A}, Eq A a b -> Eq B (f a) (f b)
-
-    f is implicit, so working out what it is means solving ?f x = g x -- a
-    higher-order problem, and the reason the unifier needs Miller patterns.
-    """
-    inner = arrow(_eq(Var('A'), Var('a'), Var('b')),
-                  _eq(Var('B'), App(Var('f'), Var('a')),
-                      App(Var('f'), Var('b'))))
-    return Pi('A', Universe(1),
-              Pi('B', Universe(1),
-                 Pi('f', arrow(Var('A'), Var('B')),
-                    Pi('a', Var('A'),
-                       Pi('b', Var('A'), inner, implicit=True),
-                       implicit=True),
-                    implicit=True),
-                 implicit=True),
-              implicit=True)
+def _motive(name, t, a, body):
+    """lam b : t. lam _ : Eq t a b. body -- the motive J is eliminating with."""
+    return Lambda(name, t, Lambda('_h', _eq(t, a, Var(name)), body))
 
 
-def _transport_type():
-    r"""transport : forall {A} {P : A -> Prop} {a b : A}, Eq A a b -> P a -> P b
-
-    The motive P is implicit and appears applied, so ?P a = <goal> is again a
-    pattern problem.
-    """
-    inner = arrow(_eq(Var('A'), Var('a'), Var('b')),
-                  arrow(App(Var('P'), Var('a')), App(Var('P'), Var('b'))))
-    return Pi('A', Universe(1),
-              Pi('P', arrow(Var('A'), Universe(0)),
-                 Pi('a', Var('A'),
-                    Pi('b', Var('A'), inner, implicit=True),
-                    implicit=True),
-                 implicit=True),
-              implicit=True)
-
-
-# A global logical environment for our theorems.  Nat is a Type, not a Prop:
-# declaring it a Prop is what let the old identity example typecheck for the
-# wrong reason.
+# A global logical environment for our theorems.  Nat, Bool and Eq are declared
+# as inductive types rather than assumed: Nat is a Type, not a Prop -- declaring
+# it a Prop is what let the old identity example typecheck for the wrong reason
+# -- and equality is an indexed family whose one constructor is refl, so the
+# four lemmas below are proved from its induction principle instead of being
+# axioms.
 GLOBAL_ENV = {
     "Real": Universe(1),
-    "Eq": _eq_type(),
-    "refl": _refl_type(),
-    "symm": _symm_type(),
-    "trans": _trans_type(),
-    "congrArg": _congr_type(),
-    "transport": _transport_type(),
 }
 
-# Nat and Bool are declared properly rather than assumed: with constructors and
-# a recursor, so that a function can compute and a theorem can be proved by
-# induction.  add recurses on its second argument, which is why add m zero
-# reduces on its own and add zero n needs an induction.
 inductive(GLOBAL_ENV, 'Bool', [('true', []), ('false', [])])
 inductive(GLOBAL_ENV, 'Nat', [('zero', []), ('succ', [REC])])
 
@@ -1668,6 +1707,71 @@ define(GLOBAL_ENV, 'add', arrow(_NAT, arrow(_NAT, _NAT)),
                       Lambda('k', _NAT, Lambda('ih', _NAT,
                                                App(Var('succ'), Var('ih'))))),
                   Var('n')))))
+
+# a = b is an indexed family: the index is b, and refl only ever builds the
+# case where it is a.  That is the whole content of equality.
+inductive(GLOBAL_ENV, 'Eq', [('refl', [], [Var('a')])],
+          params=[('A', Universe(1)), ('a', Var('A'), False)],
+          indices=[('b', Var('A'))], level=0)
+
+_A, _a, _b, _c = Var('A'), Var('a'), Var('b'), Var('c')
+
+define(GLOBAL_ENV, 'symm',
+       Pi('A', Universe(1),
+          Pi('a', _A, Pi('b', _A,
+             arrow(_eq(_A, _a, _b), _eq(_A, _b, _a)), implicit=True),
+             implicit=True),
+          implicit=True),
+       Lambda('A', Universe(1), Lambda('a', _A, Lambda('b', _A,
+              Lambda('h', _eq(_A, _a, _b),
+                     _J(_A, _a, _motive('b2', _A, _a, _eq(_A, Var('b2'), _a)),
+                        _refl(_A, _a), _b, Var('h')))))))
+
+define(GLOBAL_ENV, 'trans',
+       Pi('A', Universe(1),
+          Pi('a', _A, Pi('b', _A, Pi('c', _A,
+             arrow(_eq(_A, _a, _b), arrow(_eq(_A, _b, _c), _eq(_A, _a, _c))),
+             implicit=True), implicit=True), implicit=True),
+          implicit=True),
+       Lambda('A', Universe(1), Lambda('a', _A, Lambda('b', _A, Lambda('c', _A,
+              Lambda('h1', _eq(_A, _a, _b), Lambda('h2', _eq(_A, _b, _c),
+                     _J(_A, _b, _motive('c2', _A, _b, _eq(_A, _a, Var('c2'))),
+                        Var('h1'), _c, Var('h2')))))))))
+
+define(GLOBAL_ENV, 'congrArg',
+       Pi('A', Universe(1), Pi('B', Universe(1),
+          Pi('f', arrow(_A, Var('B')),
+             Pi('a', _A, Pi('b', _A,
+                arrow(_eq(_A, _a, _b),
+                      _eq(Var('B'), App(Var('f'), _a), App(Var('f'), _b))),
+                implicit=True), implicit=True), implicit=True),
+          implicit=True), implicit=True),
+       Lambda('A', Universe(1), Lambda('B', Universe(1),
+              Lambda('f', arrow(_A, Var('B')), Lambda('a', _A, Lambda('b', _A,
+                     Lambda('h', _eq(_A, _a, _b),
+                            _J(_A, _a,
+                               _motive('b2', _A, _a,
+                                       _eq(Var('B'), App(Var('f'), _a),
+                                           App(Var('f'), Var('b2')))),
+                               _refl(Var('B'), App(Var('f'), _a)),
+                               _b, Var('h'))))))))) 
+
+define(GLOBAL_ENV, 'transport',
+       Pi('A', Universe(1),
+          Pi('P', arrow(_A, Universe(0)),
+             Pi('a', _A, Pi('b', _A,
+                arrow(_eq(_A, _a, _b),
+                      arrow(App(Var('P'), _a), App(Var('P'), _b))),
+                implicit=True), implicit=True), implicit=True),
+          implicit=True),
+       Lambda('A', Universe(1), Lambda('P', arrow(_A, Universe(0)),
+              Lambda('a', _A, Lambda('b', _A,
+                     Lambda('h', _eq(_A, _a, _b),
+                            Lambda('pa', App(Var('P'), _a),
+                                   _J(_A, _a,
+                                      _motive('b2', _A, _a,
+                                              App(Var('P'), Var('b2'))),
+                                      Var('pa'), _b, Var('h')))))))))
 
 STRICT = True                 # a failed theorem raises; --non-strict prints
 VERBOSE = True
@@ -1872,7 +1976,7 @@ def selftest():
           raises(lambda: type_check(env, new_meta('E')),
                  'Unsolved metavariable'))
     check('refl is implicit in its type argument',
-          GLOBAL_ENV['refl'].implicit)
+          type_of(GLOBAL_ENV, 'refl').implicit)
     check('an implicit argument that cannot be inferred is reported',
           raises(lambda: elaborate(env, Var('refl')), 'Could not infer'))
 
@@ -2025,9 +2129,12 @@ def selftest():
     print('dependent constants')
     for name in ('symm', 'trans', 'congrArg', 'transport'):
         check('%-10s is well formed' % name,
-              isinstance(type_check(GLOBAL_ENV, GLOBAL_ENV[name]), Universe))
+              isinstance(type_check(GLOBAL_ENV, type_of(GLOBAL_ENV, name)),
+                         Universe))
+        check('%-10s is proved, not assumed' % name,
+              decl_of(GLOBAL_ENV, name).kind == 'definition')
     check('transport takes its motive implicitly',
-          GLOBAL_ENV['transport'].body.implicit)
+          type_of(GLOBAL_ENV, 'transport').body.implicit)
 
     print('LaTeX front end')
     cases = [
@@ -2128,6 +2235,98 @@ def selftest():
     check('Bool has two constructors that are not equal terms',
           Var('true') != Var('false')
           and type_check(GLOBAL_ENV, Var('true')) == Var('Bool'))
+
+    print('inductive families')
+    fam = dict(GLOBAL_ENV)
+    inductive(fam, 'List', [('nil', []), ('cons', [Var('A'), REC])],
+              params=[('A', Universe(1))])
+    check('a parameterised type former takes its parameter',
+          type_of(fam, 'List') == arrow(Universe(1), Universe(1)))
+    check('a parameter is implicit in the constructors',
+          type_of(fam, 'nil').implicit
+          and type_of(fam, 'cons').implicit)
+    check('List Nat and List Bool are different types',
+          App(Var('List'), Var('Nat')) != App(Var('List'), Var('Bool')))
+    listnat = App(Var('List'), Var('Nat'))
+    define(fam, 'length', arrow(listnat, Var('Nat')),
+           Lambda('xs', listnat,
+                  App(App(App(App(App(Var('List.rec'), Var('Nat')),
+                                  Lambda('_', listnat, Var('Nat'))),
+                              Var('zero')),
+                          Lambda('a', Var('Nat'),
+                                 Lambda('as', listnat,
+                                        Lambda('ih', Var('Nat'),
+                                               App(Var('succ'), Var('ih')))))),
+                      Var('xs'))))
+
+    def mklist(*ns):
+        out = App(Var('nil'), Var('Nat'))
+        for n in reversed(ns):
+            out = App(App(App(Var('cons'), Var('Nat')), numeral(n)), out)
+        return out
+    check('a list of naturals is a List Nat',
+          type_check(fam, mklist(7, 8, 9)) == listnat)
+    check('and the recursor counts it',
+          normalize(App(Var('length'), mklist(7, 8, 9)), fam) == numeral(3))
+    check('an empty list has length zero',
+          normalize(App(Var('length'), mklist()), fam) == numeral(0))
+    check('a list may not mix its element types',
+          raises(lambda: type_check(fam, App(App(App(Var('cons'), Var('Nat')),
+                                                 Var('true')), mklist())),
+                 'Type mismatch'))
+    check('a recursive argument in an indexed family is refused',
+          raises(lambda: inductive(dict(GLOBAL_ENV), 'Bad',
+                                   [('c', [REC], [Var('a')])],
+                                   params=[('A', Universe(1)),
+                                           ('a', Var('A'), False)],
+                                   indices=[('b', Var('A'))]),
+                 'indexed family'))
+
+    # explicit() has to hold for the whole application, not just the head:
+    # with more than one explicit argument, insertion used to creep back in
+    define(fam, 'lmotive', arrow(listnat, Universe(1)),
+           Lambda('t', listnat, Var('Nat')))
+    define(fam, 'lstep',
+           Pi('a', Var('Nat'), Pi('t', listnat,
+              arrow(Var('Nat'), Var('Nat')))),
+           Lambda('a', Var('Nat'), Lambda('t', listnat,
+                  Lambda('h', Var('Nat'), App(Var('succ'), Var('h'))))))
+    # written the way a user would: the element type is left to inference
+    inferred = App(App(Var('cons'), numeral(1)),
+                   App(App(Var('cons'), numeral(2)), Var('nil')))
+    surface = App(App(App(App(App(App(Var('explicit'), Var('List.rec')),
+                                  Var('Nat')), Var('lmotive')),
+                          numeral(0)), Var('lstep')), inferred)
+    term, ty = elaborate(fam, surface)
+    check('explicit() holds across every argument, not just the head',
+          normalize(term, fam) == numeral(2))
+    check('and the element type of the list was inferred, never written',
+          'cons(Nat)' in str(term))
+
+    print('equality as an inductive family')
+    check('Eq is declared, not assumed',
+          decl_of(GLOBAL_ENV, 'Eq').kind == 'inductive')
+    check('and refl is its one constructor',
+          decl_of(GLOBAL_ENV, 'refl').kind == 'constructor')
+    check('Eq has the type it always had',
+          type_of(GLOBAL_ENV, 'Eq')
+          == Pi('A', Universe(1), Pi('a', Var('A'),
+                                     Pi('b', Var('A'), Universe(0)))))
+    check('and so does refl',
+          type_of(GLOBAL_ENV, 'refl')
+          == Pi('A', Universe(1),
+                Pi('a', Var('A'), eq3(Var('A'), Var('a'), Var('a'))),
+                implicit=True))
+    check('Eq.ind is the J rule: it eliminates a proof of equality',
+          isinstance(type_of(GLOBAL_ENV, 'Eq.ind'), Pi))
+    check('J computes on refl',
+          normalize(_J(Var('Nat'), Var('zero'),
+                       _motive('b2', Var('Nat'), Var('zero'), Var('Nat')),
+                       numeral(4), Var('zero'),
+                       _refl(Var('Nat'), Var('zero'))), GLOBAL_ENV)
+          == numeral(4))
+    check('symm really reduces to an application of J',
+          'Eq.ind' in str(decl_of(GLOBAL_ENV, 'symm').value))
 
     print('computation')
     plus = lambda a, b: App(App(Var('add'), a), b)
@@ -2392,6 +2591,34 @@ def demo():
     def add_zero_left(n: 'Nat'):
         return explicit(Nat.ind)(add_zero_motive, refl(zero),
                                  add_zero_induction_step, n)
+
+    print("\n=== A type with a parameter ===")
+    inductive(GLOBAL_ENV, 'List', [('nil', []), ('cons', [Var('A'), REC])],
+              params=[('A', Universe(1))])
+    print(f"List : {readable(type_of(GLOBAL_ENV, 'List'))}")
+    print(f"cons : {readable(type_of(GLOBAL_ENV, 'cons'))}")
+
+    # the recursor needs its motive and its step case, each a checked
+    # definition in its own right
+    @definition(r"\text{List} \text{Nat} \to \text{Type}")
+    def length_motive(t: r'\text{List} \text{Nat}'):
+        return Nat
+
+    @definition(r"\forall a \in \text{Nat}, \forall t \in \text{List} \text{Nat}, "
+                r"\text{Nat} \to \text{Nat}")
+    def length_step(a: 'Nat', t: r'\text{List} \text{Nat}', h: 'Nat'):
+        return succ(h)
+
+    @definition(r"\text{List} \text{Nat} \to \text{Nat}")
+    def length(t: r'\text{List} \text{Nat}'):
+        return explicit(List.rec)(Nat, length_motive, 0, length_step, t)
+
+    # the element type of the list is never written down: the elaborator
+    # works it out from the 7
+    @theorem(r"\text{Eq} \text{Nat} "
+             r"(\text{length} (\text{cons} 7 (\text{cons} 8 \text{nil}))) 2")
+    def a_two_element_list_has_length_two():
+        return refl(2)
 
     print("\n--- and a proof that should fail ---")
     try:

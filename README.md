@@ -303,8 +303,9 @@ open, with ordinary names, which is what puts `?P a` in the pattern fragment at
 all; two closed types facing each other would leave de Bruijn indices with no
 name to abstract over.
 
-The environment ships `Eq`, `refl`, `symm`, `trans`, `congrArg` and
-`transport`.
+The environment ships the inductive types `Nat`, `Bool`, `List` and `Eq`,
+with `refl` as a constructor and `symm`, `trans`, `congrArg` and `transport`
+proved from `Eq.ind`.
 
 ### Definitions and inductive types
 
@@ -334,10 +335,50 @@ def add_zero_left(n: 'Nat'):
 ```
 
 `@definition` adds a checked function to the environment, so later proofs can
-build on earlier ones instead of standing alone. Restrictions are stated rather
-than hidden: inductive types take no parameters and no indices, and a
-definition may not mention itself, so unfolding always terminates — recursion
-belongs in the recursor.
+build on earlier ones instead of standing alone.
+
+### Families: parameters, indices, and equality
+
+A family may take **parameters**, fixed across all constructors, and
+**indices**, which vary from one constructor to the next:
+
+```python
+inductive(env, 'List', [('nil', []), ('cons', [Var('A'), REC])],
+          params=[('A', Universe(1))])
+
+inductive(env, 'Eq', [('refl', [], [Var('a')])],
+          params=[('A', Universe(1)), ('a', Var('A'), False)],
+          indices=[('b', Var('A'))], level=0)
+```
+
+Parameters are implicit in the constructors, so a list is written
+`cons(7, cons(8, nil))` and the element type is inferred, never spelled out.
+`List.rec` then computes: a `length` defined from it reduces
+`length (cons 7 (cons 8 nil))` to `2`.
+
+Indices are what make **equality expressible as an inductive type** rather than
+assumed. `Eq A a b` is the family whose one constructor `refl` only ever builds
+the case where `b` is `a` — that is the entire content of equality — and its
+recursor is the J rule. So `symm`, `trans`, `congrArg` and `transport` are now
+*proved* from it:
+
+```
+inductive   Eq        : ∀ A : Type 0, (A → (A → Prop))
+constructor refl      : ∀ {A : Type 0}, ∀ a : A, Eq A a a
+recursor    Eq.ind    : ∀ {A} {a : A} {C : ∀ b : A, Eq A a b → Prop},
+                          C a (refl A a) → ∀ b, ∀ t : Eq A a b, C b t
+definition  symm      : ∀ {A} {a b : A}, Eq A a b → Eq A b a
+definition  trans     : ...
+```
+
+That matters because an axiom is something you have to trust and a definition
+is not. The trusted base is now the kernel and nothing else.
+
+The restrictions that remain are stated rather than hidden: a definition may
+not mention itself, so unfolding always terminates — recursion belongs in the
+recursor — and a recursive argument is only allowed in a family without
+indices, since the induction hypothesis would otherwise have to name the
+indices of that occurrence.
 
 ### The statement language
 
@@ -357,7 +398,7 @@ lexes the subset and `rosettamath.unescape` handles `\text{}` content.
 
 ```sh
 make proofs              # check the theorems
-python3 lean4.py --selftest      # 132 kernel, elaborator and front-end checks
+python3 lean4.py --selftest      # 153 kernel, elaborator and front-end checks
 python3 lean4.py --non-strict    # report failures instead of raising
 ```
 

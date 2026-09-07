@@ -28,7 +28,8 @@ APT_OPTIONAL = \
 	imagemagick \
 	ghostscript
 
-default: pdf
+default:
+	$(PYTHON) rosettaui.py
 
 help:
 	@echo 'make install        install everything needed (Ubuntu/Debian)'

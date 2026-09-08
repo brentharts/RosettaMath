@@ -234,6 +234,15 @@ handles:
 *   `\newcommand`, `\renewcommand`, `\def` and `\DeclareMathOperator`, including
     `#1`-style arguments — authors almost always abbreviate their own notation,
     and without expanding it half the symbols in a paper are unrecognisable
+*   shorthand equation wrappers — `\be`…`\ee`, `\beq`…`\eeq`, `\bea`…`\eea`
+    and similar. These have to be resolved across the whole document *before*
+    anything is scanned, because they are what makes an equation findable in
+    the first place: once an author writes `\newcommand{\be}{\begin{equation}}`,
+    the words never appear in the source again. They are assumed even when the
+    document does not define them, since the pair often lives in a journal
+    `.sty` that is not in the tarball — but only when both halves are present,
+    and never when the document defines them as something else. They also turn
+    up mid-sentence rather than on their own lines, so nothing assumes otherwise
 *   `\input` and `\include`, so a paper split across files is scanned whole
 *   equation numbering that follows LaTeX's own rule, so starred environments
     and inline maths are not counted

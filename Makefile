@@ -42,6 +42,13 @@ APT_OPTIONAL = \
 default:
 	$(PYTHON) rosettaui.py
 
+much:
+	$(PYTHON) rosettaui.py --arxiv https://arxiv.org/abs/2510.24491
+
+danny:
+	$(PYTHON) rosettaui.py --arxiv https://arxiv.org/abs/1011.6654
+
+
 help:
 	@echo 'make install        install everything needed (Ubuntu/Debian)'
 	@echo 'make install-all    the above, plus the optional extras'

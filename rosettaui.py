@@ -2207,6 +2207,88 @@ def clean_fragment(s):
     return s.strip()
 
 
+# Shorthand pairs for wrapping equations.  Authors define these constantly --
+# \newcommand{\be}{\begin{equation}} and its partner -- and once they have, the
+# words "begin" and "equation" never appear in the source again, so a scanner
+# looking for \begin{equation} finds nothing at all.
+#
+# Every pair below is also assumed when the document does not define it, since
+# these often live in a journal's .sty or .cls that is not in the tarball.  A
+# default is only applied when *both* halves of the pair occur in the document,
+# which keeps a stray \be that means something else from being rewritten.
+DEFAULT_SHORTHANDS = {
+    r'\be':   r'\begin{equation}',   r'\ee':   r'\end{equation}',
+    r'\beq':  r'\begin{equation}',   r'\eeq':  r'\end{equation}',
+    r'\bequ': r'\begin{equation}',   r'\eequ': r'\end{equation}',
+    r'\bea':  r'\begin{eqnarray}',   r'\eea':  r'\end{eqnarray}',
+    r'\beqa': r'\begin{eqnarray}',   r'\eeqa': r'\end{eqnarray}',
+    r'\bqa':  r'\begin{eqnarray}',   r'\eqa':  r'\end{eqnarray}',
+    r'\ben':  r'\begin{equation}',   r'\een':  r'\end{equation}',
+    r'\bal':  r'\begin{align}',      r'\eal':  r'\end{align}',
+    r'\balign': r'\begin{align}',    r'\ealign': r'\end{align}',
+}
+
+# Which opener goes with which closer, for the both-halves-present test.
+_SHORTHAND_PAIRS = [
+    (r'\be', r'\ee'), (r'\beq', r'\eeq'), (r'\bequ', r'\eequ'),
+    (r'\bea', r'\eea'), (r'\beqa', r'\eeqa'), (r'\bqa', r'\eqa'),
+    (r'\ben', r'\een'), (r'\bal', r'\eal'), (r'\balign', r'\ealign'),
+]
+
+_STRUCTURAL_BODY = re.compile(r'\\(?:begin|end)\s*\{|\\\[|\\\]|\$\$')
+
+
+def _occurs(src, name):
+    return re.search(re.escape(name) + r'(?![A-Za-z])', src) is not None
+
+
+def structural_macros(src, macros):
+    r"""The macros that expand into maths delimiters, which must go first.
+
+    Ordinary macros can be expanded per-equation, after the equation has been
+    found.  These cannot: they are what makes an equation findable, so they
+    have to be resolved across the whole document before anything is scanned.
+    """
+    out = {}
+    for name, (nargs, body) in macros.items():
+        if nargs == 0 and _STRUCTURAL_BODY.search(body):
+            out[name] = body
+    for opener, closer in _SHORTHAND_PAIRS:
+        # Test against what the document defines, not against what survived the
+        # structural filter.  A paper that says \newcommand{\be}{\beta} has
+        # defined \be as a letter; it fails the structural test, so checking
+        # `out` would conclude nobody had defined it and overwrite it with
+        # \begin{equation}.
+        if opener in macros or closer in macros:
+            continue
+        if _occurs(src, opener) and _occurs(src, closer):
+            out.setdefault(opener, DEFAULT_SHORTHANDS[opener])
+            out.setdefault(closer, DEFAULT_SHORTHANDS[closer])
+    return out
+
+
+def expand_structural(src, macros):
+    r"""Replace \be, \ee and friends with the environments they stand for.
+
+    Newlines in the replacement are collapsed so that reported line numbers
+    still point at the right line of the original file.  These shorthands turn
+    up mid-sentence as often as on a line of their own -- "the energy \be E =
+    mc^2 \ee follows" is perfectly ordinary -- so nothing here may assume the
+    delimiters sit on their own lines.
+    """
+    if not macros:
+        return src
+    # The alternation must be grouped.  Without the (?: ), the trailing
+    # lookahead binds to the last branch only, and \be then matches inside
+    # \begin{document} -- swallowing the rest of the paper into "equation one".
+    pattern = re.compile(
+        '(?:' + '|'.join(re.escape(n) for n in
+                         sorted(macros, key=len, reverse=True))
+        + r')(?![A-Za-z])')
+    return pattern.sub(
+        lambda m: ' '.join(macros[m.group(0)].split()), src)
+
+
 def _find_env(src, i):
     r"""Locate the next \begin{...} at or after i.  -> (name, open_i, body_start).
 
@@ -2330,14 +2412,27 @@ def scan_tex(text, include_inline=True, min_inline=MIN_INLINE_LEN):
     environments and inline maths are not counted -- so the numbers shown match
     the numbers in the PDF the reader is holding.
     """
-    body = text
-    at = body.find(r'\begin{document}')
-    preamble = body[:at] if at != -1 else body
+    at = text.find(r'\begin{document}')
+    preamble = text[:at] if at != -1 else text
     macros = collect_macros(strip_comments(preamble))
 
     src = strip_comments(strip_verbatim(text))
+    # Find \begin{document} again in the *stripped* text rather than reusing
+    # the index from the original.  strip_verbatim replaces each listing body
+    # with bare newlines, so it does not preserve length, and an index taken
+    # from the original would cut the stripped text in the wrong place.
+    at = src.find(r'\begin{document}')
+    line_base = 0
     if at != -1:
+        # Lines dropped by the slice still have to be counted, or every
+        # reported line number is short by the length of the preamble -- which
+        # matters, because that number is how the reader finds the equation in
+        # the file.
+        line_base = src.count('\n', 0, at)
         src = src[at:]
+    # Before anything is looked for: resolve the macros that expand *into*
+    # maths delimiters, or none of the delimiters will be there to find.
+    src = expand_structural(src, structural_macros(src, macros))
 
     heads = _headings(src)
     out = []
@@ -2385,7 +2480,7 @@ def scan_tex(text, include_inline=True, min_inline=MIN_INLINE_LEN):
                 'number': number,
                 'label': label,
                 'section': _section_at(heads, offset),
-                'line': src.count('\n', 0, offset) + 1,
+                'line': line_base + src.count('\n', 0, offset) + 1,
                 'preview': latex_to_unicode(frag),
             })
     return out
@@ -5362,6 +5457,60 @@ x = "$fake math$ 100% off"
           _parse('newsel: (3.4a)') is None)
     check('other output is ignored', _parse('tick...') is None)
     check('and so is a blank line', _parse('') is None)
+
+    print('shorthand equation wrappers')
+    BE = r'''\documentclass{article}
+\newcommand{\be}{\begin{equation}}
+\newcommand{\ee}{\end{equation}}
+\begin{document}
+\section{One}
+The energy \be E = mc^2 \ee follows, and inline $a=b$ too.
+Text before \be F = ma \label{eq:newton} \ee text after, all on one line.
+\end{document}
+'''
+    got = scan_tex(BE)
+    texs = [e['tex'] for e in got]
+    check('a \\be wrapper is recognised', any('mc^2' in t for t in texs))
+    check('even mid-sentence with text either side',
+          any(t.strip() == 'F = ma' for t in texs))
+    check('and the surrounding prose is not swallowed',
+          not any('follows' in t or 'Text before' in t for t in texs))
+    check('\\begin{document} is not mistaken for a \\be',
+          not any('document' in t for t in texs))
+    check('such equations are numbered',
+          [e['number'] for e in got if 'mc^2' in e['tex']] == [1])
+    check('and keep their labels',
+          [e['label'] for e in got if 'F = ma' in e['tex']] == ['eq:newton'])
+
+    # Undefined in the tarball, because the pair lives in a journal .sty.
+    UNDEF = (r'\documentclass{revtex4}' '\n' r'\begin{document}' '\n'
+             r'Then \be \nabla \cdot E = \rho \ee and \beq \oint B \eeq done.'
+             '\n' r'\end{document}')
+    check('an undefined but paired shorthand is still assumed',
+          len(scan_tex(UNDEF)) == 2)
+    check('an unpaired one is left alone',
+          scan_tex(r'\documentclass{a}\begin{document}'
+                   r'We \be careful here, with no closer.\end{document}') == [])
+    REDEF = (r'\documentclass{a}\newcommand{\be}{\beta}\newcommand{\ee}{\eta}'
+             '\n' r'\begin{document}Values \be and \ee.'
+             r'\begin{equation} x = \be + \ee \end{equation}\end{document}')
+    check('a document that defines \\be as something else keeps its meaning',
+          [e['tex'] for e in scan_tex(REDEF)] == [r'x = \beta + \eta'])
+    check('a shorthand inside a listing does not create an equation',
+          [e['tex'] for e in scan_tex(
+              '\\documentclass{a}\\begin{document}\n\\begin{lstlisting}\n'
+              '\\be fake \\ee\n\\end{lstlisting}\n\\be x=1 \\ee\n'
+              '\\end{document}')] == ['x=1'])
+
+    check('the reported line number counts the preamble',
+          [e['line'] for e in scan_tex(
+              '\\documentclass{a}\n\\begin{document}\n\nfour\n'
+              '\\be q = 9 \\ee\n\\end{document}')] == [5])
+    check('and survives a verbatim block of a different length',
+          [e['line'] for e in scan_tex(
+              '\\documentclass{a}\n\\begin{verbatim}\naaa\nbbb\n'
+              '\\end{verbatim}\n\\begin{document}\n'
+              '\\begin{equation} z=1 \\end{equation}\n\\end{document}')] == [7])
 
     # environment-dependent, so reported but never fatal
     print('typesetting (optional)')

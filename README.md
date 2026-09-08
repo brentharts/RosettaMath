@@ -245,11 +245,41 @@ and it deliberately ignores `verbatim`, `lstlisting`, `minted` and friends,
 whose contents routinely include `$`, `%` and `\begin{…}` without any of it
 being mathematics.
 
+### Opening a paper straight from arXiv
+
+**File → Open from arXiv…** (Ctrl+Shift+O) takes a link and reads the paper's
+LaTeX source, which is better to explore than the PDF because it is the actual
+equations rather than a picture of them. All of these work:
+
+```
+https://arxiv.org/abs/2510.24491
+https://doi.org/10.48550/arXiv.2510.24491
+arXiv:2510.24491v2
+2510.24491
+https://arxiv.org/abs/math/0309136        (pre-2007 identifiers too)
+```
+
+The source comes from `https://arxiv.org/src/<id>`, usually a `.tar.gz`. Papers
+split across many files are handled: the root file is identified by content
+rather than by name, and its `\input` files are pulled in with it. Downloads are
+cached under the system temp directory, so a second look at the same paper costs
+nothing.
+
+Not every submission has source. Where an author uploaded only a PDF, that is
+reported plainly rather than failing obscurely — there are no equations to read
+in that case, and the PDF is better opened in a PDF reader.
+
+Archives are extracted defensively. A tar can name paths outside its own
+directory, or contain symlinks pointing anywhere on the disk, and papers are
+uploaded by strangers, so members that escape the extraction directory are
+dropped rather than trusted.
+
 To check a paper before teaching from it, without opening a window:
 
 ```sh
 python3 rosettaui.py --scan paper.tex    # list what was found
 python3 rosettaui.py --open paper.tex    # launch straight into it
+python3 rosettaui.py --arxiv 2510.24491  # fetch from arXiv and launch
 ```
 
 Matrices are laid out as a grid and stay as clickable as anything else. One

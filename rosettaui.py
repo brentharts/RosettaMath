@@ -30,6 +30,7 @@ self-hosted and is not written in the translatable LaTeX subset.
     python3 rosettaui.py --tex '$E=mc^2$' launch with a given equation
     python3 rosettaui.py --open paper.tex launch with a whole LaTeX document
     python3 rosettaui.py --scan paper.tex list the equations in a document
+    python3 rosettaui.py --arxiv <url|id> fetch a paper's source from arXiv
 
 Runs on Linux, macOS and Windows.  On Windows the command is `python`, not
 `python3`, and quoting for --tex uses double quotes; see README.md.
@@ -41,6 +42,7 @@ import html
 import shutil
 import hashlib
 import subprocess
+import tarfile
 import tempfile
 import webbrowser
 
@@ -2451,6 +2453,210 @@ def menu_label(e):
     return '%-7s %s%s' % (head, preview, tail)
 
 
+# ------------------------------------------------------------ arXiv sources
+#
+# Most arXiv submissions include their LaTeX source, which is far better to
+# read from than the PDF: it is the actual equations rather than a rendering of
+# them.  https://arxiv.org/src/<id> returns that source, usually a .tar.gz.
+#
+# arXiv asks that automated access be modest and identifiable.  This fetches
+# one paper per explicit user action, caches what it gets so a second look
+# costs nothing, and sends a User-Agent that says what it is.
+
+ARXIV_SRC = 'https://arxiv.org/src/%s'
+ARXIV_UA = ('RosettaMath/1.0 (equation explorer; '
+            'https://github.com/brentharts/RosettaMath)')
+
+# Two id formats have to be recognised.  The modern one is 2510.24491, with an
+# optional version suffix.  Papers from before April 2007 look like
+# math/0309136 or cond-mat.stat-mech/0512028, and plenty are still cited.
+_NEW_ID = r'\d{4}\.\d{4,5}(?:v\d+)?'
+_OLD_ID = r'[a-z-]+(?:\.[A-Za-z-]+)?/\d{7}(?:v\d+)?'
+_ARXIV_ID_RE = re.compile(
+    r'(?:arxiv[:/]|abs/|pdf/|src/|e-print/|10\.48550/arxiv\.)?'
+    r'(%s|%s)' % (_NEW_ID, _OLD_ID), re.I)
+
+
+def arxiv_id(text):
+    """Pull an arXiv identifier out of a URL, a DOI, or a bare id.
+
+    Accepts the forms people actually have on the clipboard: the abstract page,
+    the PDF link, the DOI that arXiv mints for every paper, an "arXiv:2510.24491"
+    citation string, or the number by itself.  Returns None if there is no id
+    in there, rather than guessing.
+    """
+    if not text:
+        return None
+    s = text.strip()
+    # A DOI prefix is 10.48550/arXiv.<id> for arXiv's own; any other registrant
+    # belongs to a publisher and is not something arXiv can serve source for.
+    # Matched as a whole DOI, not the substring "10.", because the bare id
+    # 2510.24491 contains "10." and would otherwise be thrown out.
+    doi = re.search(r'\b10\.\d{4,9}/', s)
+    if doi and 'arxiv' not in s.lower():
+        return None
+    s = s.split('?')[0].split('#')[0].rstrip('/')
+    m = _ARXIV_ID_RE.search(s)
+    if not m:
+        return None
+    ident = m.group(1)
+    # A trailing ".pdf" would have been stripped by the split above only if it
+    # followed a query string, so handle the plain case too.
+    if ident.lower().endswith('.pdf'):
+        ident = ident[:-4]
+    return ident
+
+
+def arxiv_cache_dir(ident):
+    safe = ident.replace('/', '_')
+    return os.path.join(tempfile.gettempdir(), 'rosettaui-arxiv', safe)
+
+
+def download_arxiv_source(ident, timeout=30):
+    """Fetch the raw bytes of an arXiv source package.
+
+    Split out so it is the single place that touches the network, which keeps
+    everything below it testable without one.
+    """
+    import urllib.request
+    req = urllib.request.Request(ARXIV_SRC % ident,
+                                 headers={'User-Agent': ARXIV_UA})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+MAX_EXTRACT_BYTES = 200 * 1024 * 1024        # a generous ceiling on a paper
+
+
+def _safe_members(tar, dest):
+    r"""Yield only members that are safe to write under dest.
+
+    A tar archive can name ../../etc/something, an absolute path, a symlink
+    pointing anywhere, or a device node; Python's extractall honoured all of
+    that for most of its history.  Papers are uploaded by strangers, so filter
+    rather than trust.  Python 3.12 has a built-in data filter, but this has to
+    work on older versions too.
+    """
+    base = os.path.abspath(dest)
+    total = 0
+    for member in tar.getmembers():
+        if member.issym() or member.islnk():
+            continue
+        if not (member.isfile() or member.isdir()):
+            continue                          # devices, fifos
+        name = member.name.replace('\\', '/')
+        if name.startswith('/') or os.path.isabs(name):
+            continue
+        target = os.path.abspath(os.path.join(base, name))
+        if target != base and not target.startswith(base + os.sep):
+            continue                          # escapes the directory
+        total += max(0, member.size)
+        if total > MAX_EXTRACT_BYTES:
+            break
+        yield member
+
+
+def extract_arxiv_source(data, dest):
+    """Unpack a downloaded source package.  -> the directory it was put in.
+
+    arXiv serves three things under /src: a gzipped tar for a multi-file
+    submission, a bare gzipped .tex for a single-file one, and occasionally a
+    PDF where the author never supplied source at all.
+    """
+    import gzip
+    import io
+    os.makedirs(dest, exist_ok=True)
+    if data[:4] == b'%PDF':
+        raise ValueError(
+            'This submission has no LaTeX source on arXiv -- the author '
+            'uploaded a PDF only, so there are no equations to read.')
+    try:
+        with tarfile.open(fileobj=io.BytesIO(data), mode='r:*') as tar:
+            tar.extractall(dest, members=_safe_members(tar, dest))
+        return dest
+    except tarfile.ReadError:
+        pass
+    # Not a tar: try a single gzipped file, which is how one-file papers come.
+    try:
+        text = gzip.decompress(data)
+    except (OSError, EOFError):
+        text = data
+    if text[:4] == b'%PDF':
+        raise ValueError(
+            'This submission has no LaTeX source on arXiv -- the author '
+            'uploaded a PDF only, so there are no equations to read.')
+    path = os.path.join(dest, 'main.tex')
+    with open(path, 'wb') as fh:
+        fh.write(text)
+    return dest
+
+
+# Names authors give the top-level file, in the order worth trying.
+_MAIN_NAMES = ('main', 'ms', 'paper', 'article', 'manuscript', 'root')
+
+
+def pick_main_tex(directory):
+    r"""Choose the top-level .tex file out of an unpacked submission.
+
+    A paper split into one file per section has no marker saying which is the
+    root, so go by content: the real one carries \documentclass and
+    \begin{document}.  Among several, prefer the conventional names and then
+    the largest, since the root usually carries the bulk of the preamble.
+    """
+    cands = []
+    for root, _dirs, files in os.walk(directory):
+        for name in files:
+            if not name.lower().endswith(('.tex', '.ltx')):
+                continue
+            path = os.path.join(root, name)
+            try:
+                with open(path, 'r', encoding='utf-8', errors='replace') as fh:
+                    head = fh.read(200000)
+            except OSError:
+                continue
+            score = 0
+            if r'\begin{document}' in head:
+                score += 4
+            if r'\documentclass' in head:
+                score += 3
+            stem = os.path.splitext(name)[0].lower()
+            if stem in _MAIN_NAMES:
+                score += 2
+            if score:
+                cands.append((score, os.path.getsize(path), path))
+    if not cands:
+        return None
+    cands.sort(key=lambda c: (c[0], c[1]), reverse=True)
+    return cands[0][2]
+
+
+def open_arxiv(url_or_id, fetch=None, use_cache=True):
+    """A URL, DOI or id -> the path of the main .tex of that paper.
+
+    fetch is injectable so the unpacking and file-picking can be exercised
+    without touching the network.
+    """
+    ident = arxiv_id(url_or_id)
+    if not ident:
+        raise ValueError(
+            'That does not look like an arXiv link or identifier. Try an '
+            'abstract URL such as https://arxiv.org/abs/2510.24491, its DOI '
+            'form, or the bare id.')
+    dest = arxiv_cache_dir(ident)
+    if use_cache:
+        existing = pick_main_tex(dest) if os.path.isdir(dest) else None
+        if existing:
+            return ident, existing
+    data = (fetch or download_arxiv_source)(ident)
+    extract_arxiv_source(data, dest)
+    main = pick_main_tex(dest)
+    if main is None:
+        raise ValueError(
+            'The source for %s unpacked, but contains no .tex file with a '
+            'document in it.' % ident)
+    return ident, main
+
+
 # ---------------------------------------------------------------- features
 
 def extract_features(node, acc=None):
@@ -2849,7 +3055,7 @@ try:
                                  QDialog, QVBoxLayout, QHBoxLayout, QTextEdit,
                                  QPushButton, QLabel, QLineEdit, QTabWidget,
                                  QListWidget, QSplitter, QWidget, QAction,
-                                 QScrollArea, QMessageBox, QFileDialog,
+                                 QScrollArea, QMessageBox, QFileDialog, QInputDialog,
                                  QPlainTextEdit, QListWidgetItem, QComboBox)
     QT_OK = True
 except ImportError as _exc:                  # --selftest still works
@@ -3885,6 +4091,11 @@ if QT_OK:
             a.setShortcut(QKeySequence.Open)
             a.triggered.connect(self.open_tex_file)
             m.addAction(a)
+            a = QAction('Open from arXiv...', self)
+            a.setShortcut(QKeySequence('Ctrl+Shift+O'))
+            a.setToolTip('Paste an arXiv link, DOI or id and read its source')
+            a.triggered.connect(self.open_arxiv_dialog)
+            m.addAction(a)
             self.act_inline = QAction('Include inline maths', self)
             self.act_inline.setCheckable(True)
             self.act_inline.setChecked(True)
@@ -3990,6 +4201,58 @@ if QT_OK:
                 self.load(tex)
 
         # ------------------------------------------------------- documents
+        def open_arxiv_dialog(self):
+            text, ok = QInputDialog.getText(
+                self, 'Open from arXiv',
+                'Paste an arXiv link, DOI or identifier:\n'
+                'e.g. https://arxiv.org/abs/2510.24491')
+            if ok and text.strip():
+                self.load_arxiv(text.strip())
+
+        def load_arxiv(self, url_or_id):
+            """Download a paper's LaTeX source and open it.
+
+            The fetch is synchronous, with a wait cursor.  A source package is
+            typically well under a megabyte, so the pause is short, and a
+            background thread would buy a fraction of a second at the cost of
+            being the only concurrency in the program.
+            """
+            ident = arxiv_id(url_or_id)
+            if not ident:
+                QMessageBox.warning(
+                    self, 'Not an arXiv link',
+                    'That does not look like an arXiv link or identifier.\n\n'
+                    'Try an abstract URL such as\n'
+                    '    https://arxiv.org/abs/2510.24491\n'
+                    'its DOI form, or the bare identifier.')
+                return
+            cached = os.path.isdir(arxiv_cache_dir(ident))
+            self.status('Fetching arXiv:%s%s ...'
+                        % (ident, ' (cached)' if cached else ''))
+            QApplication.setOverrideCursor(QCursor(Qt.WaitCursor))
+            QApplication.processEvents()
+            try:
+                ident, main = open_arxiv(url_or_id)
+            except ValueError as exc:
+                QApplication.restoreOverrideCursor()
+                QMessageBox.warning(self, 'No source for that paper', str(exc))
+                self.status('')
+                return
+            except Exception as exc:
+                QApplication.restoreOverrideCursor()
+                QMessageBox.warning(
+                    self, 'Could not fetch that paper',
+                    'arXiv:%s could not be downloaded.\n\n%s: %s\n\n'
+                    'Check the identifier and your connection; the source may '
+                    'also simply not be public.'
+                    % (ident, type(exc).__name__, exc))
+                self.status('')
+                return
+            QApplication.restoreOverrideCursor()
+            self.load_document(main)
+            self.doc_name.setText('arXiv:%s' % ident)
+            self.doc_name.setToolTip(main)
+
         def open_tex_file(self):
             path, _ = QFileDialog.getOpenFileName(
                 self, 'Open a LaTeX document', '',
@@ -4708,6 +4971,111 @@ x = "$fake math$ 100% off"
               up.above > down.above)
         check('an underbrace adds depth below it', down.below > up.below)
 
+    print('arXiv sources')
+    for text, want in (
+            ('https://arxiv.org/abs/2510.24491', '2510.24491'),
+            ('https://doi.org/10.48550/arXiv.2510.24491', '2510.24491'),
+            ('arXiv:2510.24491v2', '2510.24491v2'),
+            ('2510.24491', '2510.24491'),
+            ('https://arxiv.org/pdf/2510.24491.pdf', '2510.24491'),
+            ('https://arxiv.org/abs/2510.24491?context=cs', '2510.24491'),
+            ('https://arxiv.org/abs/math/0309136', 'math/0309136'),
+            ('https://doi.org/10.1038/nature12373', None),
+            ('https://example.com/paper', None),
+            ('', None)):
+        check('id from %s' % (text or '(empty)'), arxiv_id(text) == want)
+
+    import io as _io
+    import gzip as _gzip
+    import shutil as _shutil
+
+    def _tar(entries, links=()):
+        buf = _io.BytesIO()
+        with tarfile.open(fileobj=buf, mode='w:gz') as t:
+            for name, body in entries:
+                ti = tarfile.TarInfo(name)
+                b = body.encode()
+                ti.size = len(b)
+                t.addfile(ti, _io.BytesIO(b))
+            for name, target in links:
+                ti = tarfile.TarInfo(name)
+                ti.type = tarfile.SYMTYPE
+                ti.linkname = target
+                t.addfile(ti)
+        return buf.getvalue()
+
+    DOC_ = ('\\documentclass{article}\n\\begin{document}\n'
+            '\\begin{equation}E=mc^2\\end{equation}\n\\end{document}')
+    work = tempfile.mkdtemp(prefix='rosettaui-selftest-')
+    try:
+        # a normal multi-file submission
+        dest = os.path.join(work, 'a')
+        extract_arxiv_source(
+            _tar([('sections/intro.tex', r'\section{Intro} $a=b$'),
+                  ('main.tex', DOC_.replace('\\begin{equation}',
+                                            '\\input{sections/intro}\n'
+                                            '\\begin{equation}')),
+                  ('refs.bib', '@article{x}')]), dest)
+        main = pick_main_tex(dest)
+        check('the main .tex is picked out of a multi-file paper',
+              main is not None and os.path.basename(main) == 'main.tex')
+        found = scan_tex(read_tex_file(main))
+        check('and \\input files are pulled in with it', len(found) == 2)
+
+        # a single-file submission, which arrives as a bare gzipped .tex
+        dest = os.path.join(work, 'b')
+        extract_arxiv_source(_gzip.compress(DOC_.encode()), dest)
+        check('a bare gzipped .tex is handled',
+              pick_main_tex(dest) is not None)
+
+        # a submission with no source at all
+        dest = os.path.join(work, 'c')
+        try:
+            extract_arxiv_source(b'%PDF-1.5\nnope', dest)
+            check('a PDF-only submission is refused', False)
+        except ValueError as exc:
+            check('a PDF-only submission is refused clearly',
+                  'no LaTeX source' in str(exc))
+
+        # a hostile archive: traversal, absolute path, and a symlink out
+        dest = os.path.join(work, 'd')
+        canary = os.path.join(work, 'CANARY.tex')
+        extract_arxiv_source(
+            _tar([('../../CANARY.tex', DOC_),
+                  ('/tmp/rosettaui-abs-canary.tex', DOC_),
+                  ('ok.tex', DOC_)],
+                 links=[('evil', '/etc/passwd')]), dest)
+        check('a tar member escaping the directory is dropped',
+              not os.path.exists(canary))
+        check('an absolute path member is dropped',
+              not os.path.exists('/tmp/rosettaui-abs-canary.tex'))
+        check('a symlink member is dropped',
+              not os.path.islink(os.path.join(dest, 'evil')))
+        check('and the safe member still extracts',
+              sorted(os.listdir(dest)) == ['ok.tex'])
+
+        # the whole path, with the network call substituted
+        dest = arxiv_cache_dir('9999.99999')
+        _shutil.rmtree(dest, ignore_errors=True)
+        ident, main = open_arxiv('https://arxiv.org/abs/9999.99999',
+                                 fetch=lambda _i: _tar([('main.tex', DOC_)]))
+        check('open_arxiv returns the identifier', ident == '9999.99999')
+        check('and a usable main file',
+              main is not None and scan_tex(read_tex_file(main)))
+        hits = []
+        ident2, main2 = open_arxiv('9999.99999',
+                                   fetch=lambda _i: hits.append(1))
+        check('a second look comes from the cache without refetching',
+              not hits and main2 == main)
+        _shutil.rmtree(dest, ignore_errors=True)
+        try:
+            open_arxiv('https://example.com/nope')
+            check('a non-arXiv URL is refused', False)
+        except ValueError:
+            check('a non-arXiv URL is refused', True)
+    finally:
+        _shutil.rmtree(work, ignore_errors=True)
+
     # environment-dependent, so reported but never fatal
     print('typesetting (optional)')
     has_tex, raster = have_tools()
@@ -4834,6 +5202,14 @@ def main(argv):
             print('%4d  %s' % (i + 1, menu_label(e)))
         return 0 if items else 1
     doc = argv[argv.index('--open') + 1] if '--open' in argv else None
+    paper = argv[argv.index('--arxiv') + 1] if '--arxiv' in argv else None
+    if paper and not QT_OK:
+        ident, main = open_arxiv(paper)
+        items = scan_tex(read_tex_file(main))
+        print('arXiv:%s -- %s\n' % (ident, describe_scan(items)))
+        for i, e in enumerate(items):
+            print('%4d  %s' % (i + 1, menu_label(e)))
+        return 0
     if not QT_OK:
         print('PyQt5 is required for the GUI: %s' % QT_ERROR, file=sys.stderr)
         if MACOS:
@@ -4856,6 +5232,8 @@ def main(argv):
     win.show()
     if doc:
         win.load_document(doc)
+    if paper:
+        win.load_arxiv(paper)
     return app.exec_()
 
 

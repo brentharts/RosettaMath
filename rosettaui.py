@@ -2630,7 +2630,49 @@ def pick_main_tex(directory):
     return cands[0][2]
 
 
-def open_arxiv(url_or_id, fetch=None, use_cache=True):
+ARXIV_PDF = 'https://arxiv.org/pdf/%s'
+
+
+def download_arxiv_pdf(ident, timeout=60):
+    """Fetch the rendered PDF of a paper.  The other network entry point."""
+    import urllib.request
+    req = urllib.request.Request(ARXIV_PDF % ident,
+                                 headers={'User-Agent': ARXIV_UA})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read()
+
+
+def arxiv_pdf_path(ident):
+    """Where the cached PDF for a paper lives, whether or not it exists yet."""
+    return os.path.join(arxiv_cache_dir(ident), 'paper.pdf')
+
+
+def ensure_arxiv_pdf(ident, fetch=None):
+    """Make sure the PDF is cached.  -> its path, or None if it could not be got.
+
+    Deliberately non-fatal.  The PDF is a convenience -- it drives the side-by-side
+    viewer -- whereas the source is what the program actually needs, so a paper
+    whose PDF fails to download should still open for reading.
+    """
+    path = arxiv_pdf_path(ident)
+    if os.path.exists(path) and os.path.getsize(path) > 0:
+        return path
+    try:
+        data = (fetch or download_arxiv_pdf)(ident)
+    except Exception:
+        return None
+    if not data or data[:4] != b'%PDF':
+        return None                          # an error page, not a document
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + '.part'
+    with open(tmp, 'wb') as fh:
+        fh.write(data)
+    os.replace(tmp, path)                    # never leave a half-written PDF
+    return path
+
+
+def open_arxiv(url_or_id, fetch=None, use_cache=True, want_pdf=True,
+               pdf_fetch=None):
     """A URL, DOI or id -> the path of the main .tex of that paper.
 
     fetch is injectable so the unpacking and file-picking can be exercised
@@ -2646,6 +2688,8 @@ def open_arxiv(url_or_id, fetch=None, use_cache=True):
     if use_cache:
         existing = pick_main_tex(dest) if os.path.isdir(dest) else None
         if existing:
+            if want_pdf:
+                ensure_arxiv_pdf(ident, pdf_fetch)
             return ident, existing
     data = (fetch or download_arxiv_source)(ident)
     extract_arxiv_source(data, dest)
@@ -2654,7 +2698,64 @@ def open_arxiv(url_or_id, fetch=None, use_cache=True):
         raise ValueError(
             'The source for %s unpacked, but contains no .tex file with a '
             'document in it.' % ident)
+    if want_pdf:
+        # After the source, and never fatal: a missing PDF costs the
+        # side-by-side view, not the paper.
+        ensure_arxiv_pdf(ident, pdf_fetch)
     return ident, main
+
+
+EVINCE_PY = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                         'evince.py')
+
+
+_EVINCE_PROBE = (
+    'import gi;'
+    "gi.require_version('Gtk','3.0');"
+    "gi.require_version('EvinceDocument','3.0');"
+    "gi.require_version('EvinceView','3.0')")
+
+_evince_cache = []
+
+
+def evince_available():
+    """Whether the side-by-side PDF viewer can run.  -> (ok, reason).
+
+    Linux only, and deliberately so: it drives Evince through its GObject
+    bindings, which is not a thing that exists on the other two platforms.
+    The reason string is shown to the user, so it says what to install.
+
+    The bindings are probed in a child process rather than by importing gi
+    here.  Importing it would pull GObject into a process already running Qt
+    for no reason, and -- more to the point -- `import gi` succeeding says
+    nothing about whether the Evince typelibs are installed, which is the part
+    that actually tends to be missing.
+    """
+    if _evince_cache:
+        return _evince_cache[0]
+
+    def answer(ok, why):
+        _evince_cache.append((ok, why))
+        return ok, why
+
+    if not sys.platform.startswith('linux'):
+        return answer(False,
+                      'The PDF viewer uses Evince, which is Linux only. '
+                      'The equation dropdown works everywhere.')
+    if not os.path.exists(EVINCE_PY):
+        return answer(False, 'evince.py is not next to rosettaui.py.')
+    try:
+        proc = subprocess.run([sys.executable, '-c', _EVINCE_PROBE],
+                              stdout=subprocess.DEVNULL,
+                              stderr=subprocess.PIPE, timeout=20, text=True)
+    except (OSError, subprocess.TimeoutExpired):
+        return answer(False, 'Could not check for the Evince bindings.')
+    if proc.returncode:
+        return answer(False,
+                      'The Evince bindings are missing. Install them with:\n'
+                      '    sudo apt install python3-gi gir1.2-evince-3.0\n\n'
+                      '(%s)' % (proc.stderr or '').strip().split('\n')[-1])
+    return answer(True, '')
 
 
 # ---------------------------------------------------------------- features
@@ -3045,7 +3146,7 @@ def check_roundtrip(source_code):
 # ---------------------------------------------------------------- Qt layer
 
 try:
-    from PyQt5.QtCore import Qt, QRectF, QTimer
+    from PyQt5.QtCore import Qt, QRectF, QTimer, QThread, pyqtSignal
     from PyQt5.QtGui import (QFont, QFontMetricsF, QColor, QCursor, QPainter,
                              QBrush, QPen, QPixmap, QKeySequence, QPainterPath)
     from PyQt5.QtWidgets import (QApplication, QMainWindow, QGraphicsView,
@@ -3400,6 +3501,67 @@ if QT_OK:
             if self.ui is not None:
                 self.ui.symbol_context_menu(self.node, event.screenPos())
             event.accept()
+
+    class EvinceBridge(QThread):
+        """Runs evince.py on a PDF and reports which equation was selected.
+
+        evince.py prints a line "newsel: (N)" whenever the reader double-clicks
+        an equation number in the PDF.  This runs it as a child process and
+        turns those lines into a Qt signal.
+
+        Two details matter.  The child is started with -u: a piped stdout is
+        block-buffered by default, so its prints would sit in a 4k buffer and
+        arrive minutes late, or not at all.  And the reading happens on a
+        thread, because a blocking readline on the GUI thread would freeze the
+        window for as long as the reader is looking at the paper.
+        """
+
+        equation_selected = pyqtSignal(int)
+        stopped = pyqtSignal(str)
+
+        def __init__(self, script, pdf, parent=None):
+            super().__init__(parent)
+            self.script = script
+            self.pdf = pdf
+            self.proc = None
+            self._wanted = True
+
+        def run(self):
+            try:
+                self.proc = subprocess.Popen(
+                    [sys.executable, '-u', self.script, self.pdf],
+                    stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                    text=True, bufsize=1)
+            except OSError as exc:
+                self.stopped.emit(str(exc))
+                return
+            for line in self.proc.stdout:
+                if not self._wanted:
+                    break
+                line = line.strip()
+                if line.startswith('newsel:'):
+                    digits = line.split('(')[-1].split(')')[0]
+                    if digits.isdigit():
+                        self.equation_selected.emit(int(digits))
+            code = self.proc.wait()
+            if not self._wanted:
+                return
+            if code:
+                err = (self.proc.stderr.read() or '').strip()
+                self.stopped.emit(err.split('\n')[-1] if err else
+                                  'exited with status %d' % code)
+            else:
+                self.stopped.emit('')
+
+        def stop(self):
+            self._wanted = False
+            if self.proc and self.proc.poll() is None:
+                self.proc.terminate()
+                try:
+                    self.proc.wait(timeout=3)
+                except subprocess.TimeoutExpired:
+                    self.proc.kill()
+            self.wait(3000)
 
     class MathLayout:
         """Two-pass layout: measure the tree, then place real items.
@@ -4096,6 +4258,12 @@ if QT_OK:
             a.setToolTip('Paste an arXiv link, DOI or id and read its source')
             a.triggered.connect(self.open_arxiv_dialog)
             m.addAction(a)
+            a = QAction('Open PDF alongside (Linux)', self)
+            a.setShortcut(QKeySequence('Ctrl+P'))
+            a.setToolTip('Read the PDF in Evince and click equation numbers '
+                         'to jump to them here')
+            a.triggered.connect(self.open_pdf_viewer)
+            m.addAction(a)
             self.act_inline = QAction('Include inline maths', self)
             self.act_inline.setCheckable(True)
             self.act_inline.setChecked(True)
@@ -4201,6 +4369,66 @@ if QT_OK:
                 self.load(tex)
 
         # ------------------------------------------------------- documents
+        def open_pdf_viewer(self):
+            """Open the paper's PDF in evince.py and follow the reader's clicks."""
+            ok, why = evince_available()
+            if not ok:
+                QMessageBox.information(self, 'PDF viewer unavailable', why)
+                return
+            pdf = getattr(self, 'doc_pdf', None)
+            if not pdf or not os.path.exists(pdf):
+                QMessageBox.information(
+                    self, 'No PDF for this document',
+                    'The side-by-side viewer needs the paper as a PDF.\n\n'
+                    'Papers opened from arXiv bring their PDF with them; a '
+                    '.tex opened from disk has none unless a PDF of the same '
+                    'name sits beside it.')
+                return
+            self.close_pdf_viewer()
+            self.evince = EvinceBridge(EVINCE_PY, pdf, self)
+            self.evince.equation_selected.connect(self.on_pdf_equation)
+            self.evince.stopped.connect(self.on_pdf_viewer_stopped)
+            self.evince.start()
+            self.status('PDF viewer open. Double-click an equation number '
+                        'such as (7) in the PDF to jump to it here.')
+
+        def close_pdf_viewer(self):
+            bridge = getattr(self, 'evince', None)
+            if bridge is not None:
+                bridge.equation_selected.disconnect()
+                bridge.stopped.disconnect()
+                bridge.stop()
+                self.evince = None
+
+        def on_pdf_viewer_stopped(self, error):
+            self.evince = None
+            if error:
+                QMessageBox.warning(
+                    self, 'PDF viewer stopped',
+                    'evince.py exited unexpectedly.\n\n%s\n\n'
+                    'If it cannot find its bindings, install them with:\n'
+                    '    sudo apt install python3-gi gir1.2-evince-3.0' % error)
+
+        def on_pdf_equation(self, number):
+            """The reader selected equation (N) in the PDF; show it here.
+
+            The match is on the equation's printed number, which is exactly why
+            scan_tex counts them the way LaTeX does rather than counting the
+            entries it happens to produce.
+            """
+            for i, e in enumerate(self.doc_items):
+                if e['number'] == number:
+                    self.goto_equation(i)
+                    return
+            # Numbering can legitimately disagree: an author who resets the
+            # counter, or an appendix numbered (A.1), will not line up.
+            self.status('Equation (%d) was selected in the PDF, but this '
+                        'document has no equation with that number.' % number)
+
+        def closeEvent(self, event):
+            self.close_pdf_viewer()
+            super().closeEvent(event)
+
         def open_arxiv_dialog(self):
             text, ok = QInputDialog.getText(
                 self, 'Open from arXiv',
@@ -4252,6 +4480,8 @@ if QT_OK:
             self.load_document(main)
             self.doc_name.setText('arXiv:%s' % ident)
             self.doc_name.setToolTip(main)
+            pdf = arxiv_pdf_path(ident)
+            self.doc_pdf = pdf if os.path.exists(pdf) else None
 
         def open_tex_file(self):
             path, _ = QFileDialog.getOpenFileName(
@@ -4273,6 +4503,10 @@ if QT_OK:
                 return
             self.doc_path = path
             self.doc_text = text
+            # A paper built in place usually has its PDF next to it, which is
+            # enough to drive the side-by-side viewer without arXiv involved.
+            beside = os.path.splitext(path)[0] + '.pdf'
+            self.doc_pdf = beside if os.path.exists(beside) else None
             self.rescan_document()
 
         def rescan_document(self):
@@ -5075,6 +5309,59 @@ x = "$fake math$ 100% off"
             check('a non-arXiv URL is refused', True)
     finally:
         _shutil.rmtree(work, ignore_errors=True)
+
+    print('PDF and the Evince bridge')
+    _pdfdir = arxiv_cache_dir('9999.88888')
+    _shutil.rmtree(_pdfdir, ignore_errors=True)
+    try:
+        got = ensure_arxiv_pdf('9999.88888', fetch=lambda _i: b'%PDF-1.5 ok')
+        check('a downloaded PDF is cached', got and os.path.exists(got))
+        calls = []
+        again = ensure_arxiv_pdf('9999.88888',
+                                 fetch=lambda _i: calls.append(1))
+        check('and is not fetched a second time', not calls and again == got)
+        check('no half-written .part file is left behind',
+              not os.path.exists(got + '.part'))
+        _shutil.rmtree(_pdfdir, ignore_errors=True)
+        check('an error page is not mistaken for a PDF',
+              ensure_arxiv_pdf('9999.88888',
+                               fetch=lambda _i: b'<html>404</html>') is None)
+        check('a failed download is not fatal',
+              ensure_arxiv_pdf(
+                  '9999.88888',
+                  fetch=lambda _i: (_ for _ in ()).throw(OSError('down')))
+              is None)
+        # A paper must still open when only its PDF fails.
+        _src = arxiv_cache_dir('9999.77777')
+        _shutil.rmtree(_src, ignore_errors=True)
+        ident_, main_ = open_arxiv(
+            '9999.77777', fetch=lambda _i: _tar([('main.tex', DOC_)]),
+            pdf_fetch=lambda _i: (_ for _ in ()).throw(OSError('no pdf')))
+        check('a paper whose PDF fails still opens', main_ is not None)
+        _shutil.rmtree(_src, ignore_errors=True)
+    finally:
+        _shutil.rmtree(_pdfdir, ignore_errors=True)
+
+    ok_, why_ = evince_available()
+    check('evince availability reports a reason when unavailable',
+          ok_ or bool(why_))
+    if not sys.platform.startswith('linux'):
+        check('and is refused off Linux', not ok_)
+
+    # The line protocol evince.py prints, parsed the way the bridge parses it.
+    def _parse(line):
+        line = line.strip()
+        if not line.startswith('newsel:'):
+            return None
+        digits = line.split('(')[-1].split(')')[0]
+        return int(digits) if digits.isdigit() else None
+
+    check('a selection line yields its number', _parse('newsel: (7)') == 7)
+    check('a multi-digit number is read whole', _parse('newsel: (142)') == 142)
+    check('a non-numeric selection is ignored',
+          _parse('newsel: (3.4a)') is None)
+    check('other output is ignored', _parse('tick...') is None)
+    check('and so is a blank line', _parse('') is None)
 
     # environment-dependent, so reported but never fatal
     print('typesetting (optional)')

@@ -274,6 +274,30 @@ directory, or contain symlinks pointing anywhere on the disk, and papers are
 uploaded by strangers, so members that escape the extraction directory are
 dropped rather than trusted.
 
+### Reading the PDF alongside (Linux)
+
+**File → Open PDF alongside** (Ctrl+P) opens the paper's PDF in `evince.py`, a
+small Evince wrapper. Double-clicking an equation number such as `(7)` in the
+PDF selects it, and the explorer jumps to that equation — so you can read the
+paper normally and pull any equation over to be taken apart.
+
+This is why `scan_tex` numbers equations the way LaTeX does rather than counting
+the entries it happens to produce: the number in the PDF is the key that links
+the two windows. Where an author resets the counter or numbers an appendix
+`(A.1)`, the two will not line up, and that is reported rather than guessed at.
+
+Papers opened from arXiv bring their PDF with them. A `.tex` opened from disk
+gets the viewer if a PDF of the same name sits next to it.
+
+Linux only — it drives Evince through its GObject bindings, which do not exist
+on macOS or Windows. Everything else works everywhere. Install with:
+
+```sh
+sudo apt install python3-gi gir1.2-evince-3.0
+```
+
+`make install-all` includes these, and `make check-deps` reports them.
+
 To check a paper before teaching from it, without opening a window:
 
 ```sh

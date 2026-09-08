@@ -35,7 +35,9 @@ APT_PACKAGES = \
 APT_OPTIONAL = \
 	python3-scipy \
 	imagemagick \
-	ghostscript
+	ghostscript \
+	python3-gi \
+	gir1.2-evince-3.0
 
 default:
 	$(PYTHON) rosettaui.py
@@ -163,6 +165,11 @@ check-deps:
 		&& echo '  imagemagick     ok' || echo '  imagemagick     missing  (imagemagick)'
 	@command -v gs >/dev/null \
 		&& echo '  ghostscript     ok' || echo '  ghostscript     missing  (ghostscript)'
+	@# Linux only, and optional: it drives the side-by-side PDF viewer.
+	@$(PYTHON) -c "import gi; gi.require_version('EvinceDocument','3.0')" \
+		>/dev/null 2>&1 \
+		&& echo '  evince (pdf)    ok' \
+		|| echo '  evince (pdf)    missing  (python3-gi gir1.2-evince-3.0)'
 
 ui:
 	$(PYTHON) rosettaui.py

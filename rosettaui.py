@@ -1438,6 +1438,8 @@ class Node:
         self.accent = kw.get('accent', '')
         self.left = kw.get('left', '')
         self.right = kw.get('right', '')
+        # matrix-like nodes: a list of rows, each a list of cell Nodes
+        self.rows = kw.get('rows')
         # filled in by the layout pass
         self.w = 0.0
         self.above = 0.0
@@ -1448,6 +1450,9 @@ class Node:
         for f in (self.base, self.sup, self.sub, self.num, self.den, self.body):
             if isinstance(f, Node):
                 out.append(f)
+        if self.rows:
+            for row in self.rows:
+                out.extend(c for c in row if isinstance(c, Node))
         return out
 
     def __repr__(self):
@@ -1487,6 +1492,37 @@ IGNORED = {r'\left', r'\right', r'\big', r'\Big', r'\bigg', r'\Bigg', r'\,',
 
 BIG_OPS = {r'\sum', r'\prod', r'\int', r'\oint', r'\iint', r'\bigcup',
            r'\bigcap', r'\lim'}
+
+# Matrix-like environments: (left delimiter, right delimiter, column alignment).
+# Alignment is either a single letter applied to every column, or 'rl' meaning
+# the align-style alternation of right, left, right, left...
+#
+# These are the environments whose \\ and & are structural.  Everything here is
+# laid out by the 'matrix' node kind, which is why cases and substack come
+# along for free: a case distinction is a two-column matrix with a brace on the
+# left, and a substack is a one-column matrix with no delimiters at all.
+MATRIX_ENVS = {
+    'matrix':      ('', '', 'c'),
+    'pmatrix':     ('(', ')', 'c'),
+    'bmatrix':     ('[', ']', 'c'),
+    'Bmatrix':     ('{', '}', 'c'),
+    'vmatrix':     ('|', '|', 'c'),
+    'Vmatrix':     ('\u2016', '\u2016', 'c'),
+    'smallmatrix': ('', '', 'c'),
+    'array':       ('', '', 'c'),
+    'cases':       ('{', '', 'l'),
+    'dcases':      ('{', '', 'l'),
+    'aligned':     ('', '', 'rl'),
+    'alignedat':   ('', '', 'rl'),
+    'split':       ('', '', 'rl'),
+    'gathered':    ('', '', 'c'),
+    'substack':    ('', '', 'c'),
+    'subarray':    ('', '', 'c'),
+}
+
+# Environments taking an argument between \begin{...} and the first cell, which
+# has to be swallowed before the body starts.  array's is the column spec.
+ENV_ARGS = {'array': 1, 'alignedat': 1, 'subarray': 1}
 
 
 def tokenize(s):
@@ -1572,6 +1608,88 @@ class Parser:
         a = self.parse_atom()
         return Node('row', children=[a] if a else [])
 
+    def env_name(self):
+        """Read the {name} after \\begin or \\end, as a plain string."""
+        parts = []
+        if self.peek() == '{':
+            self.next()
+            while self.peek() not in ('}', None):
+                parts.append(self.next())
+            if self.peek() == '}':
+                self.next()
+        return ''.join(parts)
+
+    def parse_env(self):
+        r"""\begin{...} -- a matrix node if we know the environment, else its body.
+
+        Unknown environments are not an error: their contents are still maths,
+        so the body is returned as a plain row.  That way a paper using some
+        environment we have never heard of still renders its symbols, rather
+        than silently dropping the equation.
+        """
+        name = self.env_name()
+        base = name.rstrip('*')
+        for _ in range(ENV_ARGS.get(base, 0)):
+            if self.peek() == '[':               # \begin{array}[t]{cc}
+                while self.peek() not in (']', None):
+                    self.next()
+                if self.peek() == ']':
+                    self.next()
+            spec = self.parse_group()
+            self._spec = flatten_text(spec)
+        spec = getattr(self, '_spec', '')
+        self._spec = ''
+
+        rows = [[]]
+        cell = []
+        depth = 0
+        while True:
+            t = self.peek()
+            if t is None:
+                break
+            if t == r'\end' and depth == 0:
+                self.next()
+                self.env_name()
+                break
+            if t == r'\begin':
+                depth += 1
+            elif t == r'\end':
+                depth -= 1
+            if depth == 0 and t == '&':
+                self.next()
+                rows[-1].append(Parser(cell).parse_row(stop=()))
+                cell = []
+                continue
+            if depth == 0 and t == '\\\\':
+                self.next()
+                if self.peek() == '[':           # \\[6pt] spacing argument
+                    while self.peek() not in (']', None):
+                        self.next()
+                    if self.peek() == ']':
+                        self.next()
+                rows[-1].append(Parser(cell).parse_row(stop=()))
+                cell = []
+                rows.append([])
+                continue
+            cell.append(self.next())
+        rows[-1].append(Parser(cell).parse_row(stop=()))
+        rows = [r for r in rows
+                if any(c.children for c in r)]   # drop a trailing empty row
+
+        if base not in MATRIX_ENVS:
+            # Unknown environment: hand back its contents rather than nothing.
+            flat = []
+            for r in rows:
+                for c in r:
+                    flat.extend(c.children)
+            return Node('row', children=flat)
+
+        left, right, align = MATRIX_ENVS[base]
+        if base == 'array' and spec:
+            align = spec
+        return Node('matrix', rows=rows, left=left, right=right,
+                    latex=r'\begin{%s}' % name, text=align)
+
     def parse_atom(self):
         t = self.next()
         if t is None:
@@ -1583,6 +1701,8 @@ class Parser:
             return row
         if t == '}':
             return None
+        if t == '\\\\':
+            return None                      # a row break with no matrix around it
         if t.startswith('\\'):
             if t in IGNORED:
                 # \left( and \right) still carry a delimiter we want to keep
@@ -1614,7 +1734,9 @@ class Parser:
             if t in FONT_CMDS:
                 g = self.parse_group()
                 return Node('text', text=flatten_text(g), latex=t)
-            if t == r'\begin' or t == r'\end':
+            if t == r'\begin':
+                return self.parse_env()
+            if t == r'\end':
                 self.parse_group()           # swallow the environment name
                 return None
             return Node('sym', latex=t, text=disp(t))
@@ -1656,7 +1778,10 @@ def parse_latex(src):
         src = src[2:-2]
     elif src.startswith('$') and src.endswith('$') and len(src) > 1:
         src = src[1:-1]
-    src = src.replace(r'\\', ' ')
+    # \\ used to be stripped here.  It cannot be any more: inside a matrix or a
+    # cases block it separates rows and is the whole point.  parse_atom drops
+    # the ones that turn up outside such an environment, where they really are
+    # just a line break with nothing to lay out.
     return Parser(tokenize(src)).parse_row(stop=())
 
 
@@ -1992,7 +2117,30 @@ def clean_fragment(s):
             _opt, j = _read_optional(s, j)
             _arg, j = _read_group(s, j)
             s = s[:i] + s[j:]
-    s = re.sub(r'(?<!\\)&', ' ', s)
+    # Alignment ampersands go, but only the ones at the top level.  Inside a
+    # matrix or a cases block an & separates columns and is structural -- the
+    # layout engine needs it, and stripping it turns a 2x2 matrix into a row of
+    # four symbols.  So track environment nesting and only clear the outer ones.
+    out = []
+    depth = 0
+    i = 0
+    while i < len(s):
+        if s[i] == '\\':
+            if s.startswith(r'\begin', i) or s.startswith(r'\end', i):
+                j = i + (6 if s.startswith(r'\begin', i) else 4)
+                name, _ = _read_group(s, j)
+                if name and name.strip().rstrip('*') in INNER_ENVS:
+                    depth += 1 if s.startswith(r'\begin', i) else -1
+                    depth = max(0, depth)
+            out.append(s[i:i + 2])
+            i += 2
+            continue
+        if s[i] == '&' and depth == 0:
+            out.append(' ')
+        else:
+            out.append(s[i])
+        i += 1
+    s = ''.join(out)
     s = re.sub(r'\s+', ' ', s)
     return s.strip()
 
@@ -2252,7 +2400,11 @@ def extract_features(node, acc=None):
     if node is None:
         return acc
     k = node.kind
-    if k == 'frac':
+    if k == 'matrix':
+        acc.add('S:matrix')
+        if len(node.rows or []) > 1 and node.left == '{':
+            acc.add('S:cases')
+    elif k == 'frac':
         acc.add('S:frac')
     elif k == 'sqrt':
         acc.add('S:sqrt')
@@ -2380,6 +2532,16 @@ def to_unicode(node):
         return '(%s)/(%s)' % (to_unicode(node.num), to_unicode(node.den))
     if k == 'sqrt':
         return '\u221a(%s)' % to_unicode(node.body)
+    if k == 'matrix':
+        # Rows separated by semicolons, cells by commas -- the conventional
+        # one-line spelling, and unambiguous in a menu entry.  Brackets are
+        # only invented when the environment has none of its own; cases has an
+        # opening brace and no closing one, and must not gain a stray "]".
+        body = '; '.join(', '.join(to_unicode(c) for c in row)
+                         for row in (node.rows or []))
+        if not node.left and not node.right:
+            return '[%s]' % body
+        return '%s%s%s' % (node.left, body, node.right)
     if k == 'accent':
         return to_unicode(node.body) + ACCENTS.get(node.accent, '')
     if k == 'script':
@@ -2822,6 +2984,100 @@ if QT_OK:
                 self.ui.symbol_context_menu(self.node, event.screenPos())
             event.accept()
 
+    class Bracket(QGraphicsPathItem):
+        """A delimiter drawn to fit its contents, rather than a scaled glyph.
+
+        Blowing up a font's "(" to matrix height gives a stroke that thickens
+        with it and looks wrong; real typesetting uses purpose-drawn extensible
+        delimiters, so these are paths.  Clickable like every other element.
+        """
+
+        def __init__(self, ch, height, size, node, ui, tip):
+            super().__init__()
+            self.node = node
+            self.ui = ui
+            w = self.width_for(ch, size)
+            pen_w = max(1.3, size * 0.055)
+            path = QPainterPath()
+            h = height
+            if ch in '([{|\u2016':
+                inner, outer = w * 0.82, w * 0.12
+            else:
+                inner, outer = w * 0.18, w * 0.88
+            if ch in '()':
+                path.moveTo(inner, 0)
+                path.cubicTo(outer, h * 0.25, outer, h * 0.75, inner, h)
+            elif ch in '[]':
+                path.moveTo(inner, 0)
+                path.lineTo(outer, 0)
+                path.lineTo(outer, h)
+                path.lineTo(inner, h)
+            elif ch in '{}':
+                # A brace is not a paren.  Its two arms leave the *content*
+                # side at top and bottom and meet at a cusp pointing away from
+                # the content, so the spine and the cusp sit on opposite sides
+                # -- drawing it like a paren gives a shape that reads as one.
+                mid = h / 2.0
+                if ch == '{':
+                    spine, cusp = w * 0.92, w * 0.08
+                else:
+                    spine, cusp = w * 0.08, w * 0.92
+                # Each arm is one cubic whose control points stay on the arm's
+                # own vertical, which is what gives a brace its S-curve rather
+                # than the straight diagonal of an angle bracket.
+                path.moveTo(spine, 0)
+                path.cubicTo(spine, mid * 0.42, cusp, mid * 0.55, cusp, mid)
+                path.cubicTo(cusp, mid + mid * 0.45, spine, mid + mid * 0.58,
+                             spine, h)
+            elif ch == '|':
+                path.moveTo(w / 2.0, 0)
+                path.lineTo(w / 2.0, h)
+            elif ch == '\u2016':
+                path.moveTo(w * 0.32, 0)
+                path.lineTo(w * 0.32, h)
+                path.moveTo(w * 0.68, 0)
+                path.lineTo(w * 0.68, h)
+            self.setPath(path)
+            self.setPen(QPen(QColor('#1a1a2e'), pen_w, Qt.SolidLine,
+                             Qt.RoundCap, Qt.RoundJoin))
+            self.setBrush(QBrush(Qt.NoBrush))
+            self.setAcceptHoverEvents(True)
+            self.setCursor(QCursor(Qt.PointingHandCursor))
+            self.setToolTip(tip)
+
+        @staticmethod
+        def width_for(ch, size):
+            if not ch:
+                return 0.0
+            if ch in '|\u2016':
+                return size * 0.34
+            if ch in '{}':
+                return size * 0.62          # a brace needs room to curve
+            return size * 0.42
+
+        def _repen(self, colour):
+            p = self.pen()
+            p.setColor(QColor(colour))
+            self.setPen(p)
+
+        def hoverEnterEvent(self, event):
+            self._repen(HOVER_COLOUR)
+            super().hoverEnterEvent(event)
+
+        def hoverLeaveEvent(self, event):
+            self._repen('#1a1a2e')
+            super().hoverLeaveEvent(event)
+
+        def mousePressEvent(self, event):
+            if event.button() == Qt.LeftButton and self.ui is not None:
+                self.ui.explain_symbol(self.node)
+            super().mousePressEvent(event)
+
+        def contextMenuEvent(self, event):
+            if self.ui is not None:
+                self.ui.symbol_context_menu(self.node, event.screenPos())
+            event.accept()
+
     class MathLayout:
         """Two-pass layout: measure the tree, then place real items.
 
@@ -2866,6 +3122,22 @@ if QT_OK:
                     r'\cdot', r'\times', r'\sim', r'\ll', r'\gg'):
                 return 0.28
             return 0.06
+
+        @staticmethod
+        def column_align(spec, j):
+            r"""Alignment letter for column j.
+
+            'rl' is the align-style alternation used by aligned/split: odd
+            columns flush right, even flush left, which is what puts the
+            equals signs of a derivation underneath one another.  An array's
+            column spec is taken literally, one letter per column.
+            """
+            if spec == 'rl':
+                return 'r' if j % 2 == 0 else 'l'
+            if len(spec) > 1:
+                letters = [c for c in spec if c in 'lcr']
+                return letters[j] if j < len(letters) else 'c'
+            return spec if spec in 'lcr' else 'c'
 
         # -- pass 1 ------------------------------------------------------
         def measure(self, node, size):
@@ -2932,6 +3204,46 @@ if QT_OK:
                 surd = max(size * 0.55, height * 0.26)
                 node.w = node.body.w + surd + size * 0.28
                 node._surd = surd
+
+            elif k == 'matrix':
+                small = any(node.latex.startswith(r'\begin{' + n)
+                            for n in ('smallmatrix', 'substack', 'subarray'))
+                csize = max(size * (0.72 if small else 0.94), self.MIN_SIZE)
+                rows = node.rows or []
+                ncols = max((len(r) for r in rows), default=0)
+                for row in rows:
+                    for cell in row:
+                        self.measure(cell, csize)
+
+                colw = [0.0] * ncols
+                for row in rows:
+                    for j, cell in enumerate(row):
+                        colw[j] = max(colw[j], cell.w)
+                rowa = [max((c.above for c in row), default=csize * 0.7)
+                        for row in rows]
+                rowb = [max((c.below for c in row), default=csize * 0.3)
+                        for row in rows]
+
+                colgap = csize * (0.5 if small else 0.85)
+                rowgap = csize * (0.22 if small else 0.42)
+                total_h = sum(rowa) + sum(rowb) + rowgap * max(0, len(rows) - 1)
+                inner_w = sum(colw) + colgap * max(0, ncols - 1)
+
+                lw = Bracket.width_for(node.left, size)
+                rw = Bracket.width_for(node.right, size)
+                pad = size * 0.16 if (lw or rw) else 0.0
+                node.w = lw + rw + inner_w + 2 * pad
+
+                # Centre the block on the maths axis, so a matrix sits level
+                # with an adjacent equals sign rather than resting on it.
+                axis = self.metrics(size).ascent() * 0.30
+                node.above = total_h / 2.0 + axis
+                node.below = total_h / 2.0 - axis
+                node._colw, node._rowa, node._rowb = colw, rowa, rowb
+                node._colgap, node._rowgap = colgap, rowgap
+                node._lw, node._rw, node._pad = lw, rw, pad
+                node._total_h = total_h
+                node._size = size
 
             elif k == 'accent':
                 self.measure(node.body, size)
@@ -3013,6 +3325,34 @@ if QT_OK:
                 if node.sup is not None:
                     self.place(node.sup, x + surd * 0.15,
                                top + node.sup.above * 0.9)
+
+            elif k == 'matrix':
+                top = baseline - node.above
+                rows = node.rows or []
+                if node.left:
+                    b = Bracket(node.left, node._total_h, node._size, node,
+                                self.ui, tooltip_for(node))
+                    b.setPos(x, top)
+                    self.scene.addItem(b)
+                if node.right:
+                    b = Bracket(node.right, node._total_h, node._size, node,
+                                self.ui, tooltip_for(node))
+                    b.setPos(x + node.w - node._rw, top)
+                    self.scene.addItem(b)
+
+                align = node.text or 'c'
+                y = top
+                for i, row in enumerate(rows):
+                    y += node._rowa[i]
+                    cx = x + node._lw + node._pad
+                    for j, cell in enumerate(row):
+                        a = self.column_align(align, j)
+                        slack = node._colw[j] - cell.w
+                        off = 0.0 if a == 'l' else (
+                            slack if a == 'r' else slack / 2.0)
+                        self.place(cell, cx + off, y)
+                        cx += node._colw[j] + node._colgap
+                    y += node._rowb[i] + node._rowgap
 
             elif k == 'accent':
                 self.place(node.body, x, baseline)
@@ -4039,6 +4379,81 @@ x = "$fake math$ 100% off"
         check('the bundled paper yields equations', len(paper) > 20)
         check('and none of them came out of its code listings',
               not any('return' in e['tex'] for e in paper))
+
+    print('matrices, cases and arrays')
+
+    def first_matrix(n):
+        if n.kind == 'matrix':
+            return n
+        for k in n.kids():
+            m = first_matrix(k)
+            if m is not None:
+                return m
+        return None
+
+    m = first_matrix(parse_latex(
+        r'M = \begin{pmatrix} a & b \\ c & d \end{pmatrix}'))
+    check('a pmatrix becomes a matrix node', m is not None)
+    check('with the right shape', m is not None and len(m.rows) == 2
+          and all(len(r) == 2 for r in m.rows))
+    check('and its own delimiters', m is not None
+          and (m.left, m.right) == ('(', ')'))
+    check('cells keep their contents',
+          m is not None and to_unicode(m.rows[1][0]) == 'c')
+    m2 = first_matrix(parse_latex(
+        r'\begin{cases} 1 & x > 0 \\ 0 & x \le 0 \end{cases}'))
+    check('cases has an opening brace and no closing one',
+          m2 is not None and (m2.left, m2.right) == ('{', ''))
+    check('and is left aligned', m2 is not None and m2.text == 'l')
+    check('the unicode preview does not invent a closing bracket',
+          not to_unicode(m2).endswith(']'))
+    m3 = first_matrix(parse_latex(
+        r'\begin{array}{lcr} 1 & 2 & 3 \\ 4 & 5 & 6 \end{array}'))
+    check('an array reads its column spec', m3 is not None and m3.text == 'lcr')
+    check('and the spec drives alignment',
+          [MathLayout.column_align('lcr', j) for j in range(3)] == ['l', 'c', 'r'])
+    check('aligned alternates right then left',
+          [MathLayout.column_align('rl', j) for j in range(4)]
+          == ['r', 'l', 'r', 'l'])
+    check('a bare row separator outside a matrix is dropped',
+          '\\' not in to_unicode(parse_latex(r'a \\ b')))
+    check('a matrix is reported as a structural feature',
+          'S:matrix' in extract_features(parse_latex(
+              r'\begin{bmatrix} 1 \\ 2 \end{bmatrix}')))
+    check('an unknown environment still yields its contents',
+          'x' in to_unicode(parse_latex(r'\begin{wierdenv} x + y \end{wierdenv}')))
+
+    # The scanner has to stop stripping & now that the layout engine needs it.
+    kept = clean_fragment(r'M = \begin{pmatrix} a & b \\ c & d \end{pmatrix}')
+    check('clean_fragment keeps ampersands inside a matrix', kept.count('&') == 2)
+    check('but still strips the alignment ones outside',
+          '&' not in clean_fragment(r'a &= b'))
+    check('a labelled matrix row survives cleaning',
+          'pmatrix' in clean_fragment(
+              r'\begin{pmatrix} a & b \end{pmatrix} \label{eq:m}'))
+
+    if QT_OK:
+        # --selftest has to keep working with no display -- it is what CI runs
+        # -- and constructing a QApplication is what would otherwise demand
+        # one.  Offscreen is enough to measure and place items.
+        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        from PyQt5.QtWidgets import QApplication, QGraphicsScene
+        _app = QApplication.instance() or QApplication(sys.argv[:1])
+        for src, name in (
+                (r'\begin{pmatrix} a & b \\ c & d \end{pmatrix}', 'pmatrix'),
+                (r'\begin{cases} 1 & x>0 \\ 0 & x\le 0 \end{cases}', 'cases'),
+                (r'\begin{vmatrix} \frac{1}{2} & \beta \end{vmatrix}', 'vmatrix'),
+                (r'\sum_{\begin{subarray}{c} i<j \end{subarray}} x', 'subarray')):
+            sc = QGraphicsScene()
+            MathLayout(sc, None).render(parse_latex(src))
+            r_ = sc.itemsBoundingRect()
+            check('%s lays out with positive extent' % name,
+                  r_.width() > 0 and r_.height() > 0)
+        sc = QGraphicsScene()
+        tree = parse_latex(r'\begin{bmatrix} 1 \\ 2 \\ 3 \end{bmatrix}')
+        MathLayout(sc, None).render(tree)
+        check('a column vector is taller than it is wide',
+              sc.itemsBoundingRect().height() > sc.itemsBoundingRect().width())
 
     # environment-dependent, so reported but never fatal
     print('typesetting (optional)')

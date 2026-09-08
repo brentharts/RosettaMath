@@ -252,9 +252,24 @@ python3 rosettaui.py --scan paper.tex    # list what was found
 python3 rosettaui.py --open paper.tex    # launch straight into it
 ```
 
-Constructs the layout engine cannot draw yet — matrices and `cases`, mainly —
-are still listed and still selectable, but render approximately. *Typeset with
-pdflatex* on the right-click menu shows the true form for any of them.
+Matrices are laid out as a grid and stay as clickable as anything else. One
+`matrix` node kind covers `pmatrix`, `bmatrix`, `Bmatrix`, `vmatrix`,
+`Vmatrix`, `smallmatrix`, `array`, `cases`, `aligned`, `split`, `gathered`,
+`substack` and `subarray` — a case distinction is a two-column grid with a
+brace down the left, and a `substack` is a one-column grid with no delimiters,
+so they all fall out of the same code. `array` reads its column spec, so
+`{lcr}` aligns left, centre and right; `aligned` and `split` alternate right
+and left, which is what stacks the equals signs of a derivation under one
+another.
+
+Delimiters are drawn as paths sized to their contents rather than as
+scaled-up glyphs, because a font's `(` blown up to matrix height thickens with
+it and reads wrong.
+
+An environment the parser does not recognise is not dropped: its contents come
+through as an ordinary row, so a paper using some unfamiliar environment still
+renders its symbols. Anything that still comes out approximate can be checked
+against *Typeset with pdflatex* on the right-click menu.
 
 ```sh
 python3 rosettaui.py                    # launch

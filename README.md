@@ -266,6 +266,13 @@ Delimiters are drawn as paths sized to their contents rather than as
 scaled-up glyphs, because a font's `(` blown up to matrix height thickens with
 it and reads wrong.
 
+`\underbrace` and `\overbrace` are drawn as braces spanning their contents,
+with the attached `_` or `^` label centred beyond the brace rather than set to
+its right. They are annotations rather than operations — they group a span and
+name it without changing its value — so both carry a glossary entry saying so,
+since a reader meeting one needs to be told it is a label and not an operation
+they have failed to recognise.
+
 An environment the parser does not recognise is not dropped: its contents come
 through as an ordinary row, so a paper using some unfamiliar environment still
 renders its symbols. Anything that still comes out approximate can be checked

@@ -633,6 +633,24 @@ OPERATORS = [
 for _l, _u, _n, _c, _b, _s in OPERATORS:
     add_symbol(_l, _u, _n, _c, _b, _s)
 
+# The horizontal braces are annotations rather than operators: they change
+# nothing about the value of the expression, they group part of it and give
+# that part a name.  That makes them worth a glossary entry of their own,
+# because a reader meeting one needs to be told it is a label and not an
+# operation they have failed to recognise.
+add_symbol(r'\underbrace', '\u23df', 'Underbrace', 'Structures',
+           'A brace drawn beneath part of an expression, with a label under '
+           'it. Purely annotation: it groups a span and names it, and removing '
+           'it would not change the value of anything. Common in physics for '
+           'pointing out that one term is the kinetic energy or that another '
+           'is a correction that vanishes in some limit.',
+           'Underbrace')
+add_symbol(r'\overbrace', '\u23de', 'Overbrace', 'Structures',
+           'The same annotation as an underbrace, drawn above the expression '
+           'with its label on top. Which one an author picks is usually a '
+           'matter of what else is crowding the line rather than of meaning.',
+           'Underbrace')
+
 
 # Single Latin letters are the worst offenders for overloading -- the same
 # glyph means a dozen different things.  We list the readings rather than
@@ -1493,6 +1511,13 @@ IGNORED = {r'\left', r'\right', r'\big', r'\Big', r'\bigg', r'\Bigg', r'\,',
 BIG_OPS = {r'\sum', r'\prod', r'\int', r'\oint', r'\iint', r'\bigcup',
            r'\bigcap', r'\lim'}
 
+# Horizontal braces.  These annotate a span of an expression -- "this part is
+# the kinetic energy" -- which makes them a teaching device more than a
+# notational one, and worth drawing properly.  The label is attached with an
+# ordinary _ or ^ script, so parse_row picks it up with no extra work; the
+# layout is what has to know to centre it rather than set it to the right.
+BRACE_CMDS = {r'\underbrace': 'under', r'\overbrace': 'over'}
+
 # Matrix-like environments: (left delimiter, right delimiter, column alignment).
 # Alignment is either a single letter applied to every column, or 'rl' meaning
 # the align-style alternation of right, left, right, left...
@@ -1728,6 +1753,9 @@ class Parser:
                         self.next()
                     index = Parser(idx).parse_row()
                 return Node('sqrt', body=self.parse_group(), sup=index)
+            if t in BRACE_CMDS:
+                return Node('brace', body=self.parse_group(), latex=t,
+                            accent=BRACE_CMDS[t])
             if t in ACCENTS:
                 return Node('accent', accent=t, body=self.parse_group(),
                             latex=t)
@@ -1771,6 +1799,37 @@ def flatten_text(node):
     return ''.join(flatten_text(k) for k in node.kids())
 
 
+def protect_text_spaces(src):
+    r"""Keep the spaces inside \text{...} and friends.
+
+    The tokenizer drops whitespace, which is right for maths -- "a b" and "ab"
+    mean the same thing -- but wrong inside a text argument, where
+    \text{Shannon entropy} would come out as "Shannonentropy".  Replacing those
+    spaces with non-breaking ones gets them through the tokenizer as ordinary
+    characters, and they still render as a space.
+
+    Only noticeable once horizontal braces arrived, since their labels are
+    almost always \text{...}, but it was always wrong.
+    """
+    for cmd in FONT_CMDS:
+        i = 0
+        while True:
+            i = src.find(cmd, i)
+            if i == -1:
+                break
+            j = i + len(cmd)
+            if j < len(src) and src[j].isalpha():
+                i = j                        # \textbf when looking for \text
+                continue
+            body, end = _read_group(src, j)
+            if body is None:
+                i = j
+                continue
+            src = src[:j] + '{' + body.replace(' ', '\u00a0') + '}' + src[end:]
+            i = j + len(body) + 2
+    return src
+
+
 def parse_latex(src):
     """A LaTeX fragment (with or without $ delimiters) -> tree."""
     src = src.strip()
@@ -1778,6 +1837,7 @@ def parse_latex(src):
         src = src[2:-2]
     elif src.startswith('$') and src.endswith('$') and len(src) > 1:
         src = src[1:-1]
+    src = protect_text_spaces(src)
     # \\ used to be stripped here.  It cannot be any more: inside a matrix or a
     # cases block it separates rows and is the whole point.  parse_atom drops
     # the ones that turn up outside such an environment, where they really are
@@ -2400,7 +2460,9 @@ def extract_features(node, acc=None):
     if node is None:
         return acc
     k = node.kind
-    if k == 'matrix':
+    if k == 'brace':
+        acc.add('S:' + node.accent + 'brace')
+    elif k == 'matrix':
         acc.add('S:matrix')
         if len(node.rows or []) > 1 and node.left == '{':
             acc.add('S:cases')
@@ -2542,6 +2604,8 @@ def to_unicode(node):
         if not node.left and not node.right:
             return '[%s]' % body
         return '%s%s%s' % (node.left, body, node.right)
+    if k == 'brace':
+        return to_unicode(node.body)
     if k == 'accent':
         return to_unicode(node.body) + ACCENTS.get(node.accent, '')
     if k == 'script':
@@ -3078,6 +3142,59 @@ if QT_OK:
                 self.ui.symbol_context_menu(self.node, event.screenPos())
             event.accept()
 
+    class HBrace(QGraphicsPathItem):
+        """A wide brace spanning an expression, cusp pointing away from it.
+
+        Same construction as the vertical Bracket turned on its side: two
+        cubics meeting at a central cusp, each one's control points staying on
+        its own horizontal so the arms curve instead of running diagonally.
+        """
+
+        def __init__(self, width, height, down, size, node, ui, tip):
+            super().__init__()
+            self.node = node
+            self.ui = ui
+            w, h = width, height
+            y0, y1 = (0.0, h) if down else (h, 0.0)
+            half = w / 2.0
+            path = QPainterPath()
+            # Control points sit far out along each arm, so the arm runs
+            # nearly flat and then turns sharply into the centre.  Spacing them
+            # evenly instead gives a sine wave, which reads as a tilde.
+            path.moveTo(0, y0)
+            path.cubicTo(half * 0.55, y0, half * 0.88, y1, half, y1)
+            path.cubicTo(half + half * 0.12, y1, half + half * 0.45, y0, w, y0)
+            self.setPath(path)
+            self.setPen(QPen(QColor('#1a1a2e'), max(1.3, size * 0.05),
+                             Qt.SolidLine, Qt.RoundCap, Qt.RoundJoin))
+            self.setBrush(QBrush(Qt.NoBrush))
+            self.setAcceptHoverEvents(True)
+            self.setCursor(QCursor(Qt.PointingHandCursor))
+            self.setToolTip(tip)
+
+        def _repen(self, colour):
+            p = self.pen()
+            p.setColor(QColor(colour))
+            self.setPen(p)
+
+        def hoverEnterEvent(self, event):
+            self._repen(HOVER_COLOUR)
+            super().hoverEnterEvent(event)
+
+        def hoverLeaveEvent(self, event):
+            self._repen('#1a1a2e')
+            super().hoverLeaveEvent(event)
+
+        def mousePressEvent(self, event):
+            if event.button() == Qt.LeftButton and self.ui is not None:
+                self.ui.explain_symbol(self.node)
+            super().mousePressEvent(event)
+
+        def contextMenuEvent(self, event):
+            if self.ui is not None:
+                self.ui.symbol_context_menu(self.node, event.screenPos())
+            event.accept()
+
     class MathLayout:
         """Two-pass layout: measure the tree, then place real items.
 
@@ -3252,9 +3369,48 @@ if QT_OK:
                 node.below = node.body.below
                 node._size = size
 
+            elif k == 'brace':
+                self.measure(node.body, size)
+                bh = max(size * 0.26, 6.0)
+                gap = size * 0.10
+                node.w = node.body.w
+                node.above = node.body.above
+                node.below = node.body.below
+                if node.accent == 'under':
+                    node.below += gap + bh
+                else:
+                    node.above += gap + bh
+                node._bh = bh
+                node._bgap = gap
+                node._size = size
+
             elif k == 'script':
                 self.measure(node.base, size)
                 ssize = max(size * self.SCRIPT, self.MIN_SIZE)
+                # A label on a horizontal brace belongs centred beyond the
+                # brace, not tucked against its right-hand end -- that is the
+                # whole point of the notation.
+                if node.base.kind == 'brace':
+                    node._stacked = True
+                    lab = node.sub if node.base.accent == 'under' else node.sup
+                    other = node.sup if node.base.accent == 'under' else node.sub
+                    if lab is not None:
+                        self.measure(lab, ssize)
+                    if other is not None:
+                        self.measure(other, ssize)
+                    node.w = max(node.base.w, lab.w if lab is not None else 0.0)
+                    node.above = node.base.above
+                    node.below = node.base.below
+                    pad = size * 0.10
+                    if lab is not None:
+                        if node.base.accent == 'under':
+                            node.below += pad + lab.above + lab.below
+                        else:
+                            node.above += pad + lab.above + lab.below
+                    node._ssize = ssize
+                    node._pad = pad
+                    return
+                node._stacked = False
                 wsup = wsub = 0.0
                 rise = drop = 0.0
                 if node.sup is not None:
@@ -3363,7 +3519,33 @@ if QT_OK:
                             baseline - node.above - node._size * 0.12)
                 self.scene.addItem(item)
 
+            elif k == 'brace':
+                self.place(node.body, x + (node.w - node.body.w) / 2.0, baseline)
+                down = node.accent == 'under'
+                if down:
+                    top = baseline + node.body.below + node._bgap
+                else:
+                    top = baseline - node.body.above - node._bgap - node._bh
+                item = HBrace(node.w, node._bh, down, node._size, node,
+                              self.ui, tooltip_for(node))
+                item.setPos(x, top)
+                self.scene.addItem(item)
+
             elif k == 'script':
+                if getattr(node, '_stacked', False):
+                    bx = x + (node.w - node.base.w) / 2.0
+                    self.place(node.base, bx, baseline)
+                    under = node.base.accent == 'under'
+                    lab = node.sub if under else node.sup
+                    if lab is not None:
+                        lx = x + (node.w - lab.w) / 2.0
+                        if under:
+                            self.place(lab, lx, baseline + node.base.below
+                                       + node._pad + lab.above)
+                        else:
+                            self.place(lab, lx, baseline - node.base.above
+                                       - node._pad - lab.below)
+                    return
                 self.place(node.base, x, baseline)
                 sx = x + node.base.w + self.base_size * 0.02
                 if node.sup is not None:
@@ -4454,6 +4636,77 @@ x = "$fake math$ 100% off"
         MathLayout(sc, None).render(tree)
         check('a column vector is taller than it is wide',
               sc.itemsBoundingRect().height() > sc.itemsBoundingRect().width())
+
+    print('horizontal braces')
+
+    def find_kind(n, k):
+        if n is None:
+            return None
+        if n.kind == k:
+            return n
+        for c in n.kids():
+            f = find_kind(c, k)
+            if f is not None:
+                return f
+        return None
+
+    b = find_kind(parse_latex(r'\underbrace{a+b}_{s}'), 'brace')
+    check('underbrace becomes a brace node', b is not None)
+    check('pointing downwards', b is not None and b.accent == 'under')
+    check('and keeping its contents',
+          b is not None and to_unicode(b.body) == 'a+b')
+    b2 = find_kind(parse_latex(r'\overbrace{x}^{n}'), 'brace')
+    check('overbrace points upwards', b2 is not None and b2.accent == 'over')
+    # The brace is a visual annotation with no reading of its own, so the
+    # unicode form is just the contents plus whatever label was attached.
+    # ("s" has a unicode subscript form, hence the glyph rather than "_s".)
+    check('the brace itself adds nothing to the unicode reading',
+          to_unicode(parse_latex(r'\underbrace{a+b}_{s}')) == 'a+b\u209b')
+    check('and an unlabelled one reads as its contents alone',
+          to_unicode(parse_latex(r'\underbrace{a+b}')) == 'a+b')
+    check('spaces inside a text label survive tokenizing',
+          'Shannon entropy' in to_unicode(parse_latex(
+              r'\underbrace{x}_{\text{Shannon entropy}}')).replace(
+                  '\u00a0', ' '))
+    check('but spaces between maths symbols are still ignored',
+          to_unicode(parse_latex(r'a b + c')) == 'ab+c')
+    check('a longer font command is not mistaken for a shorter one',
+          'c d' in to_unicode(parse_latex(r'\textbf{c d}')).replace(
+              '\u00a0', ' '))
+    check('a brace is reported as a structural feature',
+          'S:underbrace' in extract_features(
+              parse_latex(r'\underbrace{a}_{b}')))
+    check('an unlabelled brace still parses',
+          find_kind(parse_latex(r'\underbrace{a+b}'), 'brace') is not None)
+
+    if QT_OK:
+        os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
+        from PyQt5.QtWidgets import QApplication as _QA, QGraphicsScene as _QS
+        _app = _QA.instance() or _QA(sys.argv[:1])
+        tree = parse_latex(r'\underbrace{\frac{1}{2}mv^2}_{T}')
+        _sc = _QS()
+        MathLayout(_sc, None).render(tree)
+        br = find_kind(tree, 'brace')
+        sc_node = find_kind(tree, 'script')
+        check('the brace spans exactly its contents',
+              abs(br.w - br.body.w) < 0.01)
+        check('the label is stacked, not set to the right',
+              getattr(sc_node, '_stacked', False))
+        check('and the whole thing is at least as wide as the brace',
+              sc_node.w >= br.w)
+        plain = parse_latex(r'x_i')
+        _sc2 = _QS()
+        MathLayout(_sc2, None).render(plain)
+        check('an ordinary subscript is still set to the right',
+              not getattr(find_kind(plain, 'script'), '_stacked', False))
+        # An overbrace must grow upwards, an underbrace downwards.
+        up = parse_latex(r'\overbrace{x}^{n}')
+        down = parse_latex(r'\underbrace{x}_{n}')
+        for t_ in (up, down):
+            MathLayout(_QS(), None).render(t_)
+        check('an overbrace adds height above the baseline',
+              up.above > down.above)
+        check('an underbrace adds depth below it', down.below > up.below)
 
     # environment-dependent, so reported but never fatal
     print('typesetting (optional)')

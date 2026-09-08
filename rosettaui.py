@@ -28,11 +28,14 @@ self-hosted and is not written in the translatable LaTeX subset.
     python3 rosettaui.py --render-test    offscreen render to a PNG in the
                                           system temp directory
     python3 rosettaui.py --tex '$E=mc^2$' launch with a given equation
+    python3 rosettaui.py --open paper.tex launch with a whole LaTeX document
+    python3 rosettaui.py --scan paper.tex list the equations in a document
 
 Runs on Linux, macOS and Windows.  On Windows the command is `python`, not
 `python3`, and quoting for --tex uses double quotes; see README.md.
 """
 import os
+import re
 import sys
 import html
 import shutil
@@ -1657,6 +1660,589 @@ def parse_latex(src):
     return Parser(tokenize(src)).parse_row(stop=())
 
 
+# -------------------------------------------------- .tex document scanning
+#
+# Everything above this line works on a single math fragment.  What follows
+# works on a whole LaTeX *document* -- an arXiv paper, typically -- and pulls
+# the equations out of it so they can be listed and stepped through.
+#
+# This is deliberately a separate, more forgiving layer than Parser.  A paper
+# from arXiv is not written in the subset rosettamath.py translates, and it is
+# not going to be; the job here is to find the equations and hand each one to
+# the existing parser, which then renders what it can.  An equation that only
+# half renders is still worth listing: the reader can see its number, its
+# label, and can fall back on "Typeset with pdflatex" for the true picture.
+
+# Environments whose contents are *not* LaTeX and must never be scanned.  A
+# code listing routinely contains $, %, backslashes and \begin{...}; treating
+# any of that as maths produces convincing nonsense.  neomath.tex in this very
+# repository has seven lstlisting blocks, which is how this was noticed.
+VERBATIM_ENVS = {'verbatim', 'Verbatim', 'lstlisting', 'minted', 'alltt',
+                 'comment', 'listing', 'semiverbatim'}
+
+# Displayed-maths environments, mapped to whether they carry equation numbers.
+MATH_ENVS = {
+    'equation': True, 'equation*': False,
+    'align': True, 'align*': False,
+    'gather': True, 'gather*': False,
+    'multline': True, 'multline*': False,
+    'eqnarray': True, 'eqnarray*': False,
+    'flalign': True, 'flalign*': False,
+    'alignat': True, 'alignat*': False,
+    'displaymath': False, 'math': False,
+    'dmath': True, 'dmath*': False,          # breqn
+    'IEEEeqnarray': True, 'IEEEeqnarray*': False,
+}
+
+# Environments that live *inside* a displayed equation.  Their \\ separates
+# rows of a matrix or branches of a case -- it does not start a new equation,
+# so the splitter has to track them.
+INNER_ENVS = {'matrix', 'pmatrix', 'bmatrix', 'vmatrix', 'Vmatrix', 'Bmatrix',
+              'smallmatrix', 'array', 'cases', 'dcases', 'split', 'aligned',
+              'gathered', 'alignedat', 'subarray', 'substack'}
+
+
+def strip_comments(src):
+    r"""Remove LaTeX comments, respecting \% and keeping line numbering.
+
+    A comment runs from an unescaped % to the end of the line.  Newlines are
+    preserved so that reported line numbers still point at the right place in
+    the file the user opened.
+    """
+    out = []
+    for line in src.split('\n'):
+        i = 0
+        cut = None
+        while i < len(line):
+            if line[i] == '\\':
+                i += 2                        # \% or any other escape
+                continue
+            if line[i] == '%':
+                cut = i
+                break
+            i += 1
+        out.append(line if cut is None else line[:cut])
+    return '\n'.join(out)
+
+
+def _read_group(s, i):
+    """Read a balanced {...} starting at s[i]=='{'.  -> (content, index after).
+
+    Returns (None, i) if s[i] is not an opening brace.
+    """
+    if i >= len(s) or s[i] != '{':
+        return None, i
+    depth = 0
+    j = i
+    while j < len(s):
+        if s[j] == '\\':
+            j += 2
+            continue
+        if s[j] == '{':
+            depth += 1
+        elif s[j] == '}':
+            depth -= 1
+            if depth == 0:
+                return s[i + 1:j], j + 1
+        j += 1
+    return s[i + 1:], len(s)                  # unbalanced; take the rest
+
+
+def _read_optional(s, i):
+    """Read a [...] argument at s[i], if present.  -> (content or None, index)."""
+    if i < len(s) and s[i] == '[':
+        j = s.find(']', i)
+        if j != -1:
+            return s[i + 1:j], j + 1
+    return None, i
+
+
+def strip_verbatim(src):
+    """Blank out the body of every verbatim-like environment.
+
+    The \\begin/\\end lines are kept so that offsets and line numbers are not
+    disturbed; only the contents are replaced with blank lines.
+    """
+    for env in VERBATIM_ENVS:
+        out = []
+        i = 0
+        opener = '\\begin{%s}' % env
+        closer = '\\end{%s}' % env
+        while True:
+            a = src.find(opener, i)
+            if a == -1:
+                out.append(src[i:])
+                break
+            b = src.find(closer, a)
+            if b == -1:
+                out.append(src[i:])
+                break
+            body = src[a + len(opener):b]
+            out.append(src[i:a + len(opener)])
+            out.append('\n' * body.count('\n'))
+            i = b
+        src = ''.join(out)
+    return src
+
+
+MACRO_DEFS = (r'\newcommand', r'\renewcommand', r'\providecommand')
+
+
+def collect_macros(src):
+    r"""Find \newcommand / \def / \DeclareMathOperator definitions.
+
+    arXiv authors almost always abbreviate their own notation -- \newcommand{\E}
+    {\mathbb{E}} and the like -- so without this a paper's equations are full of
+    commands no symbol table can know.  Returns {name: (nargs, body)}.
+    """
+    macros = {}
+    for cmd in MACRO_DEFS:
+        i = 0
+        while True:
+            i = src.find(cmd, i)
+            if i == -1:
+                break
+            j = i + len(cmd)
+            # \newcommand{\foo} or \newcommand\foo
+            name, j2 = _read_group(src, j)
+            if name is None:
+                m = re.match(r'\s*(\\[A-Za-z]+)', src[j:])
+                if not m:
+                    i = j
+                    continue
+                name = m.group(1)
+                j2 = j + m.end()
+            name = name.strip()
+            nargs, j3 = _read_optional(src, j2)
+            _default, j4 = _read_optional(src, j3)
+            body, j5 = _read_group(src, j4)
+            if body is not None and re.fullmatch(r'\\[A-Za-z]+', name):
+                try:
+                    n = int(nargs) if nargs else 0
+                except ValueError:
+                    n = 0
+                macros[name] = (n, body)
+            i = max(j5, i + 1)
+
+    # \DeclareMathOperator{\argmax}{arg\,max}  ->  \operatorname{arg max}
+    i = 0
+    while True:
+        i = src.find(r'\DeclareMathOperator', i)
+        if i == -1:
+            break
+        j = i + len(r'\DeclareMathOperator')
+        if j < len(src) and src[j] == '*':
+            j += 1
+        name, j = _read_group(src, j)
+        body, j = _read_group(src, j)
+        if name and body and re.fullmatch(r'\\[A-Za-z]+', name.strip()):
+            macros[name.strip()] = (0, r'\operatorname{%s}' % body)
+        i = max(j, i + 1)
+
+    # \def\foo{...}  -- only the no-argument form, which is the common one.
+    for m in re.finditer(r'\\def\s*(\\[A-Za-z]+)\s*(?=\{)', src):
+        body, _ = _read_group(src, m.end())
+        if body is not None:
+            macros.setdefault(m.group(1), (0, body))
+    return macros
+
+
+def expand_macros(s, macros, depth=6):
+    r"""Substitute user-defined macros, including #1-style arguments.
+
+    Bounded by depth rather than run to a fixed point: a paper can define a
+    macro in terms of itself (\newcommand{\eps}{\varepsilon} is fine, but
+    mutually recursive pairs exist too) and this must terminate on anything.
+    """
+    if not macros:
+        return s
+    for _ in range(depth):
+        changed = False
+        out = []
+        i = 0
+        while i < len(s):
+            if s[i] != '\\':
+                out.append(s[i])
+                i += 1
+                continue
+            m = re.match(r'\\[A-Za-z]+', s[i:])
+            if not m:
+                out.append(s[i:i + 2])
+                i += 2
+                continue
+            name = m.group(0)
+            if name not in macros:
+                out.append(name)
+                i += len(name)
+                continue
+            nargs, body = macros[name]
+            j = i + len(name)
+            args = []
+            for _a in range(nargs):
+                while j < len(s) and s[j] == ' ':
+                    j += 1
+                arg, j2 = _read_group(s, j)
+                if arg is None:                # a single token counts as one
+                    if j < len(s):
+                        arg, j2 = s[j], j + 1
+                    else:
+                        arg, j2 = '', j
+                args.append(arg)
+                j = j2
+            text = body
+            for k, arg in enumerate(args, 1):
+                text = text.replace('#%d' % k, arg)
+            out.append(text)
+            i = j
+            changed = True
+        s = ''.join(out)
+        if not changed:
+            break
+    return s
+
+
+def _split_rows(body):
+    r"""Split an align/gather body on the \\ that separate equations.
+
+    A \\ inside pmatrix, cases, split and friends is a row of that construct,
+    not a new equation, so nesting is tracked.  Braces are tracked too, since
+    \\ can appear inside a \substack{...} argument.
+    """
+    rows = []
+    depth = 0
+    inner = 0
+    start = 0
+    i = 0
+    while i < len(body):
+        if body[i] == '\\':
+            if body.startswith(r'\begin', i):
+                name, _ = _read_group(body, i + 6)
+                if name and name.strip().rstrip('*') in INNER_ENVS:
+                    inner += 1
+            elif body.startswith(r'\end', i):
+                name, _ = _read_group(body, i + 4)
+                if name and name.strip().rstrip('*') in INNER_ENVS:
+                    inner = max(0, inner - 1)
+            elif body.startswith('\\\\', i) and depth == 0 and inner == 0:
+                rows.append(body[start:i])
+                i += 2
+                # \\[6pt] -- an optional spacing argument may follow
+                _sp, i = _read_optional(body, i)
+                start = i
+                continue
+            i += 2
+            continue
+        if body[i] == '{':
+            depth += 1
+        elif body[i] == '}':
+            depth = max(0, depth - 1)
+        i += 1
+    rows.append(body[start:])
+    return [r for r in rows if r.strip()]
+
+
+# A row that opens with a relation is a continuation of the row above it --
+# the "a &= b \\ &= c" idiom -- not an equation in its own right.
+_CONTINUATION = re.compile(
+    r'^\s*(?:&\s*)?(?:=|\\ne\b|\\neq\b|\\leq\b|\\geq\b|\\le\b|\\ge\b|<|>|'
+    r'\\approx\b|\\equiv\b|\\sim\b|\\simeq\b|\\propto\b|\\to\b|'
+    r'\\Rightarrow\b|\\implies\b|\\cong\b|\\subset\b|\\subseteq\b|\+|-)')
+
+
+def _merge_continuations(rows):
+    """Join "&= c" rows onto the row above, so each entry is a whole statement.
+
+    Without this, a three-line derivation in an align block becomes three menu
+    entries, two of which are fragments beginning with an equals sign and are
+    meaningless on their own.
+    """
+    out = []
+    for row in rows:
+        if out and _CONTINUATION.match(row):
+            out[-1] = out[-1].rstrip() + ' ' + row.strip()
+        else:
+            out.append(row)
+    return out
+
+
+# Markup that carries no mathematical content and only gets in the parser's way.
+_DROP_CMDS = (r'\label', r'\tag', r'\intertext', r'\shortintertext',
+              r'\nonumber', r'\notag', r'\noindent', r'\raggedright',
+              r'\allowdisplaybreaks', r'\vspace', r'\hspace', r'\centering')
+
+
+def clean_fragment(s):
+    r"""Strip bookkeeping markup from an extracted equation.
+
+    Alignment ampersands go too: they are layout instructions for the page, and
+    the viewer lays the equation out itself.
+    """
+    for cmd in _DROP_CMDS:
+        i = 0
+        while True:
+            i = s.find(cmd, i)
+            if i == -1:
+                break
+            # only a whole command name, not a prefix of a longer one
+            after = i + len(cmd)
+            if after < len(s) and s[after].isalpha():
+                i = after
+                continue
+            j = after
+            _opt, j = _read_optional(s, j)
+            _arg, j = _read_group(s, j)
+            s = s[:i] + s[j:]
+    s = re.sub(r'(?<!\\)&', ' ', s)
+    s = re.sub(r'\s+', ' ', s)
+    return s.strip()
+
+
+def _find_env(src, i):
+    r"""Locate the next \begin{...} at or after i.  -> (name, open_i, body_start).
+
+    Returns (None, -1, -1) when there are no more.
+    """
+    while True:
+        a = src.find(r'\begin', i)
+        if a == -1:
+            return None, -1, -1
+        name, after = _read_group(src, a + 6)
+        if name is None:
+            i = a + 6
+            continue
+        return name.strip(), a, after
+
+
+def iter_math(src):
+    r"""Yield (kind, body, offset) for every piece of maths in a document.
+
+    kind is the environment name, or 'display' for \[..\] and $$..$$, or
+    'inline' for $..$ and \(..\).
+    """
+    i = 0
+    n = len(src)
+    while i < n:
+        c = src[i]
+        if c == '\\':
+            if src.startswith(r'\begin', i):
+                name, a, body_start = _find_env(src, i)
+                if a != i:
+                    i += 2
+                    continue
+                closer = '\\end{%s}' % name
+                end = src.find(closer, body_start)
+                if end == -1:
+                    i = body_start
+                    continue
+                base = name.rstrip('*')
+                if name in MATH_ENVS or base in MATH_ENVS:
+                    yield name, src[body_start:end], body_start
+                    i = end + len(closer)
+                    continue
+                i = body_start                # ordinary env: descend into it
+                continue
+            if src.startswith(r'\[', i):
+                end = src.find(r'\]', i + 2)
+                if end == -1:
+                    break
+                yield 'display', src[i + 2:end], i + 2
+                i = end + 2
+                continue
+            if src.startswith(r'\(', i):
+                end = src.find(r'\)', i + 2)
+                if end == -1:
+                    break
+                yield 'inline', src[i + 2:end], i + 2
+                i = end + 2
+                continue
+            i += 2                            # any other escape
+            continue
+        if c == '$':
+            if src.startswith('$$', i):
+                end = src.find('$$', i + 2)
+                if end == -1:
+                    break
+                yield 'display', src[i + 2:end], i + 2
+                i = end + 2
+                continue
+            end = i + 1
+            while end < n:
+                if src[end] == '\\':
+                    end += 2
+                    continue
+                if src[end] == '$':
+                    break
+                end += 1
+            if end >= n:
+                break
+            yield 'inline', src[i + 1:end], i + 1
+            i = end + 1
+            continue
+        i += 1
+
+
+_SECTION = re.compile(r'\\(?:sub)*section\*?\s*\{')
+
+
+def _headings(src):
+    """[(offset, title)] for every sectioning command, in document order."""
+    heads = []
+    for m in _SECTION.finditer(src):
+        title, _ = _read_group(src, m.end() - 1)
+        heads.append((m.start(), clean_fragment(title or '')))
+    return heads
+
+
+def _section_at(heads, pos):
+    """Title of the innermost sectioning command before pos, for context.
+
+    The headings are passed in rather than cached against the source string:
+    caching on id(src) is tempting and wrong, because CPython reuses the id of
+    a freed string, so scanning a second document could silently inherit the
+    first one's section names.
+    """
+    best = ''
+    for at, title in heads:
+        if at > pos:
+            break
+        best = title
+    return best
+
+
+MIN_INLINE_LEN = 2          # "$n$" alone is not worth a menu entry
+
+
+def scan_tex(text, include_inline=True, min_inline=MIN_INLINE_LEN):
+    """A LaTeX document -> the list of equations in it, in order.
+
+    Each entry is a dict with: tex, kind, number (or None), label, section,
+    line, and preview.  Numbering follows LaTeX's own rule -- starred
+    environments and inline maths are not counted -- so the numbers shown match
+    the numbers in the PDF the reader is holding.
+    """
+    body = text
+    at = body.find(r'\begin{document}')
+    preamble = body[:at] if at != -1 else body
+    macros = collect_macros(strip_comments(preamble))
+
+    src = strip_comments(strip_verbatim(text))
+    if at != -1:
+        src = src[at:]
+
+    heads = _headings(src)
+    out = []
+    counter = 0
+    for kind, raw, offset in iter_math(src):
+        numbered = MATH_ENVS.get(kind, False)
+        rows = [raw] if kind == 'inline' else _split_rows(raw)
+
+        # Number every row *before* merging continuations.  LaTeX numbers each
+        # row of an align block, so if the counter only advanced once per
+        # merged entry, every number after the first multi-row block would
+        # disagree with the PDF the reader is holding -- which defeats the
+        # purpose of showing the number at all.  The merged entry keeps the
+        # number of its first row, and the counter still counts them all.
+        numbers = []
+        for row in rows:
+            if numbered and r'\nonumber' not in row and r'\notag' not in row:
+                counter += 1
+                numbers.append(counter)
+            else:
+                numbers.append(None)
+
+        merged = []
+        for row, num in zip(rows, numbers):
+            if merged and _CONTINUATION.match(row):
+                prev_row, prev_num = merged[-1]
+                merged[-1] = (prev_row.rstrip() + ' ' + row.strip(), prev_num)
+            else:
+                merged.append((row, num))
+
+        for row, number in merged:
+            # Read the label off the row itself, so that a labelled row in the
+            # middle of an align block keeps its own name.
+            m = re.search(r'\\label\s*\{([^}]*)\}', row)
+            label = m.group(1) if m else ''
+            frag = clean_fragment(expand_macros(row, macros))
+            if not frag:
+                continue
+            if kind == 'inline':
+                if not include_inline or len(frag) < min_inline:
+                    continue
+            out.append({
+                'tex': frag,
+                'kind': kind,
+                'number': number,
+                'label': label,
+                'section': _section_at(heads, offset),
+                'line': src.count('\n', 0, offset) + 1,
+                'preview': latex_to_unicode(frag),
+            })
+    return out
+
+
+def read_tex_file(path, _depth=0):
+    r"""Read a .tex file, following \input and \include one level at a time.
+
+    arXiv submissions are routinely split into a main file plus a chapter per
+    section, so following these is the difference between finding forty
+    equations and finding none.
+    """
+    with open(path, 'r', encoding='utf-8', errors='replace') as fh:
+        text = fh.read()
+    if _depth >= 3:
+        return text
+    base = os.path.dirname(os.path.abspath(path))
+
+    def sub(m):
+        name = m.group(2).strip()
+        if not name:
+            return ''
+        cand = os.path.join(base, name)
+        for p in (cand, cand + '.tex'):
+            if os.path.isfile(p):
+                try:
+                    return read_tex_file(p, _depth + 1)
+                except OSError:
+                    return ''
+        return ''
+
+    return re.sub(r'\\(input|include)\s*\{([^}]*)\}', sub, text)
+
+
+def describe_scan(items):
+    """One-line summary of a scan, for the status bar."""
+    if not items:
+        return 'No equations found in that file.'
+    numbered = sum(1 for e in items if e['number'])
+    inline = sum(1 for e in items if e['kind'] == 'inline')
+    bits = ['%d equation%s' % (len(items), '' if len(items) == 1 else 's')]
+    if numbered:
+        bits.append('%d numbered' % numbered)
+    if inline:
+        bits.append('%d inline' % inline)
+    return ', '.join(bits)
+
+
+def menu_label(e):
+    """The text for one entry in the equation dropdown."""
+    if e['number']:
+        head = '(%d)' % e['number']
+    elif e['kind'] == 'inline':
+        head = 'inline'
+    else:
+        head = '--'
+    preview = e['preview']
+    if len(preview) > 60:
+        preview = preview[:59] + '\u2026'
+    tail = ''
+    if e['label']:
+        tail = '   [%s]' % e['label']
+    elif e['section']:
+        tail = '   \u00a7 %s' % e['section'][:28]
+    return '%-7s %s%s' % (head, preview, tail)
+
+
 # ---------------------------------------------------------------- features
 
 def extract_features(node, acc=None):
@@ -2716,6 +3302,33 @@ if QT_OK:
             row.addWidget(self.picker)
             outer.addLayout(row)
 
+            # --- document row: hidden until a .tex file is opened, so the
+            #     window looks exactly as before for the single-equation use.
+            self.doc_items = []
+            self.doc_index = -1
+            self.doc_bar = QWidget()
+            drow = QHBoxLayout(self.doc_bar)
+            drow.setContentsMargins(0, 0, 0, 0)
+            self.doc_name = QLabel()
+            self.doc_name.setToolTip('The .tex file these equations came from')
+            drow.addWidget(self.doc_name)
+            self.doc_picker = QComboBox()
+            # A long equation preview should not stretch the window; let the
+            # popup be wider than the closed box instead.
+            self.doc_picker.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLengthWithIcon)
+            self.doc_picker.setMinimumContentsLength(40)
+            self.doc_picker.setFont(QFont(pick_family(MONO_STACK), 10))
+            self.doc_picker.currentIndexChanged.connect(self.pick_doc_equation)
+            drow.addWidget(self.doc_picker, 1)
+            self.prev_btn = QPushButton('\u25c0 Prev')
+            self.prev_btn.clicked.connect(lambda: self.step_equation(-1))
+            drow.addWidget(self.prev_btn)
+            self.next_btn = QPushButton('Next \u25b6')
+            self.next_btn.clicked.connect(lambda: self.step_equation(1))
+            drow.addWidget(self.next_btn)
+            self.doc_bar.hide()
+            outer.addWidget(self.doc_bar)
+
             # --- viewer + panels
             split = QSplitter(Qt.Horizontal)
             self.scene = QGraphicsScene(self)
@@ -2746,6 +3359,29 @@ if QT_OK:
             bar = self.menuBar()
 
             m = bar.addMenu('&File')
+            a = QAction('Open .tex file...', self)
+            a.setShortcut(QKeySequence.Open)
+            a.triggered.connect(self.open_tex_file)
+            m.addAction(a)
+            self.act_inline = QAction('Include inline maths', self)
+            self.act_inline.setCheckable(True)
+            self.act_inline.setChecked(True)
+            self.act_inline.setToolTip(
+                'Inline $x$ fragments as well as displayed equations')
+            self.act_inline.triggered.connect(self.rescan_document)
+            m.addAction(self.act_inline)
+            m.addSeparator()
+            # Presenting means moving through the paper without hunting in a
+            # dropdown, so these get first-class keys.
+            a = QAction('Next equation', self)
+            a.setShortcuts([QKeySequence('Ctrl+Right'), QKeySequence(Qt.Key_PageDown)])
+            a.triggered.connect(lambda: self.step_equation(1))
+            m.addAction(a)
+            a = QAction('Previous equation', self)
+            a.setShortcuts([QKeySequence('Ctrl+Left'), QKeySequence(Qt.Key_PageUp)])
+            a.triggered.connect(lambda: self.step_equation(-1))
+            m.addAction(a)
+            m.addSeparator()
             a = QAction('Export equation as PNG...', self)
             a.triggered.connect(self.export_png)
             m.addAction(a)
@@ -2830,6 +3466,92 @@ if QT_OK:
             tex = self.picker.itemData(idx)
             if tex:
                 self.load(tex)
+
+        # ------------------------------------------------------- documents
+        def open_tex_file(self):
+            path, _ = QFileDialog.getOpenFileName(
+                self, 'Open a LaTeX document', '',
+                'LaTeX documents (*.tex *.ltx *.latex);;All files (*)')
+            if path:
+                self.load_document(path)
+
+        def load_document(self, path):
+            r"""Scan a .tex file and fill the equation dropdown.
+
+            Errors are reported in a box rather than raised: opening a stray
+            file should not take the window down mid-lecture.
+            """
+            try:
+                text = read_tex_file(path)
+            except OSError as exc:
+                QMessageBox.warning(self, 'Could not open file', str(exc))
+                return
+            self.doc_path = path
+            self.doc_text = text
+            self.rescan_document()
+
+        def rescan_document(self):
+            """(Re)build the equation list from the loaded document."""
+            if not getattr(self, 'doc_text', None):
+                return
+            try:
+                items = scan_tex(self.doc_text,
+                                 include_inline=self.act_inline.isChecked())
+            except Exception as exc:                 # a scan must never crash
+                QMessageBox.warning(self, 'Could not scan that document',
+                                    '%s: %s' % (type(exc).__name__, exc))
+                return
+            self.doc_items = items
+            name = os.path.basename(self.doc_path)
+            self.doc_name.setText(name)
+
+            self.doc_picker.blockSignals(True)
+            self.doc_picker.clear()
+            for e in items:
+                self.doc_picker.addItem(menu_label(e))
+            self.doc_picker.blockSignals(False)
+
+            if not items:
+                self.doc_bar.show()
+                self.status('%s: no equations found.' % name)
+                return
+            self.doc_bar.show()
+            self.doc_index = -1
+            self.goto_equation(0)
+            self.status('%s -- %s. Ctrl+Right / Ctrl+Left to step through.'
+                        % (name, describe_scan(items)))
+
+        def pick_doc_equation(self, idx):
+            if 0 <= idx < len(self.doc_items) and idx != self.doc_index:
+                self.goto_equation(idx)
+
+        def goto_equation(self, idx):
+            if not (0 <= idx < len(self.doc_items)):
+                return
+            self.doc_index = idx
+            e = self.doc_items[idx]
+            if self.doc_picker.currentIndex() != idx:
+                self.doc_picker.blockSignals(True)
+                self.doc_picker.setCurrentIndex(idx)
+                self.doc_picker.blockSignals(False)
+            self.prev_btn.setEnabled(idx > 0)
+            self.next_btn.setEnabled(idx < len(self.doc_items) - 1)
+            self.load(e['tex'])
+            where = []
+            if e['number']:
+                where.append('equation (%d)' % e['number'])
+            if e['label']:
+                where.append('[%s]' % e['label'])
+            if e['section']:
+                where.append('\u00a7 %s' % e['section'])
+            where.append('line %d' % e['line'])
+            self.status('%d of %d   %s'
+                        % (idx + 1, len(self.doc_items), '   '.join(where)))
+
+        def step_equation(self, delta):
+            if self.doc_items:
+                self.goto_equation(
+                    max(0, min(len(self.doc_items) - 1, self.doc_index + delta)))
 
         def render_from_entry(self):
             self.load(self.entry.text())
@@ -3248,6 +3970,76 @@ def selftest():
                                  'k as k_B, c, G, hbar')
     check('implicit multiplication is now explicit', 'k_B*c**3*A' in py)
 
+    print('.tex document scanning')
+    DOC = r'''\documentclass{article}
+\newcommand{\Ham}{\mathcal{H}}
+\newcommand{\vt}[1]{\mathbf{#1}}
+\begin{document}
+\section{Dynamics}
+Inline $E = mc^2$ here, and 50\% is not a comment.
+\begin{equation}\label{eq:s}
+  i\hbar \partial_t \psi = \Ham \psi
+\end{equation}
+\begin{align}
+  a &= b \\
+    &= c \\
+  d &= e \label{eq:d}
+\end{align}
+\begin{equation}
+  M = \begin{pmatrix} p & q \\ r & s \end{pmatrix}
+\end{equation}
+\begin{lstlisting}
+x = "$fake math$ 100% off"
+\end{lstlisting}
+\begin{verbatim}
+\begin{equation} decoy \end{equation}
+\end{verbatim}
+\begin{equation*}
+  \nabla \cdot \vt{E} = 0
+\end{equation*}
+\end{document}
+'''
+    items = scan_tex(DOC)
+    texs = [e['tex'] for e in items]
+    check('inline maths is found', any('E = mc^2' in t for t in texs))
+    check('an escaped percent does not start a comment',
+          not any('not a comment' in t for t in texs))
+    check('code listings are not scanned for maths',
+          not any('fake math' in t for t in texs))
+    check('a decoy equation inside verbatim is ignored',
+          not any('decoy' in t for t in texs))
+    check('user macros are expanded',
+          any(r'\mathcal{H}' in t for t in texs))
+    check('macros with arguments are expanded',
+          any(r'\mathbf{E}' in t for t in texs))
+    check('\\label is stripped from the fragment',
+          not any(r'\label' in t for t in texs))
+    check('a continuation row is merged into the one above',
+          any(t.count('=') == 2 and t.startswith('a') for t in texs))
+    check('and the merged row keeps its own equation number',
+          [e['number'] for e in items if e['tex'].startswith('a')] == [2])
+    check('numbering still counts the merged row, matching the PDF',
+          [e['number'] for e in items if e['tex'].startswith('d')] == [4])
+    check('a label on a later align row is kept',
+          [e['label'] for e in items if e['tex'].startswith('d')] == ['eq:d'])
+    check('a matrix is not split on its row separators',
+          any('pmatrix' in t and t.count(r'\\') == 1 for t in texs))
+    check('starred environments are not numbered',
+          all(e['number'] is None for e in items if e['kind'] == 'equation*'))
+    check('the section heading is recorded',
+          any(e['section'] == 'Dynamics' for e in items))
+    check('inline maths can be filtered out',
+          all(e['kind'] != 'inline'
+              for e in scan_tex(DOC, include_inline=False)))
+    check('every fragment parses without raising',
+          all(parse_latex(e['tex']) is not None for e in items))
+    # The repository's own paper is a real document, so it is a real test.
+    if os.path.exists('neomath.tex'):
+        paper = scan_tex(read_tex_file('neomath.tex'))
+        check('the bundled paper yields equations', len(paper) > 20)
+        check('and none of them came out of its code listings',
+              not any('return' in e['tex'] for e in paper))
+
     # environment-dependent, so reported but never fatal
     print('typesetting (optional)')
     has_tex, raster = have_tools()
@@ -3364,6 +4156,16 @@ def main(argv):
         tex = argv[argv.index('--tex') + 1]
     if '--render-test' in argv:
         return render_test(tex=tex)
+    # --scan prints what a document contains without opening a window, which
+    # is how you check a paper parsed properly before standing up to teach.
+    if '--scan' in argv:
+        path = argv[argv.index('--scan') + 1]
+        items = scan_tex(read_tex_file(path))
+        print('%s: %s\n' % (os.path.basename(path), describe_scan(items)))
+        for i, e in enumerate(items):
+            print('%4d  %s' % (i + 1, menu_label(e)))
+        return 0 if items else 1
+    doc = argv[argv.index('--open') + 1] if '--open' in argv else None
     if not QT_OK:
         print('PyQt5 is required for the GUI: %s' % QT_ERROR, file=sys.stderr)
         if MACOS:
@@ -3384,6 +4186,8 @@ def main(argv):
     register_tex_fonts()
     win = RosettaWindow(tex)
     win.show()
+    if doc:
+        win.load_document(doc)
     return app.exec_()
 
 

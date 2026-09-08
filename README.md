@@ -214,6 +214,48 @@ physical constants are recognised as such, kept out of the argument list, and
 bound with a generated `from scipy.constants import ...` line — so the equation
 you read and the code you run are the same artefact.
 
+### Opening a paper
+
+**File → Open .tex file…** (Ctrl+O) scans a LaTeX document and fills a dropdown
+with every equation in it. Pick one and it fills the screen exactly as a typed
+equation does; **Ctrl+Right** and **Ctrl+Left** step through the paper, which is
+the useful motion when presenting.
+
+Entries are labelled with the equation's own number, so `(14)` in the dropdown
+is `(14)` in the printed paper, alongside a Unicode preview and either the
+`\label` or the enclosing section. The status bar gives the source line.
+
+The scanner is deliberately more permissive than `rosettamath.py`'s subset,
+because papers from arXiv are not written in that subset and never will be. It
+handles:
+
+*   `equation`, `align`, `gather`, `multline`, `eqnarray`, `flalign`, `alignat`,
+    their starred forms, `\[…\]`, `$$…$$`, `\(…\)` and `$…$`
+*   `\newcommand`, `\renewcommand`, `\def` and `\DeclareMathOperator`, including
+    `#1`-style arguments — authors almost always abbreviate their own notation,
+    and without expanding it half the symbols in a paper are unrecognisable
+*   `\input` and `\include`, so a paper split across files is scanned whole
+*   equation numbering that follows LaTeX's own rule, so starred environments
+    and inline maths are not counted
+*   multi-row `align` blocks, split into one entry per row — except that a row
+    opening with a relation (`&= c`) is joined to the row above, since on its
+    own it is a fragment rather than a statement
+
+and it deliberately ignores `verbatim`, `lstlisting`, `minted` and friends,
+whose contents routinely include `$`, `%` and `\begin{…}` without any of it
+being mathematics.
+
+To check a paper before teaching from it, without opening a window:
+
+```sh
+python3 rosettaui.py --scan paper.tex    # list what was found
+python3 rosettaui.py --open paper.tex    # launch straight into it
+```
+
+Constructs the layout engine cannot draw yet — matrices and `cases`, mainly —
+are still listed and still selectable, but render approximately. *Typeset with
+pdflatex* on the right-click menu shows the true form for any of them.
+
 ```sh
 python3 rosettaui.py                    # launch
 python3 rosettaui.py --tex '$E=mc^2$'   # launch on a given equation

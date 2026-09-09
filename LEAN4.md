@@ -5,7 +5,7 @@ imperative language built on it, used to model an seL4-style OS kernel.
 
 ```sh
 python3 lean4.py --selftest    # 153 checks
-python3 hoare.py               # 153 checks
+python3 hoare.py               # 157 checks
 python3 crustproof.py          #  21 checks, incl. the differential test
 ```
 
@@ -371,25 +371,82 @@ reading could not do. Crust's own suite gained four tests, and `crustproof.py`
 keeps the two in step: it asserts the kernel agrees with both passes on every
 case, and pins the old reading as a regression.
 
-**Certification is opt-in.** `CRUST_PROOFS=1` makes `shivyc/proofs.py` ask the
-kernel and compare, raising if the two disagree rather than picking a winner.
-It is off by default for a reason worth stating: the kernel's numerals are
-unary, so settling a contract at length `n` walks `n` of them, and the cost
-grows with the *length* rather than with the size of the number -- about a
-second at 64, half a minute at 1024. `CRUST_PROOF_MAX` (default 128) bounds it.
-That is fine for a proof and wrong for a compiler, and making it cheap -- binary
-numerals, or an evaluator that does not build the intermediate terms -- is the
-next kernel problem rather than a detail of the bridge.
+**Certification is on by default**, and `shivyc/proofs.py` raises if the kernel
+and the reading disagree rather than picking a winner. `CRUST_PROOFS=0` turns
+it off; nothing is imported until a contract actually needs certifying, so a
+program without contracts pays nothing.
+
+It used to be off, because settling a contract at length 64 took about a second
+and at 1024 half a minute. Two things fixed that.
+
+**Literals compute.** `Nat` is unary, so `leb 64 n` unfolded n times and
+rebuilt a term at each step. `accelerate()` attaches a computation rule to a
+definition that fires only when the arguments have already reduced to numerals,
+answering by Python arithmetic; anything else falls through to ordinary delta,
+so a symbolic argument behaves exactly as before and every proof by induction
+is untouched. This is a real extension of the trusted base -- Lean does the
+same for `Nat`, for the same reason -- and what keeps it honest is that each
+accelerator is run against the definition it stands in for over a grid, in
+`hoare.py`'s selftest. That test earned its place immediately: `modb n 0` is
+`n`, because the definition counts up and never meets a zero divisor to reset
+at, and the first accelerator said `0`.
+
+Making the rule fire took two attempts, both instructive. `normalize` unfolds a
+definition's `value` the moment it meets the bare name, so a rule on a
+definition never sees its arguments; the declaration has to stop offering a
+`value` and drive delta from the rule instead. Then a *partial* application
+still unfolded to a lambda, which the caller beta-reduced, so the full
+application -- the only place the arguments are all visible -- was never
+reached. Under-application now returns `None` and stays stuck on purpose.
+
+**And the literal is substituted before reducing.** `crustproof` built
+`(lam n. contract) 64` and normalised it; normalising an application normalises
+the function first, which walks into the contract with `n` still a variable and
+unfolds everything it mentions -- precisely the work the literal was supplied to
+avoid.
+
+| length | before | after |
+| ---: | ---: | ---: |
+| 64 | 1.35 s | 0.001 s |
+| 1024 | 43 s | 0.005 s |
+| 65536 | (never) | 0.38 s |
+
+What is left is the representation: building a numeral for length `n` is still
+`n` nodes, so `NUMERAL_LIMIT` refuses past 200,000 rather than overflowing the
+stack in a traceback. `CRUST_PROOF_MAX` (65536) is the compiler's budget within
+that.
+
+**A proof now changes generated code.** `simd_contracts` drops the scalar
+remainder loop when a contract holds at every call site. Satisfying the
+contract is no longer on its own the licence: `proofs.licenses()` also wants
+the certificate, and a length past the budget or a bridge that will not load
+means there is none, so the tail stays. Same rule as the rest of Crust -- a
+proof that does not arrive degrades to the conservative path, never to a wrong
+answer.
+
+```
+default                  proven at all 1 call site(s) (kernel-checked); scalar fallback omitted
+CRUST_PROOF_MAX=8        not proven (aligned but unproved (no certificate)); keeping scalar code
+```
+
+and `calc_sum` comes out as **22 instructions using `paddd`/`movdqu`** in the
+first case and **40 scalar instructions** in the second. Three tests in
+`tests/test_metamorphic_simd.py` pin it, including that withdrawing the
+certificate withdraws the SSE2 -- otherwise the certificate would be
+decoration.
 
 ---
 
 ## 9. What is not done
 
-*   **A proof does not yet change generated code.** `crustproof.py` settles
-    Crust's contracts (see §8), but the passes it feeds decide errors and
-    codegen from the *reading*, not from the certificate. `scheme_of`'s bound
-    is exactly the fact that would license `memsafe_elide.py` omitting a check,
-    and that is the next step.
+*   **`memsafe_elide.py` still does not consume a proof.** The SIMD tail is
+    gated on a certificate (§8); per-access bounds checks are not. Seeding its
+    rule 2 from a contract means deciding whether `len` counts bytes or
+    elements and identifying a parameter's ILValue, and that module's own
+    rule is that a dropped check on an unsafe access is the one error it must
+    never make -- so it is worth doing carefully rather than quickly.
+*   **The accelerators are trusted Python.** Nine of them, each checked
+    against its definition over a grid, but checked is not proved.
 *   **`preserves_by_loop` handles one loop per procedure.** Two loops in
     sequence need the sequence rule applied twice.
 *   **No heap.** Only a plain variable or a record field may be assigned. A

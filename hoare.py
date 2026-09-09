@@ -205,13 +205,102 @@ def replace_subterm(expr, target, replacement):
     return expr
 
 
+# ---------------------------------------------- literals that compute fast
+
+def read_numeral(term):
+    """A term as a Python int, if it is a numeral in normal form."""
+    count = 0
+    while isinstance(term, App):
+        head = term.func
+        if not (isinstance(head, Var) and head.name == 'succ'):
+            return None
+        count += 1
+        term = term.arg
+        if count > 1_000_000:
+            return None
+    return count if isinstance(term, Var) and term.name == 'zero' else None
+
+
+def as_term(value):
+    """A Python answer, back as a term."""
+    if isinstance(value, bool):
+        return Var('true') if value else Var('false')
+    return numeral(value)
+
+
+def accelerate(env, name, arity, compute):
+    r"""Let a definition on literals be settled by arithmetic, not by unfolding.
+
+    `Nat` is unary, so `leb 64 n` walks n of them and rebuilds a term at every
+    step: about a second at 64 and half a minute at 1024.  That is fine for a
+    proof and useless to a compiler, which wants the same question answered at
+    a buffer length.
+
+    So the *definition* stays exactly as it was -- every proof by induction
+    below still unfolds it and still works -- and a computation rule is
+    attached that fires only when the arguments have already reduced to
+    numerals.  Anything else falls through to ordinary delta, so a symbolic
+    argument behaves as it always did.
+
+    This is a real extension of the trusted base: `compute` is Python, and the
+    kernel takes its word.  Lean does the same for `Nat` and for the same
+    reason.  What keeps it honest is that the accelerated answer and the
+    defined answer are checked against each other over a grid, in `selftest`
+    below -- an accelerator that disagreed with its definition would make the
+    kernel unsound, so it is not something to take on trust either.
+    """
+    decl = L.as_decl(name, env[name])
+    value = decl.value
+
+    # The declaration keeps its body but stops offering it as a `value`.
+    # `normalize` unfolds a value the moment it meets the bare name, so a
+    # definition that carries one never reaches `reduce_head` with its
+    # arguments in hand and a computation rule on it can never fire.  Driving
+    # delta from the rule instead means the whole application is seen at once,
+    # which is the only place the arguments can be looked at.
+    def rule(_env, args):
+        if len(args) < arity:
+            # Stuck on purpose.  Unfolding here would hand back a lambda, the
+            # caller would beta-reduce it, and the full application -- the only
+            # place the arguments are all visible -- would never be looked at.
+            return None
+        literals = [read_numeral(a) for a in args[:arity]]
+        if all(x is not None for x in literals):
+            out = as_term(compute(*literals))
+        else:
+            out = value                 # not literals: unfold as usual
+            for extra in args[:arity]:
+                out = App(out, extra)
+        for extra in args[arity:]:
+            out = App(out, extra)
+        return out
+
+    env[name] = L.Decl(name, decl.type, value=None, rule=rule,
+                       kind=decl.kind)
+
+
+ACCELERATED = {
+    'add': (2, lambda a, b: a + b),
+    'mul': (2, lambda a, b: a * b),
+    'sub': (2, lambda a, b: a - b if a > b else 0),
+    'pred': (1, lambda a: a - 1 if a else 0),
+    'leb': (2, lambda a, b: a <= b),
+    'ltb': (2, lambda a, b: a < b),
+    'eqb': (2, lambda a, b: a == b),
+    # modb n 0 is n: the definition counts up and never reaches a zero
+    # divisor to reset at, and an accelerator has to say the same thing
+    'modb': (2, lambda a, b: a % b if b else a),
+    'dvdb': (2, lambda k, n: (n % k == 0) if k else n == 0),
+}
+
+
 def _abstract_over(term, bindings):
     for name, ty in bindings:
         term = Lambda(name, ty, term)
     return term
 
 
-def prelude(env=None):
+def prelude(env=None, fast=True):
     r"""Everything the imperative fragment needs, defined rather than assumed.
 
     Nothing here is an axiom.  `Bool` and `Nat` come from the kernel's own
@@ -506,6 +595,10 @@ def prelude(env=None):
     # -- the proposition a contract makes -----------------------------------
     define(env, 'Holds', arrow(BOOL, PROP),
            Lambda('b', BOOL, app('Eq', BOOL, Var('b'), Var('true'))))
+
+    if fast:
+        for name, (arity, compute) in ACCELERATED.items():
+            accelerate(env, name, arity, compute)
 
     # -- what a while loop needs, proved once -------------------------------
     # A `while` lowers to iterating a guarded step.  Three things are needed
@@ -3227,6 +3320,36 @@ def selftest():
         def f(c: 'Context') -> 'Nat':
             return c.ticks
         """, preserves='Context'), "does not return one")
+
+    # -- the accelerators, against the definitions they stand in for --------
+    # An accelerator is Python that the kernel takes the word of, so it is
+    # exactly the thing not to take on trust. Each one is run against the
+    # definition it replaces, in an environment built without them.
+    slow = prelude(fast=False)
+    ok("without acceleration the definitions are still there",
+       L.as_decl('leb', slow['leb']).rule is None)
+    ok("and with it they carry a rule",
+       L.as_decl('leb', PRELUDE_ENV['leb']).rule is not None)
+    disagreed = []
+    span = list(range(0, 8))
+    for name, (arity, _compute) in sorted(ACCELERATED.items()):
+        pairs = ([(a,) for a in span] if arity == 1
+                 else [(a, b) for a in span for b in span])
+        for values in pairs:
+            term = app(name, *[numeral(v) for v in values])
+            quick = normalize(term, PRELUDE_ENV)
+            slowly = normalize(term, slow)
+            if quick != slowly:
+                disagreed.append((name, values, readable(quick),
+                                  readable(slowly)))
+    ok("every accelerator agrees with its definition", not disagreed)
+    if disagreed:
+        for entry in disagreed[:4]:
+            print(f"    {entry[0]}{entry[1]}: accelerated {entry[2]}, "
+                  f"defined {entry[3]}")
+    ok("a symbolic argument still goes through the definition",
+       normalize(app('leb', numeral(1), Var('n')), PRELUDE_ENV)
+       == normalize(app('leb', numeral(1), Var('n')), slow))
 
     # -- the bridge to crust ------------------------------------------------
     prop = from_crust({'len>=': 64, 'div-by': 4}, 'ptr')

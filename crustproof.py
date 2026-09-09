@@ -150,10 +150,12 @@ sys.setrecursionlimit(300000)
 @functools.lru_cache(maxsize=4096)
 def _check(length, items):
     bounds = dict(items)
-    claim = App(predicate(bounds), numeral(length))
-    # beta only: the clauses stay named, so the statement reads as the
-    # contract rather than as the recursors the contract stands for
-    statement = readable(normalize(claim, None))
+    # Substituted here rather than left as `(lam n. ...) 64`.  Normalising an
+    # application normalises the function first, which means walking into the
+    # contract with `n` still a variable and unfolding every definition it
+    # mentions -- the exact work the literal has been supplied to avoid.
+    claim = L.instantiate(predicate(bounds).body, numeral(length))
+    statement = readable(claim)
 
     def work():
         value = normalize(claim, H.PRELUDE_ENV)
@@ -171,10 +173,22 @@ def _check(length, items):
     return _deep(work)
 
 
+#: `Nat` is unary, so the term for a length has that many nodes.  Reducing it
+#: is now constant time -- the accelerators see a numeral and do arithmetic --
+#: but *building* one is still linear, and past a million nodes the recursive
+#: walk that hashes it runs out of stack.  This is the representation showing
+#: through, and the honest place to say so is here rather than in a traceback.
+NUMERAL_LIMIT = 200_000
+
+
 def check(length, bounds):
     """Settle a contract at a known length, and say how it was settled."""
     if length < 0:
         raise H.ContractError("a length is a Nat; there is no negative one")
+    if length > NUMERAL_LIMIT:
+        raise H.ContractError(
+            f"length {length} is past what a unary numeral can be built for "
+            f"({NUMERAL_LIMIT}); the term would have that many nodes")
     return _check(length, tuple(sorted(bounds.items())))
 
 

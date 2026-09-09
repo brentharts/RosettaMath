@@ -98,6 +98,64 @@ def rec(motive_type_, motive_body, *rest):
     return app('Nat.rec', Lambda('_', motive_type_, motive_body), *rest)
 
 
+
+# ------------------------------------------------------------------ records
+
+RECORDS = {}          # record name -> [(field name, field type)]
+
+
+def record(env, name, fields):
+    r"""Declare a record: one constructor, named projections, named updaters.
+
+    `inductive()` already builds everything a record needs -- a family with a
+    single constructor is a product, and its recursor is the eliminator that
+    takes the fields apart.  What it does not give is names, and a kernel
+    context has ten of them.  Threading `Prod`s through a syscall means
+    reading `fst (snd (snd (snd c)))` and counting, which is not a thing
+    anyone should have to check by eye.
+
+    For each field this generates
+
+        Name.field       : Name -> FieldType
+        Name.with_field  : Name -> FieldType -> Name
+
+    both by iota on the one constructor, so both compute.  A functional
+    update is what makes state threadable: a syscall takes a context and
+    returns one, and nothing is mutated anywhere.
+    """
+    constructor = f'{name}.mk'
+    inductive(env, name, [(constructor, [ty for _, ty in fields])])
+    count = len(fields)
+    slots = [f'f{i}' for i in range(count)]
+
+    for i, (field, ftype) in enumerate(fields):
+        case = Var(slots[i])
+        for j in reversed(range(count)):
+            case = Lambda(slots[j], fields[j][1], case)
+        define(env, f'{name}.{field}', arrow(Var(name), ftype),
+               Lambda('r', Var(name),
+                      app(f'{name}.rec', Lambda('_', Var(name), ftype),
+                          case, Var('r'))))
+
+        rebuilt = Var(constructor)
+        for j in range(count):
+            rebuilt = App(rebuilt,
+                          Var('v') if j == i else Var(slots[j]))
+        for j in reversed(range(count)):
+            rebuilt = Lambda(slots[j], fields[j][1], rebuilt)
+        define(env, f'{name}.with_{field}',
+               arrow(Var(name), arrow(ftype, Var(name))),
+               Lambda('r', Var(name), Lambda('v', ftype,
+                      app(f'{name}.rec', Lambda('_', Var(name), Var(name)),
+                          rebuilt, Var('r')))))
+
+    RECORDS[name] = list(fields)
+    TYPE_NAMES[name] = Var(name)
+    SIGNATURES[constructor] = ([ty for _, ty in fields], Var(name))
+    SIGNATURES[name] = ([ty for _, ty in fields], Var(name))
+    return Var(name)
+
+
 # ----------------------------------------------------------------- prelude
 
 def prelude(env=None):
@@ -232,13 +290,24 @@ def prelude(env=None):
                                         App(Var('ih'), Var('i2')))),
                                  Var('i'))))))))
 
+    # -- records ------------------------------------------------------------
+    # A single-constructor inductive is a record; what it lacks is names.  The
+    # projections and updaters below are generated from the field list, so a
+    # ten-field kernel context reads as `c.frames` rather than as a spine of
+    # fst and snd through nine nested Prods.
+    record(env, 'Context', [
+        ('frames', Var('List')),      # the frame table
+        ('queue', Var('List')),       # runnable thread ids, in order
+        ('schemes', Var('List')),     # scheme table: crustos/schemes.py
+        ('current', NAT),             # index of the running thread
+        ('nthreads', NAT),
+        ('ticks', NAT),
+    ])
+
     # -- the proposition a contract makes -----------------------------------
     define(env, 'Holds', arrow(BOOL, PROP),
            Lambda('b', BOOL, app('Eq', BOOL, Var('b'), Var('true'))))
     return env
-
-
-PRELUDE_ENV = prelude()
 
 
 # ------------------------------------------------- types of the fragment
@@ -260,6 +329,8 @@ SIGNATURES = {
     'orb': ([BOOL, BOOL], BOOL),
 }
 
+PRELUDE_ENV = None      # built below, once the tables above exist
+
 BINOPS = {ast.Add: 'add', ast.Sub: 'sub', ast.Mult: 'mul', ast.Mod: 'modb'}
 COMPARES = {ast.Lt: ('ltb', False), ast.Gt: ('ltb', True),
             ast.LtE: ('leb', False), ast.GtE: ('leb', True),
@@ -268,6 +339,9 @@ COMPARES = {ast.Lt: ('ltb', False), ast.Gt: ('ltb', True),
 
 def same_type(a, b):
     return normalize(a, PRELUDE_ENV) == normalize(b, PRELUDE_ENV)
+
+
+PRELUDE_ENV = prelude()
 
 
 # --------------------------------------------------- symbolic execution
@@ -289,6 +363,7 @@ class ImpToLean:
         self.signatures = dict(SIGNATURES)
         self.signatures.update(signatures or {})
         self.counter = 0
+        self.obligations = []          # (label, goal) raised by while loops
 
     def fail(self, node, message):
         line = getattr(node, 'lineno', '?')
@@ -337,6 +412,8 @@ class ImpToLean:
             return BOOL     # of a Nat too: `not n` is `n = 0`
         if isinstance(node, ast.Subscript):
             return NAT
+        if isinstance(node, ast.Attribute):
+            return self.field_of(node)[1]
         if isinstance(node, ast.IfExp):
             return self.type_of_expr(node.body)
         if isinstance(node, ast.Call):
@@ -347,6 +424,19 @@ class ImpToLean:
             self.fail(node, "the result type of this call is not declared; "
                             "add it to SIGNATURES")
         self.fail(node, f"cannot give a type to {type(node).__name__}")
+
+    def field_of(self, node):
+        """The record a field access is reaching into, and the field's type."""
+        owner = self.type_of_expr(node.value)
+        name = owner.name if isinstance(owner, Var) else None
+        if name not in RECORDS:
+            self.fail(node, f"{readable(owner)} is not a record, so it has no "
+                            f"field '{node.attr}'")
+        for field, ftype in RECORDS[name]:
+            if field == node.attr:
+                return name, ftype
+        self.fail(node, f"{name} has no field '{node.attr}' "
+                        f"(it has {', '.join(f for f, _ in RECORDS[name])})")
 
     # -- expressions --------------------------------------------------------
 
@@ -412,6 +502,10 @@ class ImpToLean:
         if isinstance(node, ast.Subscript):
             return app('aget', self.expr(node.value), self.expr(node.slice))
 
+        if isinstance(node, ast.Attribute):
+            record_name, _ = self.field_of(node)
+            return app(f'{record_name}.{node.attr}', self.expr(node.value))
+
         if isinstance(node, ast.Call):
             if node.keywords:
                 self.fail(node, "keyword arguments have no meaning here")
@@ -440,12 +534,15 @@ class ImpToLean:
             if isinstance(s, (ast.Assign, ast.AnnAssign, ast.AugAssign)):
                 targets = s.targets if isinstance(s, ast.Assign) else [s.target]
                 for t in targets:
+                    if isinstance(t, ast.Attribute) and isinstance(t.value,
+                                                                   ast.Name):
+                        t = t.value
                     if isinstance(t, ast.Name) and t.id not in acc:
                         acc.append(t.id)
             elif isinstance(s, ast.If):
                 self.assigned(s.body, acc)
                 self.assigned(s.orelse, acc)
-            elif isinstance(s, ast.For):
+            elif isinstance(s, (ast.For, ast.While)):
                 self.assigned(s.body, acc)
         return acc
 
@@ -471,11 +568,28 @@ class ImpToLean:
                 target = stmt.targets[0]
             else:
                 target = stmt.target
-            if not isinstance(target, ast.Name):
-                self.fail(stmt, "only a plain variable may be assigned; "
-                                "there is no mutable heap in this fragment")
             if stmt.value is None:
                 self.fail(stmt, "a declaration without a value has no meaning")
+            if isinstance(target, ast.Attribute):
+                # c.field = v  is  c = Record.with_field c v.  Nothing is
+                # mutated: the syscall gets a context and returns one.
+                record_name, ftype = self.field_of(target)
+                if not isinstance(target.value, ast.Name):
+                    self.fail(stmt, "only a field of a plain variable may be "
+                                    "assigned")
+                base = target.value.id
+                value = self.expr(stmt.value)
+                if not same_type(self.type_of_expr(stmt.value), ftype):
+                    self.fail(stmt, f"'{base}.{target.attr}' is "
+                                    f"{readable(ftype)} and this assigns "
+                                    f"{readable(self.type_of_expr(stmt.value))}")
+                self.store[base] = app(f'{record_name}.with_{target.attr}',
+                                       self.store[base], value)
+                return None
+            if not isinstance(target, ast.Name):
+                self.fail(stmt, "only a plain variable or a record field may "
+                                "be assigned; there is no mutable heap in "
+                                "this fragment")
             ty = (self.read_type(stmt.annotation, 'the annotation')
                   if isinstance(stmt, ast.AnnAssign) and stmt.annotation
                   else self.type_of_expr(stmt.value))
@@ -512,12 +626,7 @@ class ImpToLean:
             return self.loop(stmt)
 
         if isinstance(stmt, ast.While):
-            self.fail(stmt,
-                      "a `while` loop is refused: it terminates for a reason "
-                      "the text does not state, so lowering one means "
-                      "inventing a variant or a fuel bound -- a guess where a "
-                      "guess is an unproved theorem. Write `for i in "
-                      "range(bound)`, which carries its own.")
+            return self.while_loop(stmt)
 
         if isinstance(stmt, ast.Return):
             if stmt.value is None:
@@ -565,7 +674,7 @@ class ImpToLean:
 
     def returns(self, stmts):
         return any(isinstance(s, ast.Return) or
-                   (isinstance(s, (ast.If, ast.For)) and
+                   (isinstance(s, (ast.If, ast.For, ast.While)) and
                     (self.returns(s.body) or self.returns(getattr(s, 'orelse', []))))
                    for s in stmts)
 
@@ -617,19 +726,152 @@ class ImpToLean:
                      Lambda(index, NAT, Lambda(acc, acc_type, step_body)),
                      bound)
 
+        self.bind(carried, types, acc_type, folded)
+        return None
+
+    def markers(self, stmt):
+        """The `invariant` and `variant` annotations at the top of a body."""
+        found, rest = {}, list(stmt.body)
+        while rest and isinstance(rest[0], ast.Assert):
+            test = rest[0].test
+            if not (isinstance(test, ast.Call)
+                    and isinstance(test.func, ast.Name)
+                    and test.func.id in ('invariant', 'variant')):
+                break
+            if len(test.args) != 1:
+                self.fail(test, f"{test.func.id}() takes one expression")
+            found[test.func.id] = test.args[0]
+            rest = rest[1:]
+        return found, rest
+
+    def while_loop(self, stmt):
+        r"""`while` is admissible once the annotation supplies the bound.
+
+        It was refused because a while loop terminates for a reason the text
+        does not state.  An explicit variant states it: a Nat that strictly
+        decreases on every pass.  The loop then lowers to the same fold a
+        `for` does, with the variant's value on entry as the number of steps,
+        and each step guarded so that once the condition is false the state
+        stops changing:
+
+            while b: c   ==>   Nat.rec (lam _. S) s0
+                                       (lam _ s. ite (b s) (c s) s)
+                                       (variant s0)
+
+        That the fold is the loop is not assumed.  It is emitted as an
+        obligation -- `progress`, that the condition really is false at the
+        end -- so the claim is checked by the kernel rather than argued for
+        in a comment.  The invariant and variant obligations are the tools
+        for proving it; they are stated too, and none of them is trusted.
+        """
+        if stmt.orelse:
+            self.fail(stmt, "`while ... else` has no meaning here")
+        if self.returns(stmt.body):
+            self.fail(stmt, "a `return` inside a loop is not supported: the "
+                            "fold has no way to stop early")
+        found, body = self.markers(stmt)
+        if 'variant' not in found:
+            self.fail(stmt, "a `while` loop needs a variant to be admissible: "
+                            "write `assert variant(<Nat that decreases>)` as "
+                            "its first statement. Without one the loop "
+                            "terminates for a reason the text does not state, "
+                            "and lowering it would mean guessing a bound.")
+        if 'invariant' not in found:
+            self.fail(stmt, "a `while` loop needs `assert invariant(<Bool>)`: "
+                            "the variant proves it stops, the invariant is "
+                            "what it is still true of when it does")
+        inv_node, var_node = found['invariant'], found['variant']
+
+        if not same_type(self.type_of_expr(stmt.test), BOOL):
+            self.fail(stmt, "the condition of a `while` must be decidable")
+        if not same_type(self.type_of_expr(var_node), NAT):
+            self.fail(stmt, "a variant must be a Nat: it is a count of the "
+                            "passes still to come")
+        if not same_type(self.type_of_expr(inv_node), BOOL):
+            self.fail(stmt, "an invariant must be decidable (Bool)")
+
+        carried = self.assigned(body)
+        for name in carried:
+            if name not in self.store:
+                self.fail(stmt, f"'{name}' is assigned in the loop but has no "
+                                f"value going in")
+        if not carried:
+            self.fail(stmt, "this loop changes nothing, so it either does not "
+                            "terminate or does not matter")
+
+        types = [self.types[n] for n in carried]
+        acc_type = types[-1]
+        for ty in reversed(types[:-1]):
+            acc_type = app('Prod', ty, acc_type)
+
+        entry_store = dict(self.store)
+        entry_types = dict(self.types)
+        init = self.pack([self.store[n] for n in carried], types)
+        fuel = self.expr(var_node)
+        entry_invariant = self.expr(inv_node)
+
+        # one pass, from a state held in the accumulator
+        acc = self.fresh('acc')
+        for pos, name in enumerate(carried):
+            self.store[name] = self.project(Var(acc), types, pos)
+        guard = self.expr(stmt.test)
+        self.block(body)
+        advanced = self.pack([self.store[n] for n in carried], types)
+        self.store, self.types = dict(entry_store), dict(entry_types)
+
+        step = Lambda('_step', NAT, Lambda(
+            acc, acc_type, app('ite', acc_type, guard, advanced, Var(acc))))
+        folded = rec(NAT, acc_type, init, step, fuel)
+
+        # the state the rest of the function sees
+        self.bind(carried, types, acc_type, folded)
+        after_condition = self.expr(stmt.test)
+        exit_store, exit_types = dict(self.store), dict(self.types)
+
+        # one pass from an arbitrary state, for the invariant obligations
+        symbolic_types = dict(entry_types)
+        self.store, self.types = dict(entry_store), symbolic_types
+        for name in carried:
+            self.store[name] = Var(name)
+        before_inv = self.expr(inv_node)
+        before_var = self.expr(var_node)
+        before_cond = self.expr(stmt.test)
+        self.block(body)
+        after_inv = self.expr(inv_node)
+        after_var = self.expr(var_node)
+        self.store, self.types = exit_store, exit_types
+
+        running = app('andb', before_inv, before_cond)
+        self.obligations.append(('progress', self.close(
+            App(Var('Holds'), app('notb', after_condition)), entry_types)))
+        self.obligations.append(('invariant holds on entry', self.close(
+            App(Var('Holds'), entry_invariant), entry_types)))
+        self.obligations.append(('invariant is preserved', self.close(
+            arrow(App(Var('Holds'), running),
+                  App(Var('Holds'), after_inv)), symbolic_types)))
+        self.obligations.append(('variant decreases', self.close(
+            arrow(App(Var('Holds'), running),
+                  App(Var('Holds'), app('ltb', after_var, before_var))),
+            symbolic_types)))
+        return None
+
+    def close(self, goal, types):
+        """Quantify over every free name the obligation still mentions."""
+        live = L.free_names(goal)
+        for name in reversed([n for n in types if n in live]):
+            goal = Pi(name, types[name], goal)
+        return goal
+
+    def bind(self, carried, types, acc_type, folded):
+        """Read the loop-carried variables back out of the fold."""
         if len(carried) == 1:
             self.store[carried[0]] = folded
-        else:
-            # bind the fold once, then project, rather than recomputing it
-            # per variable -- k copies of a loop is not the same program.
-            whole = self.fresh('loop')
-            self.store['#' + whole] = folded
-            for pos, name in enumerate(carried):
-                self.store[name] = App(Lambda(whole, acc_type,
-                                              self.project(Var(whole), types,
-                                                           pos)),
-                                       folded)
-        return None
+            return
+        whole = self.fresh('loop')
+        for pos, name in enumerate(carried):
+            self.store[name] = App(
+                Lambda(whole, acc_type, self.project(Var(whole), types, pos)),
+                folded)
 
     def pack(self, terms, types):
         """v1, .., vk as a right-nested Prod."""
@@ -662,7 +904,7 @@ class Procedure:
     """A body read as a term, with the contract stated about it."""
 
     def __init__(self, name, params, result_type, body, requires, ensures,
-                 obligation):
+                 obligation, loop_obligations=()):
         self.name = name
         self.params = params                # [(name, type)]
         self.result_type = result_type
@@ -670,6 +912,7 @@ class Procedure:
         self.requires = requires            # [Bool term]
         self.ensures = ensures              # [Bool term], `result` substituted
         self.obligation = obligation        # the Pi type to be proved
+        self.loop_obligations = list(loop_obligations)   # from while loops
 
     def __repr__(self):
         return f"<procedure {self.name} : {readable(self.obligation)}>"
@@ -787,7 +1030,10 @@ def read_procedure(func, env=None, signatures=None, ensures=()):
                             f"{readable(fn_type)}")
     type_check(env, goal)
 
-    proc = Procedure(tree.name, params, result_type, term, pre, post, goal)
+    for label, extra in reader.obligations:
+        type_check(env, extra)
+    proc = Procedure(tree.name, params, result_type, term, pre, post, goal,
+                     reader.obligations)
     proc.fn_term, proc.fn_type = fn_term, fn_type
     return proc
 
@@ -816,6 +1062,8 @@ def procedure(env=None, ensures=(), signatures=None, verbose=True, define_as=Non
         if verbose:
             print(f"read {proc.name} : {readable(proc.fn_type)}")
             print(f"  obligation: {readable(proc.obligation)}")
+            for label, extra in proc.loop_obligations:
+                print(f"  loop obligation ({label}): {readable(extra)}")
         return func
     return decorator
 
@@ -1101,13 +1349,6 @@ def selftest():
         return read_procedure(src, env, None,
                               kw.get('ensures', ['result == 0']))
 
-    refuses("while is refused, with the reason", lambda: read('''
-        def f(n: 'Nat') -> 'Nat':
-            v = 0
-            while v < n:
-                v = v + 1
-            return v
-        '''), "inventing a variant")
     refuses("return inside a loop is refused", lambda: read('''
         def f(n: 'Nat') -> 'Nat':
             v = 0
@@ -1170,6 +1411,143 @@ def selftest():
         def f(n: 'Nat') -> 'Nat':
             return n
         ''', ensures=['n']), "not decidable")
+
+    # -- records ------------------------------------------------------------
+    ctx = app('Context.mk', array([9, 9]), array([0, 1]), array([3]),
+              numeral(1), numeral(2), numeral(7))
+    computes("a projection", app('Context.ticks', ctx), numeral(7))
+    computes("another projection", app('Context.current', ctx), numeral(1))
+    computes("a list-valued field",
+             app('alen', app('Context.schemes', ctx)), numeral(1))
+    updated = app('Context.with_ticks', ctx, numeral(99))
+    computes("an update takes", app('Context.ticks', updated), numeral(99))
+    computes("an update leaves the other fields alone",
+             app('Context.current', updated), numeral(1))
+    computes("and the list fields too",
+             app('alen', app('Context.frames', updated)), numeral(2))
+
+    @procedure(env=env, ensures=['result.ticks == add(c.ticks, 1)'],
+               verbose=False)
+    def tick(c: 'Context') -> 'Context':
+        c.ticks = c.ticks + 1
+        return c
+    ok("a field assignment lowers to with_",
+       'Context.with_ticks' in readable(tick.lean_procedure.body))
+    ok("a syscall's contract holds at a context",
+       discharge(at(tick.lean_procedure, ctx), env, verbose=False) is not None)
+
+    refuses("a field that does not exist", lambda: read("""
+        def f(c: 'Context') -> 'Nat':
+            return c.nonesuch
+        """), "has no field")
+    refuses("a field of something that is not a record", lambda: read("""
+        def f(n: 'Nat') -> 'Nat':
+            return n.ticks
+        """), "is not a record")
+    refuses("a field assigned the wrong type", lambda: read("""
+        def f(c: 'Context') -> 'Context':
+            c.ticks = c.frames
+            return c
+        """, ensures=['result.ticks == 0']), "and this assigns")
+
+    # -- while, now that a variant makes it admissible ----------------------
+    @procedure(env=env, ensures=['result.current == result.nthreads'],
+               verbose=False)
+    def schedule(c: 'Context') -> 'Context':
+        while c.current < c.nthreads:
+            assert invariant(c.current <= c.nthreads)
+            assert variant(c.nthreads - c.current)
+            c.current = c.current + 1
+            c.ticks = c.ticks + 1
+        return c
+    ok("a while loop lowers to a guarded fold",
+       'ite' in readable(schedule.lean_procedure.body)
+       and 'Nat.rec' in readable(schedule.lean_procedure.body))
+    labels = [label for label, _ in schedule.lean_procedure.loop_obligations]
+    ok("it raises all four obligations",
+       labels == ['progress', 'invariant holds on entry',
+                  'invariant is preserved', 'variant decreases'])
+    start = app('Context.mk', array([9, 9, 9]), array([0, 1, 2]), array([]),
+                numeral(0), numeral(3), numeral(0))
+    ok("the postcondition holds at a context",
+       discharge(at(schedule.lean_procedure, start), env, verbose=False)
+       is not None)
+    for label, goal in schedule.lean_procedure.loop_obligations:
+        ok(f"while: {label}",
+           discharge(L.instantiate(goal.body, start), env, verbose=False)
+           is not None)
+    ok("the loop really ran",
+       normalize(app('Context.ticks', L.instantiate(
+           L.abstract(schedule.lean_procedure.body, 'c'), start)), env)
+       == numeral(3))
+
+    @procedure(env=env, ensures=['result.current == result.nthreads'],
+               verbose=False)
+    def stuck(c: 'Context') -> 'Context':
+        while c.current < c.nthreads:
+            assert invariant(c.current <= c.nthreads)
+            assert variant(c.nthreads)
+            c.ticks = c.ticks + 1
+        return c
+    raised = dict(stuck.lean_procedure.loop_obligations)
+    refuses("a constant variant fails to decrease",
+            lambda: discharge(L.instantiate(raised['variant decreases'].body,
+                                            start), env, verbose=False),
+            "does not hold")
+    refuses("and the loop is caught not finishing",
+            lambda: discharge(L.instantiate(raised['progress'].body, start),
+                              env, verbose=False),
+            "does not hold")
+
+    refuses("while without a variant is still refused", lambda: read("""
+        def f(n: 'Nat') -> 'Nat':
+            v = 0
+            while v < n:
+                v = v + 1
+            return v
+        """), "needs a variant to be admissible")
+    refuses("while without an invariant is refused", lambda: read("""
+        def f(n: 'Nat') -> 'Nat':
+            v = 0
+            while v < n:
+                assert variant(n - v)
+                v = v + 1
+            return v
+        """), "needs `assert invariant")
+    refuses("a variant that is not a Nat", lambda: read("""
+        def f(n: 'Nat') -> 'Nat':
+            v = 0
+            while v < n:
+                assert invariant(v <= n)
+                assert variant(v < n)
+                v = v + 1
+            return v
+        """), "a variant must be a Nat")
+
+    # -- crustos: scheme_of, whose control flow this now reaches ------------
+    @procedure(env=env, ensures=['result <= len(table)'], verbose=False)
+    def scheme_of(table: 'Array', head: 'Nat') -> 'Nat':
+        i = 0
+        found = len(table)
+        while i < len(table):
+            assert invariant(i <= len(table))
+            assert variant(len(table) - i)
+            if table[i] == head and found == len(table):
+                found = i
+            i = i + 1
+        return found
+    names = array([11, 22, 33, 44])           # stands in for _NAMES
+    def lookup(key):
+        return normalize(L.instantiate(L.abstract(L.instantiate(L.abstract(
+            scheme_of.lean_procedure.body, 'head'), numeral(key)),
+            'table'), names), env)
+    ok("scheme_of finds the first entry", lookup(11) == numeral(0))
+    ok("scheme_of finds a later entry", lookup(33) == numeral(2))
+    ok("an unregistered scheme returns the sentinel",
+       lookup(99) == numeral(4))
+    ok("the returned index never leaves the table",
+       discharge(at(scheme_of.lean_procedure, names, numeral(99)), env,
+                 verbose=False) is not None)
 
     # -- the bridge to crust ------------------------------------------------
     prop = from_crust({'len>=': 64, 'div-by': 4}, 'ptr')

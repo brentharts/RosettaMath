@@ -102,6 +102,30 @@ def rec(motive_type_, motive_body, *rest):
 # ------------------------------------------------------------------ records
 
 RECORDS = {}          # record name -> [(field name, field type)]
+SINGLE_CTOR = {}      # inductive name -> its one constructor
+
+
+def fields_of(env, type_term):
+    r"""The constructor of a one-constructor type, and its field types here.
+
+    Works through parameters, so `Prod Nat (List Nat)` reports fields `Nat`
+    and `List Nat`.  That matters because a loop carrying two variables is
+    carrying a `Prod`, and a `Prod` is as much a one-constructor type as a
+    record is -- the case split that unsticks a record's projections unsticks
+    `fst` and `snd` for exactly the same reason.
+    """
+    head, params = L.spine(normalize(type_term, env))
+    if not isinstance(head, Var) or head.name not in SINGLE_CTOR:
+        return None
+    constructor = SINGLE_CTOR[head.name]
+    signature = L.type_of(env, constructor)
+    for value in params:
+        signature = L.instantiate(signature.body, value)
+    fields = []
+    while isinstance(signature, Pi):
+        fields.append(signature.var_type)
+        signature = L.instantiate(signature.body, Var('_field'))
+    return head.name, constructor, params, fields
 
 
 def record(env, name, fields):
@@ -150,6 +174,7 @@ def record(env, name, fields):
                           rebuilt, Var('r')))))
 
     RECORDS[name] = list(fields)
+    SINGLE_CTOR[name] = constructor
     TYPE_NAMES[name] = Var(name)
     SIGNATURES[constructor] = ([ty for _, ty in fields], Var(name))
     SIGNATURES[name] = ([ty for _, ty in fields], Var(name))
@@ -222,12 +247,19 @@ def prelude(env=None):
     define(env, 'pred', arrow(NAT, NAT),
            rec(NAT, NAT, numeral(0),
                Lambda('k', NAT, Lambda('ih', NAT, Var('k')))))
+    # sub recurses on the *first* argument, so that `sub (m+1) (n+1)` is
+    # `sub m n` by definition.  Iterating `pred` on the second argument
+    # computes the same numbers and gives no such equation, which leaves any
+    # proof about a `n - i` variant with nothing to induct on.
     define(env, 'sub', arrow(NAT, arrow(NAT, NAT)),
-           Lambda('m', NAT, Lambda('n', NAT,
-                  rec(NAT, NAT, Var('m'),
-                      Lambda('k', NAT, Lambda('ih', NAT,
-                             app('pred', Var('ih')))),
-                      Var('n')))))
+           rec(NAT, arrow(NAT, NAT),
+               Lambda('n', NAT, numeral(0)),
+               Lambda('m2', NAT, Lambda('ih', arrow(NAT, NAT),
+                      Lambda('n', NAT,
+                             rec(NAT, NAT, App(Var('succ'), Var('m2')),
+                                 Lambda('n2', NAT, Lambda('_', NAT,
+                                        App(Var('ih'), Var('n2')))),
+                                 Var('n')))))))
     define(env, 'mul', arrow(NAT, arrow(NAT, NAT)),
            Lambda('m', NAT, Lambda('n', NAT,
                   rec(NAT, NAT, numeral(0),
@@ -274,6 +306,7 @@ def prelude(env=None):
     # -- pairs, for a loop that carries more than one variable --------------
     inductive(env, 'Prod', [('mk', [Var('A'), Var('B')])],
               params=[('A', TYPE0), ('B', TYPE0)])
+    SINGLE_CTOR['Prod'] = 'mk'
     define(env, 'fst',
            Pi('A', TYPE0, Pi('B', TYPE0,
               arrow(app('Prod', Var('A'), Var('B')), Var('A')),
@@ -475,13 +508,136 @@ def prelude(env=None):
            Lambda('b', BOOL, app('Eq', BOOL, Var('b'), Var('true'))))
 
     # -- what a while loop needs, proved once -------------------------------
-    # A `while` lowers to a fold whose step is `ite (b s) (f s) s`.  To carry
-    # an invariant through it two things are needed, and both are theorems
-    # here rather than assumptions: that one guarded pass keeps the invariant,
-    # and that iterating something which keeps it keeps it.
-    S, I_, f_, b_ = Var('S'), Var('I'), Var('f'), Var('b')
+    # A `while` lowers to iterating a guarded step.  Three things are needed
+    # of it and all three are theorems here, not assumptions: that one guarded
+    # pass keeps the invariant, that iterating something which keeps it keeps
+    # it, and that the variant bounds how many passes there can be.
+    inductive(env, 'TrueP', [('trivial', [])], level=0)
     holds = lambda x: App(Var('Holds'), x)
-    guarded_at = lambda x: app('ite', S, App(b_, x), App(f_, x), x)
+    yes = app('refl', BOOL, Var('true'))
+    succ_ = lambda a: App(Var('succ'), a)
+    leb_ = lambda a, b: app('leb', a, b)
+
+    # From a false premise, anything: `Holds false` is `Eq Bool false true`,
+    # so Eq.ind transports along it into a motive that reads `true` as the
+    # goal and `false` as something already proved.
+    define(env, 'absurd', Pi('C', PROP, arrow(holds(Var('false')), Var('C'))),
+           Lambda('C', PROP, Lambda('h', holds(Var('false')), app(
+               'Eq.ind', BOOL, Var('false'),
+               Lambda('b', BOOL, Lambda(
+                   '_t', app('Eq', BOOL, Var('false'), Var('b')),
+                   app('Bool.rec', Lambda('_', BOOL, PROP), Var('C'),
+                       Var('TrueP'), Var('b')))),
+               Var('trivial'), Var('true'), Var('h')))))
+
+    refl_motive = Lambda('x', NAT, holds(leb_(Var('x'), Var('x'))))
+    define(env, 'leb_refl', Pi('x', NAT, holds(leb_(Var('x'), Var('x')))),
+           Lambda('x', NAT, app('Nat.ind', refl_motive, yes,
+                                Lambda('k', NAT, Lambda(
+                                    'ih', App(refl_motive, Var('k')),
+                                    Var('ih'))), Var('x'))))
+
+    # transitivity: induction on the first, then a case split on the other two
+    x_, y_, z_ = Var('x'), Var('y'), Var('z')
+    x2, y2, z2 = Var('x2'), Var('y2'), Var('z2')
+    chain = lambda a, b, c: arrow(holds(leb_(a, b)),
+                                  arrow(holds(leb_(b, c)), holds(leb_(a, c))))
+    Mx = Lambda('x', NAT, Pi('y', NAT, Pi('z', NAT, chain(x_, y_, z_))))
+    base_x = Lambda('y', NAT, Lambda('z', NAT, Lambda(
+        'h1', holds(leb_(numeral(0), y_)),
+        Lambda('h2', holds(leb_(y_, z_)), yes))))
+    Mz = Lambda('z', NAT, chain(succ_(x2), succ_(y2), z_))
+    base_z = Lambda('h1', holds(leb_(succ_(x2), succ_(y2))), Lambda(
+        'h2', holds(leb_(succ_(y2), numeral(0))),
+        app('absurd', holds(leb_(succ_(x2), numeral(0))), Var('h2'))))
+    step_z = Lambda('z2', NAT, Lambda('ihz', App(Mz, z2), Lambda(
+        'h1', holds(leb_(succ_(x2), succ_(y2))), Lambda(
+            'h2', holds(leb_(succ_(y2), succ_(z2))),
+            app(Var('ih'), y2, z2, Var('h1'), Var('h2'))))))
+    My = Lambda('y', NAT, Pi('z', NAT, chain(succ_(x2), y_, z_)))
+    base_y = Lambda('z', NAT, Lambda(
+        'h1', holds(leb_(succ_(x2), numeral(0))), Lambda(
+            'h2', holds(leb_(numeral(0), z_)),
+            app('absurd', holds(leb_(succ_(x2), z_)), Var('h1')))))
+    step_y = Lambda('y2', NAT, Lambda('ihy', App(My, y2), Lambda(
+        'z', NAT, app('Nat.ind', Mz, base_z, step_z, z_))))
+    step_x = Lambda('x2', NAT, Lambda('ih', App(Mx, x2), Lambda(
+        'y', NAT, app('Nat.ind', My, base_y, step_y, y_))))
+    define(env, 'leb_trans',
+           Pi('x', NAT, Pi('y', NAT, Pi('z', NAT, chain(x_, y_, z_)))),
+           Lambda('x', NAT, app('Nat.ind', Mx, base_x, step_x, x_)))
+
+    # leb_succ and sub_le: subtracting never grows a number, and `sub m 0`
+    # is only `m` up to an induction, since the recursion is on the first
+    # argument.  Both are needed before a variant can be reasoned about.
+    succ_motive = Lambda('x', NAT, holds(leb_(Var('x'), succ_(Var('x')))))
+    define(env, 'leb_succ', Pi('x', NAT, holds(leb_(Var('x'), succ_(Var('x'))))),
+           Lambda('x', NAT, app('Nat.ind', succ_motive, yes,
+                                Lambda('k', NAT, Lambda(
+                                    'ih', App(succ_motive, Var('k')),
+                                    Var('ih'))), Var('x'))))
+
+    sub_ = lambda a, b: app('sub', a, b)
+    Msub = Lambda('m', NAT, Pi('n', NAT, holds(leb_(sub_(Var('m'), Var('n')),
+                                                    Var('m')))))
+    Minner = Lambda('n', NAT, holds(leb_(sub_(succ_(Var('m2')), Var('n')),
+                                         succ_(Var('m2')))))
+    sub_le_step = Lambda('m2', NAT, Lambda('ih', App(Msub, Var('m2')), Lambda(
+        'n', NAT, app('Nat.ind', Minner,
+                      app('leb_refl', Var('m2')),
+                      Lambda('n2', NAT, Lambda('_i', App(Minner, Var('n2')),
+                             app('leb_trans', sub_(Var('m2'), Var('n2')),
+                                 Var('m2'), succ_(Var('m2')),
+                                 App(Var('ih'), Var('n2')),
+                                 app('leb_succ', Var('m2'))))),
+                      Var('n')))))
+    define(env, 'sub_le',
+           Pi('m', NAT, Pi('n', NAT, holds(leb_(sub_(Var('m'), Var('n')),
+                                                Var('m'))))),
+           Lambda('m', NAT, app('Nat.ind', Msub,
+                                Lambda('n', NAT, yes), sub_le_step, Var('m'))))
+
+    # n - (c+1) < n - c, whenever c < n: what a `n - i` variant needs
+    c_, n_ = Var('c'), Var('n')
+    ltb_ = lambda a, b: app('ltb', a, b)
+    Mn = Lambda('n', NAT, Pi('c', NAT, arrow(
+        holds(ltb_(c_, n_)),
+        holds(ltb_(sub_(n_, succ_(c_)), sub_(n_, c_))))))
+    Mc = Lambda('c', NAT, arrow(
+        holds(ltb_(c_, succ_(Var('n2')))),
+        holds(ltb_(sub_(succ_(Var('n2')), succ_(c_)),
+                   sub_(succ_(Var('n2')), c_)))))
+    sub_base = Lambda('c', NAT, Lambda(
+        'h', holds(ltb_(c_, numeral(0))),
+        app('absurd', holds(ltb_(sub_(numeral(0), succ_(c_)),
+                                 sub_(numeral(0), c_))), Var('h'))))
+    sub_zero = Lambda('h', holds(ltb_(numeral(0), succ_(Var('n2')))),
+                      app('sub_le', Var('n2'), numeral(0)))
+    sub_succ = Lambda('c2', NAT, Lambda('_ihc', App(Mc, Var('c2')), Lambda(
+        'h', holds(ltb_(succ_(Var('c2')), succ_(Var('n2')))),
+        app(Var('ihn'), Var('c2'), Var('h')))))
+    sub_step = Lambda('n2', NAT, Lambda('ihn', App(Mn, Var('n2')), Lambda(
+        'c', NAT, app('Nat.ind', Mc, sub_zero, sub_succ, c_))))
+    define(env, 'sub_lt',
+           Pi('n', NAT, Pi('c', NAT, arrow(
+               holds(ltb_(c_, n_)),
+               holds(ltb_(sub_(n_, succ_(c_)), sub_(n_, c_)))))),
+           Lambda('n', NAT, app('Nat.ind', Mn, sub_base, sub_step, n_)))
+
+    # -- the fold, as "iterate n times" -------------------------------------
+    # Written so that one pass peels off the *front*: iter (n+1) s is
+    # iter n (step s), not step (iter n s).  Both compute the same thing, but
+    # the variant comes down on the first pass, so that is where an induction
+    # on termination needs to be able to look.
+    S, I_, f_, b_, V_ = Var('S'), Var('I'), Var('f'), Var('b'), Var('V')
+    guarded_at = lambda t: app('ite', S, App(b_, t), App(f_, t), t)
+    iterate = lambda n: app('Nat.rec', Lambda('_', NAT, arrow(S, S)),
+                            Lambda('s', S, Var('s')),
+                            Lambda('k', NAT, Lambda(
+                                'ih', arrow(S, S), Lambda(
+                                    's', S, App(Var('ih'),
+                                                guarded_at(Var('s')))))), n)
+    at_ = lambda n, t: App(iterate(n), t)
     two_step = Pi('s', S, arrow(holds(App(I_, Var('s'))),
                                 arrow(holds(App(b_, Var('s'))),
                                       holds(App(I_, App(f_, Var('s')))))))
@@ -496,8 +652,8 @@ def prelude(env=None):
     # guarded: a case split on the condition.  In the branch where it holds,
     # the hypothesis needed is `Holds true`, which refl proves -- which is why
     # the running condition is two separate hypotheses and not one `andb`.
-    supposing = lambda x: arrow(holds(App(I_, Var('s'))),
-                                arrow(holds(x),
+    supposing = lambda t: arrow(holds(App(I_, Var('s'))),
+                                arrow(holds(t),
                                       holds(App(I_, App(f_, Var('s'))))))
     branch = Lambda('x', BOOL, arrow(
         supposing(Var('x')),
@@ -507,36 +663,113 @@ def prelude(env=None):
                'h', holds(App(I_, Var('s'))),
                App(app('Bool.ind', branch,
                        Lambda('H', supposing(Var('true')),
-                              app(Var('H'), Var('h'),
-                                  app('refl', BOOL, Var('true')))),
+                              app(Var('H'), Var('h'), yes)),
                        Lambda('H', supposing(Var('false')), Var('h')),
                        App(b_, Var('s'))),
                    App(Var('P'), Var('s'))))))))
 
-    # fold_preserves: induction on the number of passes.
-    stepf = Lambda('_k', NAT, Lambda('a', S, guarded_at(Var('a'))))
-    fold_to = lambda seed, n: rec(NAT, S, seed, stepf, n)
-    after = lambda n: Pi('s', S, arrow(holds(App(I_, Var('s'))),
-                                       holds(App(I_, fold_to(Var('s'), n)))))
-    base_case = Lambda('s', S, Lambda('h', holds(App(I_, Var('s'))), Var('h')))
-    carry = app(Var('H'), fold_to(Var('s'), Var('k')),
-                app(Var('ih'), Var('s'), Var('h')))
-    step_case = Lambda('h', holds(App(I_, Var('s'))), carry)
-    step_case = Lambda('s', S, step_case)
-    step_case = Lambda('ih', after(Var('k')), step_case)
-    step_case = Lambda('k', NAT, step_case)
-    induction = app('Nat.ind', Lambda('n', NAT, after(Var('n'))),
-                    base_case, step_case, Var('n'))
+    after_ = lambda n: Pi('s', S, arrow(holds(App(I_, Var('s'))),
+                                        holds(App(I_, at_(n, Var('s'))))))
+    keep_base = Lambda('s', S, Lambda('h', holds(App(I_, Var('s'))),
+                                      Var('h')))
+    keep_step = Lambda('k', NAT, Lambda('ih', after_(Var('k')), Lambda(
+        's', S, Lambda('h', holds(App(I_, Var('s'))),
+                       app(Var('ih'), guarded_at(Var('s')),
+                           app(Var('H'), Var('s'), Var('h')))))))
     define(env, 'fold_preserves',
-           quantify(arrow(one_step, Pi('n', NAT, after(Var('n'))))),
-           close_over(Lambda('H', one_step, Lambda('n', NAT, induction))))
-
-    # the two together: what a while loop actually appeals to
+           quantify(arrow(one_step, Pi('n', NAT, after_(Var('n'))))),
+           close_over(Lambda('H', one_step, Lambda('n', NAT, app(
+               'Nat.ind', Lambda('n', NAT, after_(Var('n'))),
+               keep_base, keep_step, Var('n'))))))
     define(env, 'loop_preserves',
-           quantify(arrow(two_step, Pi('n', NAT, after(Var('n'))))),
+           quantify(arrow(two_step, Pi('n', NAT, after_(Var('n'))))),
            close_over(Lambda('P', two_step,
                              app('fold_preserves', S, I_, f_, b_,
                                  app('guarded', S, I_, f_, b_, Var('P'))))))
+
+    # -- termination --------------------------------------------------------
+    over = lambda body: Pi('S', TYPE0, Pi('I', arrow(S, BOOL), Pi(
+        'f', arrow(S, S), Pi('b', arrow(S, BOOL), Pi(
+            'V', arrow(S, NAT), body)))))
+    shut = lambda t: _abstract_over(
+        t, [('V', arrow(S, NAT)), ('b', arrow(S, BOOL)), ('f', arrow(S, S)),
+            ('I', arrow(S, BOOL)), ('S', TYPE0)])
+    sv, kv = Var('s'), Var('k')
+    notb_b = lambda t: holds(app('notb', App(b_, t)))
+
+    # stuck: once the condition is false, iterating changes nothing
+    Ms = Lambda('n', NAT, Pi('s', S, arrow(notb_b(Var('s')),
+                                           notb_b(at_(Var('n'), Var('s'))))))
+    Mb = Lambda('x', BOOL, arrow(
+        holds(app('notb', Var('x'))),
+        notb_b(at_(kv, app('ite', S, Var('x'), App(f_, sv), sv)))))
+    define(env, 'stuck', over(Pi('n', NAT, App(Ms, Var('n')))),
+           shut(Lambda('n', NAT, app(
+               'Nat.ind', Ms,
+               Lambda('s', S, Lambda('h', notb_b(Var('s')), Var('h'))),
+               Lambda('k', NAT, Lambda('ih', App(Ms, kv), Lambda(
+                   's', S, Lambda('h', notb_b(sv), app(
+                       app('Bool.ind', Mb,
+                           Lambda('hn', holds(app('notb', Var('true'))),
+                                  app('absurd', notb_b(at_(kv, App(f_, sv))),
+                                      Var('hn'))),
+                           Lambda('hn', holds(app('notb', Var('false'))),
+                                  app(Var('ih'), sv, Var('h'))),
+                           App(b_, sv)),
+                       Var('h')))))),
+               Var('n')))))
+
+    # fold_terminates: the variant is a bound on how many passes there can be
+    hI = lambda t: holds(App(I_, t))
+    rank = lambda t: App(V_, t)
+    keeps = Pi('s', S, arrow(hI(Var('s')), arrow(holds(App(b_, Var('s'))),
+                                                 hI(App(f_, Var('s'))))))
+    drops = Pi('s', S, arrow(hI(Var('s')), arrow(holds(App(b_, Var('s'))),
+        holds(app('ltb', rank(App(f_, Var('s'))), rank(Var('s')))))))
+    Mt = Lambda('n', NAT, Pi('s', S, arrow(hI(Var('s')), arrow(
+        holds(leb_(rank(Var('s')), Var('n'))),
+        notb_b(at_(Var('n'), Var('s')))))))
+    dropped = lambda nm: app(app(Var(nm), Var('hi')), yes)
+    keep_at = lambda t: arrow(hI(sv), arrow(holds(t), hI(App(f_, sv))))
+    drop_at = lambda t: arrow(hI(sv), arrow(holds(t), holds(
+        leb_(succ_(rank(App(f_, sv))), rank(sv)))))
+    Mb0 = Lambda('x', BOOL, arrow(drop_at(Var('x')),
+                                  holds(app('notb', Var('x')))))
+    base_t = Lambda('s', S, Lambda('hi', hI(sv), Lambda(
+        'hz', holds(leb_(rank(sv), numeral(0))),
+        App(app('Bool.ind', Mb0,
+                Lambda('D1', drop_at(Var('true')),
+                       app('leb_trans', succ_(rank(App(f_, sv))), rank(sv),
+                           numeral(0), dropped('D1'), Var('hz'))),
+                Lambda('D1', drop_at(Var('false')), yes), App(b_, sv)),
+            App(Var('D'), sv)))))
+    stuck_at = lambda t: arrow(holds(app('notb', t)), notb_b(at_(kv, sv)))
+    Mb1 = Lambda('x', BOOL, arrow(keep_at(Var('x')), arrow(
+        drop_at(Var('x')), arrow(stuck_at(Var('x')), notb_b(at_(
+            kv, app('ite', S, Var('x'), App(f_, sv), sv)))))))
+    step_t = Lambda('k', NAT, Lambda('ih', App(Mt, kv), Lambda(
+        's', S, Lambda('hi', hI(sv), Lambda(
+            'hn', holds(leb_(rank(sv), succ_(kv))), app(
+                app('Bool.ind', Mb1,
+                    Lambda('P1', keep_at(Var('true')), Lambda(
+                        'D1', drop_at(Var('true')), Lambda(
+                            '_st', stuck_at(Var('true')),
+                            app(Var('ih'), App(f_, sv),
+                                app(app(Var('P1'), Var('hi')), yes),
+                                app('leb_trans', succ_(rank(App(f_, sv))),
+                                    rank(sv), succ_(kv), dropped('D1'),
+                                    Var('hn')))))),
+                    Lambda('P1', keep_at(Var('false')), Lambda(
+                        'D1', drop_at(Var('false')), Lambda(
+                            'st', stuck_at(Var('false')),
+                            App(Var('st'), yes)))),
+                    App(b_, sv)),
+                App(Var('P'), sv), App(Var('D'), sv),
+                app('stuck', S, I_, f_, b_, V_, kv, sv)))))))
+    define(env, 'fold_terminates',
+           over(arrow(keeps, arrow(drops, Pi('n', NAT, App(Mt, Var('n')))))),
+           shut(Lambda('P', keeps, Lambda('D', drops, Lambda(
+               'n', NAT, app('Nat.ind', Mt, base_t, step_t, Var('n')))))))
 
     return env
 
@@ -626,6 +859,7 @@ class ImpToLean:
         self.obligations = []          # (label, goal) raised by while loops
         self.expected = None           # the type an annotation is asking for
         self.shapes = []               # the fold each while loop lowered to
+        self.assumptions = []          # the procedure's preconditions
 
     def fail(self, node, message):
         line = getattr(node, 'lineno', '?')
@@ -1131,68 +1365,70 @@ class ImpToLean:
         entry_store = dict(self.store)
         entry_types = dict(self.types)
         init = self.pack([self.store[n] for n in carried], types)
-        fuel = self.expr(var_node)
-        entry_invariant = self.expr(inv_node)
 
-        # The guard and one pass, each named as a function of the state.  The
-        # fold is then built out of those names, which is what lets a general
-        # lemma about folds be applied to this particular one: `loop_preserves`
-        # is stated about `ite (b s) (f s) s`, and this *is* that, with b and f
-        # given names rather than inlined.
+        # The condition, the invariant, the variant and one pass: each named
+        # as a function of the state.  The fold is then built from those
+        # names, which is what lets the general lemmas -- stated about
+        # `ite (b s) (f s) s` -- apply to this particular loop.
         acc = self.fresh('acc')
         for pos, name in enumerate(carried):
             self.store[name] = self.project(Var(acc), types, pos)
         guard = self.expr(stmt.test)
+        loop_inv = self.expr(inv_node)
+        loop_rank = self.expr(var_node)
         self.block(body)
         advanced = self.pack([self.store[n] for n in carried], types)
         self.store, self.types = dict(entry_store), dict(entry_types)
 
-        cond_fn = self.name_loop(Lambda(acc, acc_type, guard),
-                                 arrow(acc_type, BOOL), stem='cond')
-        pass_fn = self.name_loop(Lambda(acc, acc_type, advanced),
-                                 arrow(acc_type, acc_type), stem='pass')
-        step = Lambda('_step', NAT, Lambda(
-            acc, acc_type, app('ite', acc_type, App(cond_fn, Var(acc)),
-                               App(pass_fn, Var(acc)), Var(acc))))
-        folded = self.name_loop(rec(NAT, acc_type, init, step, fuel), acc_type)
+        named = lambda term, ty, stem: self.name_loop(
+            Lambda(acc, acc_type, term), arrow(acc_type, ty), stem=stem)
+        cond_fn = named(guard, BOOL, 'cond')
+        inv_fn = named(loop_inv, BOOL, 'inv')
+        rank_fn = named(loop_rank, NAT, 'rank')
+        pass_fn = named(advanced, acc_type, 'pass')
+
+        # the variant at the starting state is the number of passes there can
+        # be, which is the whole content of writing one down
+        fuel = App(rank_fn, init)
+        stepping = Lambda('s', acc_type, App(
+            Var('_it'), app('ite', acc_type, App(cond_fn, Var('s')),
+                            App(pass_fn, Var('s')), Var('s'))))
+        iterate = app('Nat.rec', Lambda('_', NAT, arrow(acc_type, acc_type)),
+                      Lambda('s', acc_type, Var('s')),
+                      Lambda('_k', NAT, Lambda('_it', arrow(acc_type, acc_type),
+                                               stepping)), fuel)
+        folded = self.name_loop(App(iterate, init), acc_type)
 
         # the state the rest of the function sees
         self.bind(carried, types, acc_type, folded)
-        after_condition = self.expr(stmt.test)
         exit_store, exit_types = dict(self.store), dict(self.types)
 
-        # the same pass, from an arbitrary state
-        symbolic_types = dict(entry_types)
-        self.store, self.types = dict(entry_store), symbolic_types
-        for name in carried:
-            self.store[name] = Var(name)
-        before_inv = self.expr(inv_node)
-        before_var = self.expr(var_node)
-        before_cond = self.expr(stmt.test)
-        arbitrary = self.pack([Var(n) for n in carried], types)
-        self.bind(carried, types, acc_type, App(pass_fn, arbitrary))
-        after_inv = self.expr(inv_node)
-        after_var = self.expr(var_node)
-        self.store, self.types = exit_store, exit_types
-
-        holds = lambda b: App(Var('Holds'), b)
+        holds = lambda t: App(Var('Holds'), t)
+        sv = Var('s')
         # Two hypotheses rather than one `andb`.  They carry the same content,
         # but a case split on the condition has `Holds true` to hand in the
         # branch where it holds, and `refl` proves that; `Holds (andb I true)`
         # with a symbolic I has nothing to reduce, and the chain stops there.
-        given = lambda goal: arrow(holds(before_inv),
-                                   arrow(holds(before_cond), goal))
-        self.obligations.append(('progress', self.close(
-            holds(app('notb', after_condition)), entry_types)))
-        self.obligations.append(('invariant holds on entry', self.close(
-            holds(entry_invariant), entry_types)))
-        self.obligations.append(('invariant is preserved', self.close(
-            given(holds(after_inv)), symbolic_types)))
-        self.obligations.append(('variant decreases', self.close(
-            given(holds(app('ltb', after_var, before_var))), symbolic_types)))
-        self.shapes.append({'cond': cond_fn, 'pass': pass_fn,
-                            'state': acc_type, 'carried': list(carried),
-                            'fuel': fuel, 'init': init, 'result': folded})
+        running = lambda goal: Pi('s', acc_type, arrow(
+            holds(App(inv_fn, sv)), arrow(holds(App(cond_fn, sv)), goal)))
+        raw = [
+            ('progress', holds(app('notb', App(cond_fn, folded)))),
+            ('invariant holds on entry', holds(App(inv_fn, init))),
+            ('invariant is preserved',
+             running(holds(App(inv_fn, App(pass_fn, sv))))),
+            ('variant decreases',
+             running(holds(app('ltb', App(rank_fn, App(pass_fn, sv)),
+                               App(rank_fn, sv))))),
+        ]
+        closed, binders = self.close_all([g for _, g in raw], entry_types)
+        for (label, _), goal in zip(raw, closed):
+            self.obligations.append((label, goal))
+        self.shapes.append({'cond': cond_fn, 'pass': pass_fn, 'inv': inv_fn,
+                            'rank': rank_fn, 'state': acc_type,
+                            'carried': list(carried), 'fuel': fuel,
+                            'init': init, 'result': folded,
+                            'binders': binders,
+                            'assumptions': list(self.assumptions)})
         return None
 
     def name_loop(self, term, result_type, stem='loop'):
@@ -1217,6 +1453,29 @@ class ImpToLean:
             index += 1
         define(self.env, f'{base}{index}', declared, value)
         return app(f'{base}{index}', *[Var(n) for n in live])
+
+    def close_all(self, goals, types):
+        """Close a family of obligations over one shared list of binders.
+
+        Each goal on its own would quantify only what it happens to mention,
+        and then the four could not be applied to each other -- which is the
+        whole point of stating them. The union, in declaration order, keeps
+        them pluggable.
+        """
+        live = set()
+        for goal in goals:
+            live |= L.free_names(goal)
+        for term in self.assumptions:
+            live |= L.free_names(term)
+        binders = [(n, types[n]) for n in types if n in live]
+        out = []
+        for goal in goals:
+            for term in reversed(self.assumptions):
+                goal = arrow(App(Var('Holds'), term), goal)
+            for name, ty in reversed(binders):
+                goal = Pi(name, ty, goal)
+            out.append(goal)
+        return out, binders
 
     def close(self, goal, types):
         """Quantify over every free name the obligation still mentions."""
@@ -1342,6 +1601,13 @@ def read_procedure(func, env=None, signatures=None, ensures=(),
                             f"body; an assertion in the middle is a different "
                             f"thing and is not supported yet")
 
+    # A procedure that preserves the state invariant may assume it going in,
+    # and this has to be settled before the body is read: a loop obligation
+    # may legitimately need what the procedure was promised, and `progress`
+    # for a scheduler needs exactly that.
+    if preserves:
+        pre.insert(0, App(Var(f'{preserves}.invariant'), Var(params[0][0])))
+    reader.assumptions = list(pre)
     term = reader.block(body)
     if term is None:
         raise ContractError(f"{tree.name}: the body falls off the end without "
@@ -1385,10 +1651,6 @@ def read_procedure(func, env=None, signatures=None, ensures=(),
                                 f"is not decidable (Bool)")
         post.append(reader.expr(node))
         reader.store, reader.types = saved_store, saved_types
-
-    # a procedure that preserves the state invariant may assume it going in
-    if preserves:
-        pre.insert(0, App(Var(f'{preserves}.invariant'), Var(params[0][0])))
 
     # {P} c {Q}  ==  forall params, Holds P -> ... -> Holds Q.
     # Several postconditions are one Bool joined by `andb`, not several Pis:
@@ -1538,42 +1800,42 @@ def at(proc, *args):
 
 
 def discharge(proc, env=None, verbose=True):
-    """Prove an obligation that computes: `refl` is the whole proof.
+    r"""Prove an obligation that computes: `refl` is the whole proof.
 
-    A precondition is peeled off and named, since the proof of the conclusion
-    does not need to look at it.  A remaining `forall` is refused: it does not
-    compute, and pretending otherwise is the one thing a checker must not do.
+    A binder is introduced rather than refused.  Some goals are quantified and
+    still compute -- `Holds (leb 0 (len parts))` is true whatever `parts` is,
+    because `leb 0 n` reduces without looking at `n` -- and refusing those
+    would send perfectly settled obligations off for a proof by hand.  What is
+    refused is a claim that does not reduce to `true` once the binders are in
+    scope, which is the honest boundary: it may still be true, but not for a
+    reason computation can see.
     """
     env = PRELUDE_ENV if env is None else env
     goal = proc.obligation if isinstance(proc, Procedure) else proc
-    original = goal
-    hypotheses = []
-    while isinstance(goal, Pi) and not L.occurs(goal.body, 0):
-        hypotheses.append(goal.var_type)
-        goal = L.instantiate(goal.body, Var('true'))    # unused: it cannot occur
-    if isinstance(goal, Pi):
-        raise ContractError(
-            f"{readable(original)} is universally quantified, so it does not "
-            f"compute. Give it a value with at(), or prove it by induction.")
+    binders, claim = peel(goal)
 
-    _, args = L.spine(goal)
-    if not args:
-        raise ContractError(f"{readable(goal)} is not a Holds(...) claim")
+    head, args = L.spine(claim)
+    if not (isinstance(head, Var) and head.name == 'Holds' and args):
+        raise ContractError(f"{readable(claim)} is not a Holds(...) claim")
+    unknowns = [n for n, _, is_hyp in binders if not is_hyp]
     value = normalize(args[-1], env)
     if value != Var('true'):
-        raise TheoremError(f"the contract does not hold: it computes to "
-                           f"{readable(value)}, not true")
+        if not unknowns:
+            raise TheoremError(f"the contract does not hold: it computes to "
+                               f"{readable(value)}, not true")
+        raise TheoremError(
+            f"the contract is universally quantified over "
+            f"{', '.join(unknowns)} and does not compute to true for an "
+            f"arbitrary one. Give it a value with at(), or prove it.")
 
     proof = app('refl', BOOL, Var('true'))
-    for i, hyp in enumerate(reversed(hypotheses)):
-        proof = Lambda(f'_h{len(hypotheses) - i}', hyp, proof)
+    for name, ty, _ in reversed(binders):
+        proof = Lambda(name, ty, proof)
     actual = type_check(env, proof)
-    if not L.definitionally_equal(original, actual, env):
-        raise TheoremError(f"proved {readable(actual)}, "
-                           f"not {readable(original)}")
+    if not L.definitionally_equal(goal, actual, env):
+        raise TheoremError(f"proved {readable(actual)}, not {readable(goal)}")
     if verbose:
-        note = (f" (given {len(hypotheses)} precondition(s), which the "
-                f"conclusion does not need)" if hypotheses else "")
+        note = f" (for any {', '.join(unknowns)})" if unknowns else ""
         print(f"  proved by computation{note}")
     return proof
 
@@ -1663,6 +1925,104 @@ def preservation_goal(env, record_name, callee, params):
                     App(Var('Holds'),
                         App(Var(inv), App(Var(callee), Var(subject))))))
     return goal, subject
+
+
+def peel(goal):
+    """Split a goal into its binders, in order, saying which are hypotheses.
+
+    A hypothesis is a binder whose type is a `Holds(...)`; anything else binds
+    a value.  Keeping them in one ordered list rather than two buckets matters:
+    a loop obligation inside a procedure that has a precondition reads
+    `forall c, Holds (I c) -> forall s, Holds .. -> ..`, so the two kinds
+    genuinely interleave.
+    """
+    binders, body = [], goal
+    while isinstance(body, Pi):
+        head, _ = L.spine(body.var_type)
+        binders.append((body.var_name, body.var_type,
+                        isinstance(head, Var) and head.name == 'Holds'))
+        body = L.instantiate(body.body, Var(body.var_name))
+    return binders, body
+
+
+def by_cases(env, record_name, goal, verbose=False, what='this', using=None):
+    r"""Prove a goal by splitting on the one constructor of its subject.
+
+    A projection of an update is stuck on a variable -- `Context.current
+    (Context.with_ticks c v)` cannot reduce, because until the value is known
+    to be built by its constructor there is nothing for iota to fire on.  One
+    case split unsticks every projection at once, and what is left is often
+    one of the hypotheses already to hand: for a scheduler advancing
+    `current`, the goal after a pass is `current + 1 <= nthreads`, and the
+    condition going in was `current < nthreads`, which is the same
+    proposition, since `ltb a b` is `leb (succ a) b` by definition.
+
+    The subject need not be a record.  A loop carrying two variables carries
+    a `Prod`, and that is a one-constructor type too; passing `None` for the
+    name splits on whatever the goal quantifies over that can be split.
+
+    `using` supplies a term to try first, for the cases where the goal follows
+    from a lemma rather than from something already in scope -- a `n - i`
+    variant comes down for an arithmetic reason, not a contextual one.
+    """
+    binders, _claim = peel(goal)
+    subjects = []
+    for i, (_, ty, is_hyp) in enumerate(binders):
+        if is_hyp:
+            continue
+        if record_name is not None and not same_type(ty, Var(record_name)):
+            continue
+        if fields_of(env, ty) is not None:
+            subjects.append(i)
+    if not subjects:
+        raise ContractError(f"{readable(goal)} does not quantify over "
+                            f"anything with a single constructor to split on")
+    where = subjects[-1]
+    subject, subject_type = binders[where][0], binders[where][1]
+    if any(not is_hyp for _, _, is_hyp in binders[where + 1:]):
+        raise ContractError(f"{readable(goal)} binds a value after the thing "
+                            f"it would split on")
+    name, constructor, params, fields = fields_of(env, subject_type)
+    field_vars = [Var(f'f{i}') for i in range(len(fields))]
+    built = app(constructor, *params, *field_vars)
+
+    rest = goal
+    for _ in range(where):
+        rest = L.instantiate(rest.body, Var(rest.var_name))
+    motive = Lambda(subject, subject_type,
+                    L.instantiate(rest.body, Var(subject)))
+    concrete = L.instantiate(rest.body, built)
+
+    hypotheses, walk = [], concrete
+    while isinstance(walk, Pi):
+        hypotheses.append(walk.var_type)
+        walk = L.instantiate(walk.body, Var('_unused'))
+    hyp_vars = [Var(f'_h{i}') for i in range(len(hypotheses))]
+    attempts = ([('the lemma given', using(field_vars, hyp_vars))]
+                if using else [])
+    attempts += [(f'hypothesis {i + 1}', v) for i, v in enumerate(hyp_vars)]
+
+    for how, chosen in attempts:
+        case = chosen
+        for i in reversed(range(len(hypotheses))):
+            case = Lambda(f'_h{i}', hypotheses[i], case)
+        for i in reversed(range(len(fields))):
+            case = Lambda(f'f{i}', fields[i], case)
+        term = Lambda(subject, subject_type,
+                      app(f'{name}.ind', *params, motive, case, Var(subject)))
+        for bname, ty, _ in reversed(binders[:where]):
+            term = Lambda(bname, ty, term)
+        try:
+            proof = prove(goal, term, env, verbose=False)
+            if verbose:
+                print(f"  proved by cases on {name}, from {how}")
+            return proof
+        except KernelError:
+            continue
+    raise TheoremError(
+        f"{what} does not follow from a case split: neither the lemma given "
+        f"nor any of the {len(hypotheses)} hypotheses is the goal. Prove "
+        f"{readable(goal)} directly and pass it in.")
 
 
 def hands_on_by_cases(env, record_name, goal, verbose=False, what='this'):
@@ -1793,6 +2153,40 @@ def preserves_by_loop(env, record_name, proc, pass_proof, which=0,
     except KernelError as exc:
         raise TheoremError(
             f"{proc.declared_as}'s loop proof does not close the gap: {exc}")
+
+
+def progress_by_loop(env, proc, entry, preserved, decreases, which=0,
+                     verbose=True):
+    r"""Prove the loop finishes, for every starting state, not just tested ones.
+
+    `progress` says the condition is false once the fold is done, and until
+    now it was only ever discharged at a concrete value -- which checks the
+    examples and says nothing about the rest.  `fold_terminates` closes that:
+    the variant is a bound on how many passes there can be, so running it that
+    many times is enough.  What is left here is applying it at this loop's
+    invariant, condition, pass and variant, with the three obligations that
+    were already being stated as its hypotheses.
+    """
+    shape = proc.shapes[which]
+    binders, assumptions = shape['binders'], shape['assumptions']
+    args = [Var(n) for n, _ in binders]
+    hypotheses = [f'_p{i}' for i in range(len(assumptions))]
+    supply = lambda proof: app(proof, *args, *[Var(h) for h in hypotheses])
+
+    term = app('fold_terminates', shape['state'], shape['inv'], shape['pass'],
+               shape['cond'], shape['rank'], supply(preserved),
+               supply(decreases), shape['fuel'], shape['init'],
+               supply(entry), app('leb_refl', shape['fuel']))
+    for name, clause in reversed(list(zip(hypotheses, assumptions))):
+        term = Lambda(name, App(Var('Holds'), clause), term)
+    for name, ty in reversed(binders):
+        term = Lambda(name, ty, term)
+
+    goal = dict(proc.loop_obligations)['progress']
+    try:
+        return prove(goal, term, env, verbose=verbose)
+    except KernelError as exc:
+        raise TheoremError(f"the loop is not shown to finish: {exc}")
 
 
 def compose(env, name, steps, record_name='Context', param='c'):
@@ -2161,9 +2555,16 @@ def selftest():
        discharge(at(schedule.lean_procedure, start), env, verbose=False)
        is not None)
     for label, goal in schedule.lean_procedure.loop_obligations:
-        ok(f"while: {label}",
-           discharge(L.instantiate(goal.body, start), env, verbose=False)
-           is not None)
+        if label in ('progress', 'invariant holds on entry'):
+            ok(f"while: {label} (at a context)",
+               discharge(L.instantiate(goal.body, start), env, verbose=False)
+               is not None)
+        else:
+            # now stated for every state, so a value proves nothing about it
+            ok(f"while: {label} (for every state)",
+               by_cases(env, 'Context', goal, what=label,
+                        using=lambda f, h: app('sub_lt', f[4], f[3], h[1]))
+               is not None)
     ok("the loop really ran",
        normalize(app('Context.ticks', L.instantiate(
            L.abstract(schedule.lean_procedure.body, 'c'), start)), env)
@@ -2179,9 +2580,9 @@ def selftest():
         return c
     raised = dict(stuck.lean_procedure.loop_obligations)
     refuses("a constant variant fails to decrease",
-            lambda: discharge(L.instantiate(raised['variant decreases'].body,
-                                            start), env, verbose=False),
-            "does not hold")
+            lambda: by_cases(env, 'Context', raised['variant decreases'],
+                             what='the variant'),
+            "does not follow from a case split")
     refuses("and the loop is caught not finishing",
             lambda: discharge(L.instantiate(raised['progress'].body, start),
                               env, verbose=False),
@@ -2344,6 +2745,28 @@ def selftest():
        discharge(at(accepted.lean_procedure, names, batch), env,
                  verbose=False) is not None)
 
+    # -- accepted's loop carries a Prod, and that splits too ----------------
+    ok("a two-variable loop carries a Prod",
+       'Prod' in readable(accepted.lean_procedure.shapes[0]['state']))
+    acc_goals = dict(accepted.lean_procedure.loop_obligations)
+    acc_entry = discharge(acc_goals['invariant holds on entry'], env,
+                          verbose=False)
+    ok("the entry invariant computes, whatever the input",
+       acc_entry is not None)
+    acc_kept = by_cases(env, None, acc_goals['invariant is preserved'],
+                        what='preservation')
+    ok("one pass keeps it, by splitting on the Prod", acc_kept is not None)
+    acc_down = by_cases(
+        env, None, acc_goals['variant decreases'], what='the variant',
+        using=lambda f, h: app('sub_lt',
+                               app('len', BYTES,
+                                   app('split', Var('urls'), numeral(44))),
+                               f[1], h[1]))
+    ok("and the variant comes down", acc_down is not None)
+    ok("so accepted's loop finishes for every input, not just tested ones",
+       progress_by_loop(env, accepted.lean_procedure, acc_entry, acc_kept,
+                        acc_down, verbose=False) is not None)
+
     # -- one invariant, threaded through a sequence of syscalls -------------
     state_invariant(env, 'Context', 'c.current <= c.nthreads')
 
@@ -2419,6 +2842,37 @@ def selftest():
 
     ok("a loop that is the whole body raises no segment obligations",
        sched.lean_procedure.shapes[0].get('segments') == [])
+
+    # -- termination, for every starting state rather than tested ones ------
+    goals = dict(sched.lean_procedure.loop_obligations)
+    ok("progress is stated about the loop, not about a value",
+       'sched.loop1' in readable(goals['progress']))
+    entry_pf = by_cases(env, 'Context', goals['invariant holds on entry'],
+                        what='entry')
+    kept_pf = by_cases(env, 'Context', goals['invariant is preserved'],
+                       what='preservation')
+    down_pf = by_cases(env, 'Context', goals['variant decreases'],
+                       what='the variant',
+                       using=lambda f, h: app('sub_lt', f[4], f[3], h[1]))
+    ok("the invariant holds going in", entry_pf is not None)
+    ok("one pass keeps the loop invariant", kept_pf is not None)
+    ok("the variant comes down, by sub_lt", down_pf is not None)
+    ok("and so the loop finishes, for every context",
+       progress_by_loop(env, sched.lean_procedure, entry_pf, kept_pf, down_pf,
+                        verbose=False) is not None)
+
+    # the arithmetic the variant proof rests on, checked on its own
+    computes("sub still computes", app('sub', numeral(7), numeral(3)),
+             numeral(4))
+    computes("and saturates", app('sub', numeral(3), numeral(7)), numeral(0))
+    ok("sub_le : subtracting never grows a number",
+       type_check(env, app('sub_le', numeral(5), numeral(2))) is not None)
+    ok("sub_lt : n - (c+1) < n - c when c < n",
+       type_check(env, app('sub_lt', numeral(5), numeral(2),
+                           app('refl', BOOL, Var('true')))) is not None)
+    ok("absurd : anything follows from Holds false",
+       'Holds(false)' in readable(L.type_of(env, 'absurd')))
+    ok("leb_trans is available", L.type_of(env, 'leb_trans') is not None)
 
     # -- the sequence rule: statements on both sides of a loop --------------
     @procedure(env=env, preserves='Context', verbose=False,

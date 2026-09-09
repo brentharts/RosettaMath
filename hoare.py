@@ -158,6 +158,12 @@ def record(env, name, fields):
 
 # ----------------------------------------------------------------- prelude
 
+def _abstract_over(term, bindings):
+    for name, ty in bindings:
+        term = Lambda(name, ty, term)
+    return term
+
+
 def prelude(env=None):
     r"""Everything the imperative fragment needs, defined rather than assumed.
 
@@ -323,6 +329,36 @@ def prelude(env=None):
                       Lambda('h', Var('A'), Lambda('t', listof(Var('A')),
                              Lambda('_', listof(Var('A')), Var('t')))))))
 
+    define(env, 'append',
+           Pi('A', TYPE0,
+              arrow(listof(A), arrow(listof(A), listof(A))), implicit=True),
+           Lambda('A', TYPE0,
+                  app('List.rec', A,
+                      Lambda('_', listof(A), arrow(listof(A), listof(A))),
+                      Lambda('ys', listof(A), Var('ys')),
+                      Lambda('h', A, Lambda('t', listof(A),
+                             Lambda('ih', arrow(listof(A), listof(A)),
+                                    Lambda('ys', listof(A),
+                                           app('cons', A, Var('h'),
+                                               App(Var('ih'), Var('ys')))))))))) 
+    # snoc: the one a loop that builds a list in order actually needs.  A fold
+    # over range(n) naturally produces its result backwards, and a reversed
+    # answer is a wrong answer, not a presentational detail.
+    define(env, 'snoc',
+           Pi('A', TYPE0, arrow(listof(A), arrow(A, listof(A))),
+              implicit=True),
+           Lambda('A', TYPE0, Lambda('xs', listof(A), Lambda('x', A,
+                  app('append', A, Var('xs'),
+                      app('cons', A, Var('x'), app('nil', A)))))))
+    define(env, 'rev', Pi('A', TYPE0, arrow(listof(A), listof(A)),
+                          implicit=True),
+           Lambda('A', TYPE0,
+                  app('List.rec', A, Lambda('_', listof(A), listof(A)),
+                      app('nil', A),
+                      Lambda('h', A, Lambda('t', listof(A),
+                             Lambda('ih', listof(A),
+                                    app('snoc', A, Var('ih'), Var('h'))))))))
+
     # -- byte strings: List Nat, which is what a string is ------------------
     bytes_ = listof(NAT)
     strs = listof(bytes_)
@@ -415,6 +451,71 @@ def prelude(env=None):
     # -- the proposition a contract makes -----------------------------------
     define(env, 'Holds', arrow(BOOL, PROP),
            Lambda('b', BOOL, app('Eq', BOOL, Var('b'), Var('true'))))
+
+    # -- what a while loop needs, proved once -------------------------------
+    # A `while` lowers to a fold whose step is `ite (b s) (f s) s`.  To carry
+    # an invariant through it two things are needed, and both are theorems
+    # here rather than assumptions: that one guarded pass keeps the invariant,
+    # and that iterating something which keeps it keeps it.
+    S, I_, f_, b_ = Var('S'), Var('I'), Var('f'), Var('b')
+    holds = lambda x: App(Var('Holds'), x)
+    guarded_at = lambda x: app('ite', S, App(b_, x), App(f_, x), x)
+    two_step = Pi('s', S, arrow(holds(App(I_, Var('s'))),
+                                arrow(holds(App(b_, Var('s'))),
+                                      holds(App(I_, App(f_, Var('s')))))))
+    one_step = Pi('s', S, arrow(holds(App(I_, Var('s'))),
+                                holds(App(I_, guarded_at(Var('s'))))))
+    quantify = lambda body: Pi('S', TYPE0, Pi('I', arrow(S, BOOL), Pi(
+        'f', arrow(S, S), Pi('b', arrow(S, BOOL), body))))
+    close_over = lambda t: _abstract_over(
+        t, [('b', arrow(S, BOOL)), ('f', arrow(S, S)),
+            ('I', arrow(S, BOOL)), ('S', TYPE0)])
+
+    # guarded: a case split on the condition.  In the branch where it holds,
+    # the hypothesis needed is `Holds true`, which refl proves -- which is why
+    # the running condition is two separate hypotheses and not one `andb`.
+    supposing = lambda x: arrow(holds(App(I_, Var('s'))),
+                                arrow(holds(x),
+                                      holds(App(I_, App(f_, Var('s'))))))
+    branch = Lambda('x', BOOL, arrow(
+        supposing(Var('x')),
+        holds(App(I_, app('ite', S, Var('x'), App(f_, Var('s')), Var('s'))))))
+    define(env, 'guarded', quantify(arrow(two_step, one_step)),
+           close_over(Lambda('P', two_step, Lambda('s', S, Lambda(
+               'h', holds(App(I_, Var('s'))),
+               App(app('Bool.ind', branch,
+                       Lambda('H', supposing(Var('true')),
+                              app(Var('H'), Var('h'),
+                                  app('refl', BOOL, Var('true')))),
+                       Lambda('H', supposing(Var('false')), Var('h')),
+                       App(b_, Var('s'))),
+                   App(Var('P'), Var('s'))))))))
+
+    # fold_preserves: induction on the number of passes.
+    stepf = Lambda('_k', NAT, Lambda('a', S, guarded_at(Var('a'))))
+    fold_to = lambda seed, n: rec(NAT, S, seed, stepf, n)
+    after = lambda n: Pi('s', S, arrow(holds(App(I_, Var('s'))),
+                                       holds(App(I_, fold_to(Var('s'), n)))))
+    base_case = Lambda('s', S, Lambda('h', holds(App(I_, Var('s'))), Var('h')))
+    carry = app(Var('H'), fold_to(Var('s'), Var('k')),
+                app(Var('ih'), Var('s'), Var('h')))
+    step_case = Lambda('h', holds(App(I_, Var('s'))), carry)
+    step_case = Lambda('s', S, step_case)
+    step_case = Lambda('ih', after(Var('k')), step_case)
+    step_case = Lambda('k', NAT, step_case)
+    induction = app('Nat.ind', Lambda('n', NAT, after(Var('n'))),
+                    base_case, step_case, Var('n'))
+    define(env, 'fold_preserves',
+           quantify(arrow(one_step, Pi('n', NAT, after(Var('n'))))),
+           close_over(Lambda('H', one_step, Lambda('n', NAT, induction))))
+
+    # the two together: what a while loop actually appeals to
+    define(env, 'loop_preserves',
+           quantify(arrow(two_step, Pi('n', NAT, after(Var('n'))))),
+           close_over(Lambda('P', two_step,
+                             app('fold_preserves', S, I_, f_, b_,
+                                 app('guarded', S, I_, f_, b_, Var('P'))))))
+
     return env
 
 
@@ -501,6 +602,8 @@ class ImpToLean:
         self.signatures.update(signatures or {})
         self.counter = 0
         self.obligations = []          # (label, goal) raised by while loops
+        self.expected = None           # the type an annotation is asking for
+        self.shapes = []               # the fold each while loop lowered to
 
     def fail(self, node, message):
         line = getattr(node, 'lineno', '?')
@@ -535,6 +638,12 @@ class ImpToLean:
             if isinstance(node.value, int) and node.value >= 0:
                 return NAT
             self.fail(node, f"{node.value!r} is not a value of this fragment")
+        if isinstance(node, ast.List):
+            if self.expected is not None:
+                return self.expected
+            if node.elts:
+                return App(Var('List'), self.type_of_expr(node.elts[0]))
+            self.fail(node, "an empty list literal needs an annotation")
         if isinstance(node, ast.Name):
             if node.id in self.types:
                 return self.types[node.id]
@@ -562,6 +671,8 @@ class ImpToLean:
                     return NAT
                 if node.func.id == 'cons':
                     return self.type_of_expr(node.args[1])
+                if node.func.id in ('snoc', 'append', 'rev'):
+                    return self.type_of_expr(node.args[0])
                 sig = self.signatures.get(node.func.id)
                 if sig:
                     return sig[1]
@@ -598,6 +709,20 @@ class ImpToLean:
             if node.id in self.store:
                 return self.store[node.id]
             self.fail(node, f"'{node.id}' is read before it is bound")
+
+        if isinstance(node, ast.List):
+            # `out: 'Array' = []` is how schemes.py writes it, and an empty
+            # literal has no type of its own -- the annotation supplies it.
+            if self.expected is None:
+                self.fail(node, "a list literal here has no type; write it as "
+                                "`name: 'Array' = [...]` so there is one")
+            inner = element_type(self.expected)
+            if inner is None:
+                self.fail(node, f"{readable(self.expected)} is not a list type")
+            out = app('nil', inner)
+            for item in reversed(node.elts):
+                out = app('cons', inner, self.expr(item), out)
+            return out
 
         if isinstance(node, ast.BinOp):
             op = BINOPS.get(type(node.op))
@@ -669,6 +794,14 @@ class ImpToLean:
                 if inner is None:
                     self.fail(node, f"{readable(container)} has no length")
                 return app('len', inner, self.expr(node.args[0]))
+            if name in ('snoc', 'append', 'rev'):
+                container = self.type_of_expr(node.args[0])
+                inner = element_type(container)
+                if inner is None:
+                    self.fail(node, f"{name} needs a list, not "
+                                    f"{readable(container)}")
+                return app(name, inner,
+                           *[self.expr(a) for a in node.args])
             if name == 'cons':
                 if len(node.args) != 2:
                     self.fail(node, "cons takes an element and a list")
@@ -756,10 +889,12 @@ class ImpToLean:
                 self.fail(stmt, "only a plain variable or a record field may "
                                 "be assigned; there is no mutable heap in "
                                 "this fragment")
-            ty = (self.read_type(stmt.annotation, 'the annotation')
-                  if isinstance(stmt, ast.AnnAssign) and stmt.annotation
-                  else self.type_of_expr(stmt.value))
+            annotated = (isinstance(stmt, ast.AnnAssign) and stmt.annotation)
+            self.expected = (self.read_type(stmt.annotation, 'the annotation')
+                             if annotated else None)
+            ty = self.expected or self.type_of_expr(stmt.value)
             term = self.expr(stmt.value)
+            self.expected = None
             if target.id in self.types and not same_type(self.types[target.id], ty):
                 self.fail(stmt, f"'{target.id}' was "
                                 f"{readable(self.types[target.id])} and this "
@@ -977,7 +1112,11 @@ class ImpToLean:
         fuel = self.expr(var_node)
         entry_invariant = self.expr(inv_node)
 
-        # one pass, from a state held in the accumulator
+        # The guard and one pass, each named as a function of the state.  The
+        # fold is then built out of those names, which is what lets a general
+        # lemma about folds be applied to this particular one: `loop_preserves`
+        # is stated about `ite (b s) (f s) s`, and this *is* that, with b and f
+        # given names rather than inlined.
         acc = self.fresh('acc')
         for pos, name in enumerate(carried):
             self.store[name] = self.project(Var(acc), types, pos)
@@ -986,8 +1125,13 @@ class ImpToLean:
         advanced = self.pack([self.store[n] for n in carried], types)
         self.store, self.types = dict(entry_store), dict(entry_types)
 
+        cond_fn = self.name_loop(Lambda(acc, acc_type, guard),
+                                 arrow(acc_type, BOOL), stem='cond')
+        pass_fn = self.name_loop(Lambda(acc, acc_type, advanced),
+                                 arrow(acc_type, acc_type), stem='pass')
         step = Lambda('_step', NAT, Lambda(
-            acc, acc_type, app('ite', acc_type, guard, advanced, Var(acc))))
+            acc, acc_type, app('ite', acc_type, App(cond_fn, Var(acc)),
+                               App(pass_fn, Var(acc)), Var(acc))))
         folded = self.name_loop(rec(NAT, acc_type, init, step, fuel), acc_type)
 
         # the state the rest of the function sees
@@ -995,7 +1139,7 @@ class ImpToLean:
         after_condition = self.expr(stmt.test)
         exit_store, exit_types = dict(self.store), dict(self.types)
 
-        # one pass from an arbitrary state, for the invariant obligations
+        # the same pass, from an arbitrary state
         symbolic_types = dict(entry_types)
         self.store, self.types = dict(entry_store), symbolic_types
         for name in carried:
@@ -1003,29 +1147,30 @@ class ImpToLean:
         before_inv = self.expr(inv_node)
         before_var = self.expr(var_node)
         before_cond = self.expr(stmt.test)
-        self.block(body)
-        # one pass is worth a name too: without it the preservation and
-        # variant obligations restate the whole body four times over
-        one_pass = self.name_loop(
-            self.pack([self.store[n] for n in carried], types), acc_type,
-            stem='pass')
-        self.bind(carried, types, acc_type, one_pass)
+        arbitrary = self.pack([Var(n) for n in carried], types)
+        self.bind(carried, types, acc_type, App(pass_fn, arbitrary))
         after_inv = self.expr(inv_node)
         after_var = self.expr(var_node)
         self.store, self.types = exit_store, exit_types
 
-        running = app('andb', before_inv, before_cond)
+        holds = lambda b: App(Var('Holds'), b)
+        # Two hypotheses rather than one `andb`.  They carry the same content,
+        # but a case split on the condition has `Holds true` to hand in the
+        # branch where it holds, and `refl` proves that; `Holds (andb I true)`
+        # with a symbolic I has nothing to reduce, and the chain stops there.
+        given = lambda goal: arrow(holds(before_inv),
+                                   arrow(holds(before_cond), goal))
         self.obligations.append(('progress', self.close(
-            App(Var('Holds'), app('notb', after_condition)), entry_types)))
+            holds(app('notb', after_condition)), entry_types)))
         self.obligations.append(('invariant holds on entry', self.close(
-            App(Var('Holds'), entry_invariant), entry_types)))
+            holds(entry_invariant), entry_types)))
         self.obligations.append(('invariant is preserved', self.close(
-            arrow(App(Var('Holds'), running),
-                  App(Var('Holds'), after_inv)), symbolic_types)))
+            given(holds(after_inv)), symbolic_types)))
         self.obligations.append(('variant decreases', self.close(
-            arrow(App(Var('Holds'), running),
-                  App(Var('Holds'), app('ltb', after_var, before_var))),
-            symbolic_types)))
+            given(holds(app('ltb', after_var, before_var))), symbolic_types)))
+        self.shapes.append({'cond': cond_fn, 'pass': pass_fn,
+                            'state': acc_type, 'carried': list(carried),
+                            'fuel': fuel, 'init': init})
         return None
 
     def name_loop(self, term, result_type, stem='loop'):
@@ -1243,6 +1388,7 @@ def read_procedure(func, env=None, signatures=None, ensures=(),
     for label, extra in reader.obligations:
         type_check(env, extra)
     preservation = subject = None
+    pass_goals = []
     if preserves:
         if not same_type(result_type, Var(preserves)):
             raise ContractError(f"{tree.name} claims to preserve {preserves} "
@@ -1250,13 +1396,33 @@ def read_procedure(func, env=None, signatures=None, ensures=(),
         preservation, subject = preservation_goal(env, preserves, declared_as,
                                                   params)
         type_check(env, preservation)
+        # The loop's own invariant is not the state's.  A while loop inside a
+        # syscall raises one more obligation: that a single guarded pass keeps
+        # the *state* invariant, which is the hypothesis `loop_preserves`
+        # wants and the only thing missing between the loop obligations
+        # already stated and the syscall being composable.
+        inv = Var(f'{preserves}.invariant')
+        for shape in reader.shapes:
+            if not same_type(shape['state'], Var(preserves)):
+                continue
+            hold = lambda x: App(Var('Holds'), x)
+            goal = Pi('s', Var(preserves),
+                      arrow(hold(App(inv, Var('s'))),
+                            arrow(hold(App(shape['cond'], Var('s'))),
+                                  hold(App(inv,
+                                           App(shape['pass'], Var('s')))))))
+            type_check(env, goal)
+            pass_goals.append(goal)
     proc = Procedure(tree.name, params, result_type, term, pre, post, goal,
                      reader.obligations)
     proc.fn_term, proc.fn_type = fn_term, fn_type
+    SIGNATURES[declared_as] = ([ty for _, ty in params], result_type)
     proc.declared_as = declared_as
     proc.preserves = preserves
     proc.preservation = preservation
     proc.preservation_subject = subject
+    proc.pass_goals = pass_goals
+    proc.shapes = list(reader.shapes)
     return proc
 
 
@@ -1288,6 +1454,8 @@ def procedure(env=None, ensures=(), signatures=None, verbose=True,
                 print(f"  loop obligation ({label}): {readable(extra)}")
             if proc.preservation is not None:
                 print(f"  preserves: {readable(proc.preservation)}")
+            for goal in proc.pass_goals:
+                print(f"  one pass keeps it: {readable(goal)}")
         return func
     return decorator
 
@@ -1472,6 +1640,79 @@ def preserves_by_cases(env, record_name, proc, verbose=True):
             f"reads, so the hypothesis going in is not a proof of the "
             f"conclusion coming out. This one needs a real argument: prove "
             f"{readable(proc.preservation)} and pass it to compose().")
+
+
+def pass_by_cases(env, record_name, proc, which=0, verbose=True):
+    r"""Prove that one guarded pass keeps the state invariant, by cases.
+
+    Same reason as `preserves_by_cases`: a projection of an update is stuck
+    until the record is known to be built by its constructor.  Inside the one
+    case, the goal often turns out to be one of the two hypotheses already to
+    hand -- for a scheduler advancing `current`, the goal after the pass is
+    `current + 1 <= nthreads`, and the loop condition going in was
+    `current < nthreads`, which is the same proposition since `ltb a b` is
+    `leb (succ a) b` by definition.  Both hypotheses are tried; if neither
+    fits, this refuses rather than guessing.
+    """
+    goal = proc.pass_goals[which]
+    fields = RECORDS[record_name]
+    inv = Var(f'{record_name}.invariant')
+    shape = proc.shapes[which]
+    hold = lambda x: App(Var('Holds'), x)
+    built = app(f'{record_name}.mk',
+                *[Var(f'f{i}') for i in range(len(fields))])
+    motive = Lambda('s', Var(record_name),
+                    arrow(hold(App(inv, Var('s'))),
+                          arrow(hold(App(shape['cond'], Var('s'))),
+                                hold(App(inv, App(shape['pass'],
+                                                  Var('s')))))))
+    problems = []
+    for choice in ('the condition', 'the invariant'):
+        case = Lambda('h2', hold(App(shape['cond'], built)),
+                      Var('h2' if choice == 'the condition' else 'h1'))
+        case = Lambda('h1', hold(App(inv, built)), case)
+        for i in reversed(range(len(fields))):
+            case = Lambda(f'f{i}', fields[i][1], case)
+        term = Lambda('s', Var(record_name),
+                      app(f'{record_name}.ind', motive, case, Var('s')))
+        try:
+            proof = prove(goal, term, env, verbose=False)
+            if verbose:
+                print(f"  one pass keeps the invariant, by {choice}")
+            return proof
+        except KernelError as exc:
+            problems.append(choice)
+    raise TheoremError(
+        f"one pass of {proc.declared_as}'s loop does not obviously keep the "
+        f"{record_name} invariant: neither hypothesis is the goal. Prove "
+        f"{readable(goal)} directly and pass it to preserves_by_loop().")
+
+
+def preserves_by_loop(env, record_name, proc, pass_proof, which=0,
+                      verbose=True):
+    r"""Turn the loop obligations into the syscall's preservation proof.
+
+    This is the step that makes a `while`-containing syscall composable.
+    `loop_preserves` does the general work -- one guarded pass keeps the
+    invariant, so any number of them do -- and all that is left here is to
+    apply it at this loop's condition, pass, fuel and starting state.  The
+    result is exactly the `preserves` obligation, so the syscall can go into
+    `compose` alongside the ones whose proof was trivial.
+    """
+    shape = proc.shapes[which]
+    subject = proc.preservation_subject
+    term = Lambda(subject, Var(record_name),
+                  app('loop_preserves', Var(record_name),
+                      Var(f'{record_name}.invariant'),
+                      shape['pass'], shape['cond'], pass_proof,
+                      shape['fuel'], shape['init']))
+    try:
+        return prove(proc.preservation, term, env, verbose=verbose)
+    except KernelError as exc:
+        raise TheoremError(
+            f"{proc.declared_as}'s loop proof does not close the gap: "
+            f"{exc}. This applies only when the body is the loop and "
+            f"nothing else follows it.")
 
 
 def compose(env, name, steps, record_name='Context', param='c'):
@@ -1915,6 +2156,28 @@ def selftest():
              app('len', BYTES, app('split', text(""), numeral(44))),
              numeral(1))
 
+    # -- building a list in order -------------------------------------------
+    computes("append", app('append', NAT, array([1, 2]), array([3])),
+             array([1, 2, 3]))
+    computes("snoc puts it on the end",
+             app('snoc', NAT, array([1, 2]), numeral(3)), array([1, 2, 3]))
+    computes("rev", app('rev', NAT, array([1, 2, 3])), array([3, 2, 1]))
+
+    @procedure(env=env, ensures=['len(result) == n'], verbose=False)
+    def upto(n: 'Nat') -> 'Array':
+        out: 'Array' = []
+        for i in range(n):
+            out = snoc(out, i)
+        return out
+    ok("a loop can build a list in order",
+       normalize(App(upto.lean_procedure.fn_term, numeral(4)), env)
+       == array([0, 1, 2, 3]))
+    refuses("an empty literal with no annotation is refused", lambda: read("""
+        def f(n: 'Nat') -> 'Nat':
+            out = []
+            return n
+        """), "needs an annotation")
+
     # -- crustos/schemes.py, with its own routing ---------------------------
     names = texts(["sys", "memory", "file", "pipe", "irq", "debug", "gpu"])
 
@@ -1965,6 +2228,42 @@ def selftest():
        discharge(at(path_of.lean_procedure, text("file:/etc/passwd")), env,
                  verbose=False) is not None)
 
+    # -- the other two public functions of schemes.py -----------------------
+    @procedure(env=env, verbose=False,
+               ensures=['len(result) == len(split(urls, 44))'])
+    def route_all(names: 'Strs', urls: 'Bytes') -> 'Array':
+        parts = split(urls, 44)              # ord(',')
+        out: 'Array' = []
+        for i in range(len(parts)):
+            out = snoc(out, scheme_of(names, parts[i]))
+        return out
+
+    @procedure(env=env, verbose=False,
+               ensures=['len(result) <= len(split(urls, 44))'])
+    def accepted(names: 'Strs', urls: 'Bytes') -> 'Array':
+        parts = split(urls, 44)
+        out: 'Array' = []
+        i = 0
+        while i < len(parts):
+            assert invariant(i <= len(parts))
+            assert variant(len(parts) - i)
+            if scheme_of(names, parts[i]) < len(names):
+                out = snoc(out, i)
+            i = i + 1
+        return out
+
+    batch = text("sys:boot,nope:/x,file:/etc/passwd,gpu:0")
+    ok("route_all keeps the order",
+       normalize(app('route_all', names, batch), env) == array([0, 7, 2, 6]))
+    ok("one scheme id per url",
+       discharge(at(route_all.lean_procedure, names, batch), env,
+                 verbose=False) is not None)
+    ok("accepted picks out the registered ones",
+       normalize(app('accepted', names, batch), env) == array([0, 2, 3]))
+    ok("and is never longer than the batch",
+       discharge(at(accepted.lean_procedure, names, batch), env,
+                 verbose=False) is not None)
+
     # -- one invariant, threaded through a sequence of syscalls -------------
     state_invariant(env, 'Context', 'c.current <= c.nthreads')
 
@@ -2008,6 +2307,50 @@ def selftest():
     def advance(c: 'Context') -> 'Context':
         c.current = c.current + 1            # can run past nthreads
         return c
+    @procedure(env=env, preserves='Context', verbose=False,
+               ensures=['result.current == result.nthreads'])
+    def sched(c: 'Context') -> 'Context':
+        while c.current < c.nthreads:
+            assert invariant(c.current <= c.nthreads)
+            assert variant(c.nthreads - c.current)
+            c.current = c.current + 1
+            c.ticks = c.ticks + 1
+        return c
+    ok("a while loop raises one more obligation when it preserves state",
+       len(sched.lean_procedure.pass_goals) == 1)
+    one_pass = pass_by_cases(env, 'Context', sched.lean_procedure,
+                             verbose=False)
+    ok("one guarded pass keeps the state invariant", one_pass is not None)
+    sched_proof = preserves_by_loop(env, 'Context', sched.lean_procedure,
+                                    one_pass, verbose=False)
+    ok("and so the whole loop does, by loop_preserves",
+       sched_proof is not None)
+    _, with_loop, _ = compose(env, 'run',
+                              [(tick.lean_procedure, tick_proof),
+                               (sched.lean_procedure, sched_proof),
+                               (tick.lean_procedure, tick_proof)])
+    ok("a while-containing syscall composes with the rest",
+       'run' in readable(with_loop))
+    ran = normalize(App(Var('run'), started), env)
+    ok("the scheduler ran to the end",
+       normalize(app('Context.current', ran), env) == numeral(2))
+    ok("and the ticks add up",
+       normalize(app('Context.ticks', ran), env) == numeral(3))
+
+    @procedure(env=env, preserves='Context', verbose=False,
+               ensures=['result.ticks == result.ticks'])
+    def runaway(c: 'Context') -> 'Context':
+        while c.ticks < c.nthreads:
+            assert invariant(c.ticks <= c.nthreads)
+            assert variant(c.nthreads - c.ticks)
+            c.current = c.current + 1        # breaks current <= nthreads
+            c.ticks = c.ticks + 1
+        return c
+    refuses("a loop that breaks the state invariant is refused",
+            lambda: pass_by_cases(env, 'Context', runaway.lean_procedure,
+                                  verbose=False),
+            "neither hypothesis is the goal")
+
     refuses("a syscall that can break the invariant is refused",
             lambda: preserves_by_cases(env, 'Context',
                                        advance.lean_procedure, verbose=False),

@@ -271,24 +271,132 @@ def prelude(env=None):
                                     Var('b'))),
                              Var('p'))))))
 
-    # -- an array is a list of Nat: `len` and indexing are the two operations
-    # a contract ever mentions, and both are definable by recursion.
-    inductive(env, 'List', [('nil', []), ('cons', [NAT, REC])])
-    define(env, 'alen', arrow(Var('List'), NAT),
-           app('List.rec', Lambda('_', Var('List'), NAT), numeral(0),
-               Lambda('h', NAT, Lambda('t', Var('List'), Lambda('ih', NAT,
-                      App(Var('succ'), Var('ih')))))))
-    # out of range reads 0, so `aget` is total -- the bound is what the
-    # contract is *for*, not something the definition may assume.
-    define(env, 'aget', arrow(Var('List'), arrow(NAT, NAT)),
-           app('List.rec', Lambda('_', Var('List'), arrow(NAT, NAT)),
-               Lambda('i', NAT, numeral(0)),
-               Lambda('h', NAT, Lambda('t', Var('List'),
-                      Lambda('ih', arrow(NAT, NAT), Lambda('i', NAT,
-                             rec(NAT, NAT, Var('h'),
-                                 Lambda('i2', NAT, Lambda('_', NAT,
-                                        App(Var('ih'), Var('i2')))),
-                                 Var('i'))))))))
+    # -- lists, polymorphic in the element type -----------------------------
+    # It was `List Nat` and nothing else, which is fine until a string turns
+    # up.  A byte string is a list of Nat, and splitting one on a separator is
+    # a list of those -- `List (List Nat)` -- so the element type has to be a
+    # parameter.  `inductive()` already took params; the prelude just never
+    # asked for one.
+    inductive(env, 'List', [('nil', []), ('cons', [Var('A'), REC])],
+              params=[('A', TYPE0)])
+    listof = lambda ty: app('List', ty)
+
+    define(env, 'len', Pi('A', TYPE0, arrow(listof(Var('A')), NAT),
+                          implicit=True),
+           Lambda('A', TYPE0,
+                  app('List.rec', Var('A'),
+                      Lambda('_', listof(Var('A')), NAT), numeral(0),
+                      Lambda('h', Var('A'), Lambda('t', listof(Var('A')),
+                             Lambda('ih', NAT, App(Var('succ'), Var('ih'))))))))
+
+    # out of range reads the default, so `nth` is total -- the bound is what
+    # the contract is *for*, not something the definition may assume.
+    A = Var('A')
+    deep = rec(NAT, A, Var('h'),
+               Lambda('i2', NAT, Lambda('_', A, App(Var('ih'), Var('i2')))),
+               Var('i'))
+    step = Lambda('h', A, Lambda('t', listof(A),
+                  Lambda('ih', arrow(NAT, A), Lambda('i', NAT, deep))))
+    define(env, 'nth',
+           Pi('A', TYPE0,
+              arrow(A, arrow(listof(A), arrow(NAT, A))), implicit=True),
+           Lambda('A', TYPE0, Lambda('d', A,
+                  app('List.rec', A,
+                      Lambda('_', listof(A), arrow(NAT, A)),
+                      Lambda('i', NAT, Var('d')), step))))
+
+    define(env, 'head',
+           Pi('A', TYPE0, arrow(Var('A'), arrow(listof(Var('A')), Var('A'))),
+              implicit=True),
+           Lambda('A', TYPE0, Lambda('d', Var('A'),
+                  app('List.rec', Var('A'),
+                      Lambda('_', listof(Var('A')), Var('A')), Var('d'),
+                      Lambda('h', Var('A'), Lambda('t', listof(Var('A')),
+                             Lambda('_', Var('A'), Var('h'))))))))
+    define(env, 'tail',
+           Pi('A', TYPE0, arrow(listof(Var('A')), listof(Var('A'))),
+              implicit=True),
+           Lambda('A', TYPE0,
+                  app('List.rec', Var('A'),
+                      Lambda('_', listof(Var('A')), listof(Var('A'))),
+                      app('nil', Var('A')),
+                      Lambda('h', Var('A'), Lambda('t', listof(Var('A')),
+                             Lambda('_', listof(Var('A')), Var('t')))))))
+
+    # -- byte strings: List Nat, which is what a string is ------------------
+    bytes_ = listof(NAT)
+    strs = listof(bytes_)
+
+    # find: the index of the first occurrence, or the length if there is none
+    # -- which is exactly what `str.find` returning -1 means, without needing
+    # a negative number Nat does not have.
+    define(env, 'find', arrow(bytes_, arrow(NAT, NAT)),
+           Lambda('xs', bytes_, Lambda('sep', NAT,
+                  app('List.rec', NAT, Lambda('_', bytes_, NAT), numeral(0),
+                      Lambda('h', NAT, Lambda('t', bytes_, Lambda('ih', NAT,
+                             app('ite', NAT, app('eqb', Var('h'), Var('sep')),
+                                 numeral(0), App(Var('succ'), Var('ih')))))),
+                      Var('xs')))))
+    define(env, 'take', arrow(bytes_, arrow(NAT, bytes_)),
+           app('List.rec', NAT, Lambda('_', bytes_, arrow(NAT, bytes_)),
+               Lambda('n', NAT, app('nil', NAT)),
+               Lambda('h', NAT, Lambda('t', bytes_,
+                      Lambda('ih', arrow(NAT, bytes_), Lambda('n', NAT,
+                             rec(NAT, bytes_, app('nil', NAT),
+                                 Lambda('n2', NAT, Lambda('_', bytes_,
+                                        app('cons', NAT, Var('h'),
+                                            App(Var('ih'), Var('n2'))))),
+                                 Var('n'))))))))
+    define(env, 'drop', arrow(bytes_, arrow(NAT, bytes_)),
+           app('List.rec', NAT, Lambda('_', bytes_, arrow(NAT, bytes_)),
+               Lambda('n', NAT, app('nil', NAT)),
+               Lambda('h', NAT, Lambda('t', bytes_,
+                      Lambda('ih', arrow(NAT, bytes_), Lambda('n', NAT,
+                             rec(NAT, bytes_,
+                                 app('cons', NAT, Var('h'), Var('t')),
+                                 Lambda('n2', NAT, Lambda('_', bytes_,
+                                        App(Var('ih'), Var('n2')))),
+                                 Var('n'))))))))
+    define(env, 'eqs', arrow(bytes_, arrow(bytes_, BOOL)),
+           app('List.rec', NAT, Lambda('_', bytes_, arrow(bytes_, BOOL)),
+               Lambda('ys', bytes_,
+                      app('List.rec', NAT, Lambda('_', bytes_, BOOL),
+                          Var('true'),
+                          Lambda('h2', NAT, Lambda('t2', bytes_,
+                                 Lambda('_', BOOL, Var('false')))),
+                          Var('ys'))),
+               Lambda('h', NAT, Lambda('t', bytes_,
+                      Lambda('ih', arrow(bytes_, BOOL), Lambda('ys', bytes_,
+                             app('List.rec', NAT, Lambda('_', bytes_, BOOL),
+                                 Var('false'),
+                                 Lambda('h2', NAT, Lambda('t2', bytes_,
+                                        Lambda('_', BOOL,
+                                               app('andb',
+                                                   app('eqb', Var('h'),
+                                                       Var('h2')),
+                                                   App(Var('ih'),
+                                                       Var('t2')))))),
+                                 Var('ys'))))))))
+    # split: a right fold that starts with one empty segment and either opens
+    # a new one at a separator or pushes onto the one already open.
+    define(env, 'split', arrow(bytes_, arrow(NAT, strs)),
+           Lambda('xs', bytes_, Lambda('sep', NAT,
+                  app('List.rec', NAT, Lambda('_', bytes_, strs),
+                      app('cons', bytes_, app('nil', NAT), app('nil', bytes_)),
+                      Lambda('h', NAT, Lambda('t', bytes_,
+                             Lambda('ih', strs,
+                                    app('ite', strs,
+                                        app('eqb', Var('h'), Var('sep')),
+                                        app('cons', bytes_, app('nil', NAT),
+                                            Var('ih')),
+                                        app('cons', bytes_,
+                                            app('cons', NAT, Var('h'),
+                                                app('head', bytes_,
+                                                    app('nil', NAT),
+                                                    Var('ih'))),
+                                            app('tail', bytes_,
+                                                Var('ih'))))))),
+                      Var('xs')))))
 
     # -- records ------------------------------------------------------------
     # A single-constructor inductive is a record; what it lacks is names.  The
@@ -296,9 +404,9 @@ def prelude(env=None):
     # ten-field kernel context reads as `c.frames` rather than as a spine of
     # fst and snd through nine nested Prods.
     record(env, 'Context', [
-        ('frames', Var('List')),      # the frame table
-        ('queue', Var('List')),       # runnable thread ids, in order
-        ('schemes', Var('List')),     # scheme table: crustos/schemes.py
+        ('frames', app('List', NAT)),   # the frame table
+        ('queue', app('List', NAT)),    # runnable thread ids, in order
+        ('schemes', app('List', NAT)),  # scheme table: crustos/schemes.py
         ('current', NAT),             # index of the running thread
         ('nthreads', NAT),
         ('ticks', NAT),
@@ -312,21 +420,26 @@ def prelude(env=None):
 
 # ------------------------------------------------- types of the fragment
 
+BYTES = App(Var('List'), NAT)          # a string is a list of bytes
+STRS = App(Var('List'), BYTES)
+
 TYPE_NAMES = {'Nat': NAT, 'Bool': BOOL, 'int': NAT, 'bool': BOOL,
-              'List': Var('List'), 'Array': Var('List')}
+              'Array': BYTES, 'Bytes': BYTES, 'str': BYTES, 'Strs': STRS}
 
 # name -> ([argument types], result type), for calls the fragment understands
 SIGNATURES = {
     'add': ([NAT, NAT], NAT), 'mul': ([NAT, NAT], NAT),
     'sub': ([NAT, NAT], NAT), 'pred': ([NAT], NAT),
     'succ': ([NAT], NAT),
-    'alen': ([Var('List')], NAT), 'len': ([Var('List')], NAT),
-    'aget': ([Var('List'), NAT], NAT),
+    'find': ([BYTES, NAT], NAT), 'take': ([BYTES, NAT], BYTES),
+    'drop': ([BYTES, NAT], BYTES), 'eqs': ([BYTES, BYTES], BOOL),
+    'split': ([BYTES, NAT], STRS),
     'leb': ([NAT, NAT], BOOL), 'ltb': ([NAT, NAT], BOOL),
     'eqb': ([NAT, NAT], BOOL), 'dvdb': ([NAT, NAT], BOOL),
     'modb': ([NAT, NAT], NAT),
     'notb': ([BOOL], BOOL), 'andb': ([BOOL, BOOL], BOOL),
     'orb': ([BOOL, BOOL], BOOL),
+    'cons': ([NAT, BYTES], BYTES),
 }
 
 PRELUDE_ENV = None      # built below, once the tables above exist
@@ -335,6 +448,29 @@ BINOPS = {ast.Add: 'add', ast.Sub: 'sub', ast.Mult: 'mul', ast.Mod: 'modb'}
 COMPARES = {ast.Lt: ('ltb', False), ast.Gt: ('ltb', True),
             ast.LtE: ('leb', False), ast.GtE: ('leb', True),
             ast.Eq: ('eqb', False)}
+
+
+def element_type(list_type, node=None):
+    """The A in `List A`, or None if this is not a list type."""
+    head, args = L.spine(normalize(list_type, PRELUDE_ENV))
+    if isinstance(head, Var) and head.name == 'List' and len(args) == 1:
+        return args[0]
+    return None
+
+
+def default_for(ty):
+    """A value of ty, for a read that the contract has not yet ruled out.
+
+    Indexing is total here: out of range reads this rather than being
+    undefined.  The bound is what a contract is *for*; making the definition
+    assume it would be assuming the thing to be proved.
+    """
+    inner = element_type(ty)
+    if inner is not None:
+        return app('nil', inner)
+    if normalize(ty, PRELUDE_ENV) == BOOL:
+        return Var('false')
+    return numeral(0)
 
 
 def same_type(a, b):
@@ -356,8 +492,9 @@ class ImpToLean:
     nothing of Python.
     """
 
-    def __init__(self, where='<body>', signatures=None):
+    def __init__(self, where='<body>', signatures=None, env=None):
         self.where = where
+        self.env = env
         self.store = {}          # name -> kernel term
         self.types = {}          # name -> kernel type
         self.signatures = dict(SIGNATURES)
@@ -411,13 +548,20 @@ class ImpToLean:
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
             return BOOL     # of a Nat too: `not n` is `n = 0`
         if isinstance(node, ast.Subscript):
-            return NAT
+            inner = element_type(self.type_of_expr(node.value))
+            if inner is None:
+                self.fail(node, "this is not something that can be indexed")
+            return inner
         if isinstance(node, ast.Attribute):
             return self.field_of(node)[1]
         if isinstance(node, ast.IfExp):
             return self.type_of_expr(node.body)
         if isinstance(node, ast.Call):
             if isinstance(node.func, ast.Name):
+                if node.func.id in ('len', 'alen'):
+                    return NAT
+                if node.func.id == 'cons':
+                    return self.type_of_expr(node.args[1])
                 sig = self.signatures.get(node.func.id)
                 if sig:
                     return sig[1]
@@ -500,7 +644,12 @@ class ImpToLean:
                        self.expr(node.body), self.expr(node.orelse))
 
         if isinstance(node, ast.Subscript):
-            return app('aget', self.expr(node.value), self.expr(node.slice))
+            container = self.type_of_expr(node.value)
+            inner = element_type(container)
+            if inner is None:
+                self.fail(node, f"{readable(container)} cannot be indexed")
+            return app('nth', inner, default_for(inner),
+                       self.expr(node.value), self.expr(node.slice))
 
         if isinstance(node, ast.Attribute):
             record_name, _ = self.field_of(node)
@@ -512,6 +661,23 @@ class ImpToLean:
             if not isinstance(node.func, ast.Name):
                 self.fail(node, "only a plain name may be called")
             name = node.func.id
+            if name in ('len', 'alen'):
+                if len(node.args) != 1:
+                    self.fail(node, "len takes one argument")
+                container = self.type_of_expr(node.args[0])
+                inner = element_type(container)
+                if inner is None:
+                    self.fail(node, f"{readable(container)} has no length")
+                return app('len', inner, self.expr(node.args[0]))
+            if name == 'cons':
+                if len(node.args) != 2:
+                    self.fail(node, "cons takes an element and a list")
+                container = self.type_of_expr(node.args[1])
+                inner = element_type(container)
+                if inner is None:
+                    self.fail(node, f"cannot cons onto {readable(container)}")
+                return app('cons', inner, self.expr(node.args[0]),
+                           self.expr(node.args[1]))
             sig = self.signatures.get(name)
             if sig is None:
                 self.fail(node, f"'{name}' is not a function this fragment "
@@ -722,9 +888,10 @@ class ImpToLean:
         step_body = self.pack([self.store[n] for n in carried], types)
         self.store, self.types = outer_store, outer_types
 
-        folded = rec(NAT, acc_type, init,
-                     Lambda(index, NAT, Lambda(acc, acc_type, step_body)),
-                     bound)
+        folded = self.name_loop(
+            rec(NAT, acc_type, init,
+                Lambda(index, NAT, Lambda(acc, acc_type, step_body)), bound),
+            acc_type)
 
         self.bind(carried, types, acc_type, folded)
         return None
@@ -821,7 +988,7 @@ class ImpToLean:
 
         step = Lambda('_step', NAT, Lambda(
             acc, acc_type, app('ite', acc_type, guard, advanced, Var(acc))))
-        folded = rec(NAT, acc_type, init, step, fuel)
+        folded = self.name_loop(rec(NAT, acc_type, init, step, fuel), acc_type)
 
         # the state the rest of the function sees
         self.bind(carried, types, acc_type, folded)
@@ -837,6 +1004,12 @@ class ImpToLean:
         before_var = self.expr(var_node)
         before_cond = self.expr(stmt.test)
         self.block(body)
+        # one pass is worth a name too: without it the preservation and
+        # variant obligations restate the whole body four times over
+        one_pass = self.name_loop(
+            self.pack([self.store[n] for n in carried], types), acc_type,
+            stem='pass')
+        self.bind(carried, types, acc_type, one_pass)
         after_inv = self.expr(inv_node)
         after_var = self.expr(var_node)
         self.store, self.types = exit_store, exit_types
@@ -854,6 +1027,29 @@ class ImpToLean:
                   App(Var('Holds'), app('ltb', after_var, before_var))),
             symbolic_types)))
         return None
+
+    def name_loop(self, term, result_type, stem='loop'):
+        r"""Give a loop's fold a name, and use the name from then on.
+
+        A fold inlined into a goal is unreadable at any size worth checking:
+        `schedule`'s postcondition printed as six hundred characters with the
+        same `Nat.rec` in it twice, and a goal nobody can read is a goal
+        nobody can tell is the wrong one.  The name is a definition, so it
+        unfolds by delta whenever anything needs to compute -- this costs
+        nothing but the reader's ability to see what was written.
+        """
+        if self.env is None:
+            return term
+        live = [n for n in self.types if n in L.free_names(term)]
+        declared, value = result_type, term
+        for name in reversed(live):
+            declared = Pi(name, self.types[name], declared)
+            value = Lambda(name, self.types[name], value)
+        base, index = f'{self.where}.{stem}', 1
+        while f'{base}{index}' in self.env:
+            index += 1
+        define(self.env, f'{base}{index}', declared, value)
+        return app(f'{base}{index}', *[Var(n) for n in live])
 
     def close(self, goal, types):
         """Quantify over every free name the obligation still mentions."""
@@ -918,7 +1114,8 @@ class Procedure:
         return f"<procedure {self.name} : {readable(self.obligation)}>"
 
 
-def read_procedure(func, env=None, signatures=None, ensures=()):
+def read_procedure(func, env=None, signatures=None, ensures=(),
+                   define_as=None, preserves=None):
     r"""Compile a Python function into a term, a contract, and an obligation.
 
     Leading `assert` statements are the precondition, in the spelling
@@ -946,7 +1143,7 @@ def read_procedure(func, env=None, signatures=None, ensures=()):
     if not isinstance(tree, ast.FunctionDef):
         raise ContractError(f"{func.__name__} is not a function definition")
 
-    reader = ImpToLean(where=tree.name, signatures=signatures)
+    reader = ImpToLean(where=tree.name, signatures=signatures, env=env)
     args = tree.args.posonlyargs + tree.args.args
     if tree.args.vararg or tree.args.kwarg or tree.args.kwonlyargs:
         raise ContractError(f"{tree.name}: *args and **kwargs have no meaning "
@@ -985,20 +1182,46 @@ def read_procedure(func, env=None, signatures=None, ensures=()):
     result_type = (reader.read_type(tree.returns, 'the return annotation')
                    if tree.returns is not None else NAT)
 
-    # the postcondition is read in a scope where `result` is the body
+    # The function is declared before its contract is stated, so that the
+    # postcondition can say `schedule(c)` rather than inlining the fold.  It
+    # is a definition, so the two are the same term to the kernel and only
+    # different to the reader.
+    fn_type = result_type
+    for name, ty in reversed(params):
+        fn_type = Pi(name, ty, fn_type)
+    fn_term = term
+    for name, ty in reversed(params):
+        fn_term = Lambda(name, ty, fn_term)
+    actual = type_check(env, fn_term)
+    if not L.definitionally_equal(fn_type, actual, env):
+        raise ContractError(f"{tree.name}: the body has type "
+                            f"{readable(actual)}, not the declared "
+                            f"{readable(fn_type)}")
+    declared_as, index = define_as or tree.name, 1
+    while declared_as in env:
+        index += 1
+        declared_as = f"{define_as or tree.name}{index}"
+    define(env, declared_as, fn_type, fn_term)
+    applied = app(declared_as, *[Var(n) for n, _ in params])
+
+    # the postcondition is read in a scope where `result` is that call
     post = []
     for clause in ensures:
         node = ast.parse(clause, mode='eval').body
         saved_store, saved_types = dict(reader.store), dict(reader.types)
         reader.store = {n: Var(n) for n, _ in params}
         reader.types = {n: t for n, t in params}
-        reader.store['result'] = term
+        reader.store['result'] = applied
         reader.types['result'] = result_type
         if not same_type(reader.type_of_expr(node), BOOL):
             raise ContractError(f"{tree.name}: the postcondition {clause!r} "
                                 f"is not decidable (Bool)")
         post.append(reader.expr(node))
         reader.store, reader.types = saved_store, saved_types
+
+    # a procedure that preserves the state invariant may assume it going in
+    if preserves:
+        pre.insert(0, App(Var(f'{preserves}.invariant'), Var(params[0][0])))
 
     # {P} c {Q}  ==  forall params, Holds P -> ... -> Holds Q.
     # Several postconditions are one Bool joined by `andb`, not several Pis:
@@ -1015,30 +1238,30 @@ def read_procedure(func, env=None, signatures=None, ensures=()):
     for name, ty in reversed(params):
         goal = Pi(name, ty, goal)
 
-    # the body must be a well-formed term of the declared type before any of
-    # this means anything: state the function, then check it
-    fn_type = result_type
-    for name, ty in reversed(params):
-        fn_type = Pi(name, ty, fn_type)
-    fn_term = term
-    for name, ty in reversed(params):
-        fn_term = Lambda(name, ty, fn_term)
-    actual = type_check(env, fn_term)
-    if not L.definitionally_equal(fn_type, actual, env):
-        raise ContractError(f"{tree.name}: the body has type "
-                            f"{readable(actual)}, not the declared "
-                            f"{readable(fn_type)}")
     type_check(env, goal)
 
     for label, extra in reader.obligations:
         type_check(env, extra)
+    preservation = subject = None
+    if preserves:
+        if not same_type(result_type, Var(preserves)):
+            raise ContractError(f"{tree.name} claims to preserve {preserves} "
+                                f"but does not return one")
+        preservation, subject = preservation_goal(env, preserves, declared_as,
+                                                  params)
+        type_check(env, preservation)
     proc = Procedure(tree.name, params, result_type, term, pre, post, goal,
                      reader.obligations)
     proc.fn_term, proc.fn_type = fn_term, fn_type
+    proc.declared_as = declared_as
+    proc.preserves = preserves
+    proc.preservation = preservation
+    proc.preservation_subject = subject
     return proc
 
 
-def procedure(env=None, ensures=(), signatures=None, verbose=True, define_as=None):
+def procedure(env=None, ensures=(), signatures=None, verbose=True,
+              define_as=None, preserves=None):
     r"""Read a Python body as a term and state its contract as a proposition.
 
         @procedure(ensures=['result == add(n, n)'])
@@ -1053,17 +1276,18 @@ def procedure(env=None, ensures=(), signatures=None, verbose=True, define_as=Non
     """
     def decorator(func):
         scope = PRELUDE_ENV if env is None else env
-        proc = read_procedure(func, scope, signatures, ensures)
-        if define_as or proc.name not in scope:
-            define(scope, define_as or proc.name, proc.fn_type, proc.fn_term)
+        proc = read_procedure(func, scope, signatures, ensures, define_as,
+                              preserves)
         func.lean_procedure = proc
         func.lean_term = proc.body
         func.lean_obligation = proc.obligation
         if verbose:
-            print(f"read {proc.name} : {readable(proc.fn_type)}")
+            print(f"read {proc.declared_as} : {readable(proc.fn_type)}")
             print(f"  obligation: {readable(proc.obligation)}")
             for label, extra in proc.loop_obligations:
                 print(f"  loop obligation ({label}): {readable(extra)}")
+            if proc.preservation is not None:
+                print(f"  preserves: {readable(proc.preservation)}")
         return func
     return decorator
 
@@ -1143,12 +1367,148 @@ def prove(goal, term, env=None, verbose=True):
     return checked
 
 
-def array(values):
-    """A concrete Array, as the List the prelude defines."""
-    out = Var('nil')
+def loop_body(proc, env=None, which=1):
+    """The term a named loop stands for, for when you do want to see it."""
+    env = PRELUDE_ENV if env is None else env
+    return L.value_of(env, f'{proc.name}.loop{which}')
+
+
+def array(values, element=None):
+    """A concrete list.  Ints become Nat; anything else is taken as a term."""
+    element = NAT if element is None else element
+    out = app('nil', element)
     for v in reversed(values):
-        out = app('cons', numeral(v), out)
+        item = numeral(v) if isinstance(v, int) else v
+        out = app('cons', element, item, out)
     return out
+
+
+def text(value):
+    """A byte string, from Python bytes or str."""
+    raw = value.encode() if isinstance(value, str) else value
+    return array(list(raw))
+
+
+def texts(values):
+    """A list of byte strings: the scheme table, for instance."""
+    return array([text(v) for v in values], element=BYTES)
+
+
+# ------------------------------------------------------- a global invariant
+
+def state_invariant(env, record_name, source, param='c'):
+    r"""State once what every syscall must keep true of the kernel context.
+
+        state_invariant(env, 'Context',
+                        'c.current <= c.nthreads and c.nthreads <= len(c.queue)')
+
+    This is the seL4 shape: not a property of one operation but of the state,
+    with each operation obliged to hand it on.  It is a definition rather than
+    something the decorator remembers in Python, so the obligations below are
+    about a term the kernel can unfold.
+    """
+    reader = ImpToLean(where=f'{record_name}.invariant', env=env)
+    reader.store[param] = Var(param)
+    reader.types[param] = Var(record_name)
+    node = ast.parse(source, mode='eval').body
+    if not same_type(reader.type_of_expr(node), BOOL):
+        raise ContractError("a state invariant must be decidable (Bool)")
+    term = reader.expr(node)
+    name = f'{record_name}.invariant'
+    define(env, name, arrow(Var(record_name), BOOL),
+           Lambda(param, Var(record_name), term))
+    return Var(name)
+
+
+def preservation_goal(env, record_name, callee, params):
+    """forall c, Holds (I c) -> Holds (I (callee c))."""
+    inv = f'{record_name}.invariant'
+    if len(params) != 1 or not same_type(params[0][1], Var(record_name)):
+        raise ContractError(
+            f"a procedure that preserves {record_name} takes exactly one "
+            f"argument, the {record_name} it hands on")
+    subject = params[0][0]
+    goal = Pi(subject, Var(record_name),
+              arrow(App(Var('Holds'), App(Var(inv), Var(subject))),
+                    App(Var('Holds'),
+                        App(Var(inv), App(Var(callee), Var(subject))))))
+    return goal, subject
+
+
+def preserves_by_cases(env, record_name, proc, verbose=True):
+    r"""Prove preservation when the operation does not touch the invariant.
+
+    A projection of an update is stuck on a variable -- `Context.current
+    (Context.with_ticks c v)` cannot reduce, because until `c` is known to be
+    built by the constructor there is nothing for iota to fire on.  So even an
+    operation that plainly leaves a field alone has nothing to compute with.
+    `Record.ind` supplies the missing step: one constructor, so one case, and
+    inside it every projection fires.
+
+    Where the invariant then reads identically on both sides, the proof of the
+    case is the hypothesis itself.  Where it does not, this refuses, and the
+    operation needs a real argument rather than a convenient one.
+    """
+    inv = f'{record_name}.invariant'
+    fields = RECORDS[record_name]
+    subject = proc.preservation_subject
+    holds = lambda c: App(Var('Holds'), App(Var(inv), c))
+
+    motive = Lambda(subject, Var(record_name),
+                    arrow(holds(Var(subject)),
+                          holds(App(Var(proc.declared_as), Var(subject)))))
+    built = app(f'{record_name}.mk',
+                *[Var(f'f{i}') for i in range(len(fields))])
+    case = Lambda('h', holds(built), Var('h'))
+    for i in reversed(range(len(fields))):
+        case = Lambda(f'f{i}', fields[i][1], case)
+    term = Lambda(subject, Var(record_name),
+                  app(f'{record_name}.ind', motive, case, Var(subject)))
+    try:
+        return prove(proc.preservation, term, env, verbose=verbose)
+    except KernelError:
+        raise TheoremError(
+            f"{proc.declared_as} changes what the {record_name} invariant "
+            f"reads, so the hypothesis going in is not a proof of the "
+            f"conclusion coming out. This one needs a real argument: prove "
+            f"{readable(proc.preservation)} and pass it to compose().")
+
+
+def compose(env, name, steps, record_name='Context', param='c'):
+    r"""Chain syscalls, and chain their preservation proofs with them.
+
+        compose(env, 'boot', [(tick, tick_proof), (note, note_proof)])
+
+    The composite's proof is not a new argument.  If f hands the invariant on
+    and g hands it on, then g after f hands it on, and the term that says so
+    is just the two proofs applied in turn -- which is the point of stating
+    the invariant about the state rather than about an operation.  The kernel
+    checks the chain; nothing here is taken on trust.
+    """
+    inv = f'{record_name}.invariant'
+    body = Var(param)
+    for proc, _ in steps:
+        if len(proc.params) != 1:
+            raise ContractError(f"{proc.declared_as} takes more than the "
+                                f"context, so it cannot be chained")
+        body = App(Var(proc.declared_as), body)
+    define(env, name, arrow(Var(record_name), Var(record_name)),
+           Lambda(param, Var(record_name), body))
+
+    goal = Pi(param, Var(record_name),
+              arrow(App(Var('Holds'), App(Var(inv), Var(param))),
+                    App(Var('Holds'),
+                        App(Var(inv), App(Var(name), Var(param))))))
+
+    state, carried = Var(param), Var('h')
+    for proc, proof in steps:
+        carried = App(App(proof, state), carried)
+        state = App(Var(proc.declared_as), state)
+    term = Lambda(param, Var(record_name),
+                  Lambda('h', App(Var('Holds'), App(Var(inv), Var(param))),
+                         carried))
+    checked = prove(goal, term, env, verbose=False)
+    return Var(name), goal, checked
 
 
 # --------------------------------------------- the bridge to crust contracts
@@ -1166,7 +1526,7 @@ def from_crust(bounds, param='ptr'):
     pass that *omits* a check say what it proved to do so.
     """
     clauses = []
-    length = app('alen', Var(param))
+    length = app('len', NAT, Var(param))
     for key, value in sorted(bounds.items()):
         if key == 'len>=':
             clauses.append(app('leb', numeral(value), length))
@@ -1234,10 +1594,12 @@ def selftest():
     computes("modb exact", app('modb', numeral(16), numeral(4)), numeral(0))
     computes("dvdb yes", app('dvdb', numeral(4), numeral(64)), T)
     computes("dvdb no", app('dvdb', numeral(4), numeral(70)), F)
-    computes("alen", app('alen', array([5, 6, 7])), numeral(3))
-    computes("aget", app('aget', array([5, 6, 7]), numeral(1)), numeral(6))
-    computes("aget past the end reads 0",
-             app('aget', array([5, 6, 7]), numeral(9)), numeral(0))
+    computes("len", app('len', NAT, array([5, 6, 7])), numeral(3))
+    computes("nth", app('nth', NAT, numeral(0), array([5, 6, 7]), numeral(1)),
+             numeral(6))
+    computes("nth past the end reads the default",
+             app('nth', NAT, numeral(0), array([5, 6, 7]), numeral(9)),
+             numeral(0))
     pair = app('mk', NAT, NAT, numeral(1), numeral(2))
     computes("fst", app('fst', NAT, NAT, pair), numeral(1))
     computes("snd", app('snd', NAT, NAT, pair), numeral(2))
@@ -1256,7 +1618,9 @@ def selftest():
             v = v + n
         return v
     ok("a loop lowers to Nat.rec",
-       'Nat.rec' in readable(double.lean_procedure.body))
+       'Nat.rec' in readable(loop_body(double.lean_procedure, env)))
+    ok("and the body refers to it by name",
+       'double.loop1' in readable(double.lean_procedure.body))
     ok("double 5 = 10",
        normalize(App(double.lean_procedure.fn_term, numeral(5)), env)
        == numeral(10))
@@ -1285,7 +1649,7 @@ def selftest():
             c = c + 1
         return s
     ok("two loop-carried variables use a Prod",
-       'mk' in readable(two_carried.lean_procedure.body))
+       'mk' in readable(loop_body(two_carried.lean_procedure, env)))
     ok("0+1+2+3+4 = 10", discharge(two_carried.lean_procedure, env,
                                    verbose=False) is not None)
 
@@ -1347,7 +1711,8 @@ def selftest():
     # -- the refusals, which are the deliverable ----------------------------
     def read(src, **kw):
         return read_procedure(src, env, None,
-                              kw.get('ensures', ['result == 0']))
+                              kw.get('ensures', ['result == 0']),
+                              preserves=kw.get('preserves'))
 
     refuses("return inside a loop is refused", lambda: read('''
         def f(n: 'Nat') -> 'Nat':
@@ -1418,13 +1783,13 @@ def selftest():
     computes("a projection", app('Context.ticks', ctx), numeral(7))
     computes("another projection", app('Context.current', ctx), numeral(1))
     computes("a list-valued field",
-             app('alen', app('Context.schemes', ctx)), numeral(1))
+             app('len', NAT, app('Context.schemes', ctx)), numeral(1))
     updated = app('Context.with_ticks', ctx, numeral(99))
     computes("an update takes", app('Context.ticks', updated), numeral(99))
     computes("an update leaves the other fields alone",
              app('Context.current', updated), numeral(1))
     computes("and the list fields too",
-             app('alen', app('Context.frames', updated)), numeral(2))
+             app('len', NAT, app('Context.frames', updated)), numeral(2))
 
     @procedure(env=env, ensures=['result.ticks == add(c.ticks, 1)'],
                verbose=False)
@@ -1460,9 +1825,11 @@ def selftest():
             c.current = c.current + 1
             c.ticks = c.ticks + 1
         return c
+    inner = readable(loop_body(schedule.lean_procedure, env))
     ok("a while loop lowers to a guarded fold",
-       'ite' in readable(schedule.lean_procedure.body)
-       and 'Nat.rec' in readable(schedule.lean_procedure.body))
+       'ite' in inner and 'Nat.rec' in inner)
+    ok("the obligation reads in terms of the call, not the fold",
+       'Nat.rec' not in readable(schedule.lean_procedure.obligation))
     labels = [label for label, _ in schedule.lean_procedure.loop_obligations]
     ok("it raises all four obligations",
        labels == ['progress', 'invariant holds on entry',
@@ -1524,30 +1891,131 @@ def selftest():
             return v
         """), "a variant must be a Nat")
 
-    # -- crustos: scheme_of, whose control flow this now reaches ------------
-    @procedure(env=env, ensures=['result <= len(table)'], verbose=False)
-    def scheme_of(table: 'Array', head: 'Nat') -> 'Nat':
+    # -- byte strings -------------------------------------------------------
+    url = text("file:/etc/passwd")
+    computes("find a separator", app('find', url, numeral(58)), numeral(4))
+    computes("find, when absent, gives the length",
+             app('find', text("abc"), numeral(58)), numeral(3))
+    computes("take", app('take', url, numeral(4)), text("file"))
+    computes("drop", app('drop', url, numeral(5)), text("/etc/passwd"))
+    computes("string equality", app('eqs', text("file"), text("file")), T)
+    computes("string inequality", app('eqs', text("file"), text("pipe")), F)
+    computes("and on a prefix, which is not equality",
+             app('eqs', text("fil"), text("file")), F)
+    parts = app('split', text("a,bb,ccc"), numeral(44))
+    computes("split counts the segments",
+             app('len', BYTES, parts), numeral(3))
+    computes("split keeps the first",
+             app('nth', BYTES, app('nil', NAT), parts, numeral(0)),
+             text("a"))
+    computes("split keeps the last",
+             app('nth', BYTES, app('nil', NAT), parts, numeral(2)),
+             text("ccc"))
+    computes("splitting nothing still gives one segment",
+             app('len', BYTES, app('split', text(""), numeral(44))),
+             numeral(1))
+
+    # -- crustos/schemes.py, with its own routing ---------------------------
+    names = texts(["sys", "memory", "file", "pipe", "irq", "debug", "gpu"])
+
+    @procedure(env=env, ensures=['result <= len(names)'], verbose=False)
+    def scheme_of(names: 'Strs', url: 'Bytes') -> 'Nat':
+        idx = find(url, 58)                  # ord(':')
+        head = take(url, idx)
         i = 0
-        found = len(table)
-        while i < len(table):
-            assert invariant(i <= len(table))
-            assert variant(len(table) - i)
-            if table[i] == head and found == len(table):
+        found = len(names)                   # stands in for SCHEME_NONE
+        while i < len(names):
+            assert invariant(i <= len(names))
+            assert variant(len(names) - i)
+            if eqs(names[i], head) and found == len(names):
                 found = i
             i = i + 1
         return found
-    names = array([11, 22, 33, 44])           # stands in for _NAMES
-    def lookup(key):
-        return normalize(L.instantiate(L.abstract(L.instantiate(L.abstract(
-            scheme_of.lean_procedure.body, 'head'), numeral(key)),
-            'table'), names), env)
-    ok("scheme_of finds the first entry", lookup(11) == numeral(0))
-    ok("scheme_of finds a later entry", lookup(33) == numeral(2))
-    ok("an unregistered scheme returns the sentinel",
-       lookup(99) == numeral(4))
-    ok("the returned index never leaves the table",
-       discharge(at(scheme_of.lean_procedure, names, numeral(99)), env,
+
+    @procedure(env=env, ensures=['len(result) <= len(url)'], verbose=False)
+    def path_of(url: 'Bytes') -> 'Bytes':
+        idx = find(url, 58)
+        if idx < len(url):
+            out = drop(url, idx + 1)
+        else:
+            out = url                        # no colon: the whole thing
+        return out
+
+    def routed(u):
+        return normalize(app('scheme_of', names, text(u)), env)
+    ok("sys: routes to 0", routed("sys:boot") == numeral(0))
+    ok("file: routes to 2", routed("file:/etc/passwd") == numeral(2))
+    ok("gpu: routes to 6", routed("gpu:0") == numeral(6))
+    ok("an unregistered scheme gets the sentinel",
+       routed("nope:/x") == numeral(7))
+    ok("so does a url with no scheme at all",
+       routed("/etc/passwd") == numeral(7))
+    ok("a prefix of a scheme name does not route",
+       routed("fil:/x") == numeral(7))
+    ok("the index never leaves the scheme table",
+       discharge(at(scheme_of.lean_procedure, names, text("nope:/x")), env,
                  verbose=False) is not None)
+    ok("path_of strips the scheme",
+       normalize(app('path_of', text("file:/etc/passwd")), env)
+       == text("/etc/passwd"))
+    ok("and keeps a url that has none",
+       normalize(app('path_of', text("/etc/passwd")), env)
+       == text("/etc/passwd"))
+    ok("the path never grows",
+       discharge(at(path_of.lean_procedure, text("file:/etc/passwd")), env,
+                 verbose=False) is not None)
+
+    # -- one invariant, threaded through a sequence of syscalls -------------
+    state_invariant(env, 'Context', 'c.current <= c.nthreads')
+
+    @procedure(env=env, preserves='Context', verbose=False,
+               ensures=['result.ticks == add(c.ticks, 1)'])
+    def tick(c: 'Context') -> 'Context':
+        c.ticks = c.ticks + 1
+        return c
+
+    @procedure(env=env, preserves='Context', verbose=False,
+               ensures=['len(result.queue) == add(len(c.queue), 1)'])
+    def enqueue(c: 'Context') -> 'Context':
+        c.queue = cons(0, c.queue)
+        return c
+
+    ok("preservation is stated as an obligation",
+       'Context.invariant' in readable(tick.lean_procedure.preservation))
+    tick_proof = preserves_by_cases(env, 'Context', tick.lean_procedure,
+                                    verbose=False)
+    enqueue_proof = preserves_by_cases(env, 'Context',
+                                       enqueue.lean_procedure, verbose=False)
+    ok("tick hands the invariant on", tick_proof is not None)
+    ok("so does enqueue", enqueue_proof is not None)
+    _, chained, _ = compose(env, 'boot',
+                            [(tick.lean_procedure, tick_proof),
+                             (enqueue.lean_procedure, enqueue_proof),
+                             (tick.lean_procedure, tick_proof)])
+    ok("and the sequence does, by chaining their proofs",
+       'boot' in readable(chained))
+    started = app('Context.mk', array([9]), array([0]), array([]),
+                  numeral(1), numeral(2), numeral(0))
+    booted = normalize(App(Var('boot'), started), env)
+    ok("the sequence actually ran",
+       normalize(app('Context.ticks', booted), env) == numeral(2))
+    ok("all of it",
+       normalize(app('len', NAT, app('Context.queue', booted)), env)
+       == numeral(2))
+
+    @procedure(env=env, preserves='Context', verbose=False,
+               ensures=['result.current == add(c.current, 1)'])
+    def advance(c: 'Context') -> 'Context':
+        c.current = c.current + 1            # can run past nthreads
+        return c
+    refuses("a syscall that can break the invariant is refused",
+            lambda: preserves_by_cases(env, 'Context',
+                                       advance.lean_procedure, verbose=False),
+            "changes what the Context invariant reads")
+    refuses("and one that does not return a context", lambda: read("""
+        def f(c: 'Context') -> 'Nat':
+            return c.ticks
+        """, preserves='Context'), "does not return one")
 
     # -- the bridge to crust ------------------------------------------------
     prop = from_crust({'len>=': 64, 'div-by': 4}, 'ptr')

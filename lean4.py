@@ -1533,6 +1533,7 @@ def elaborate(env, term, expected=None):
 # over its output.
 #
 #   \forall x : A, B      \forall x \in A, B      dependent function type
+#   \lambda x : A, b                              a function
 #   A \to B                                       ordinary function type
 #   f x                                           application, by juxtaposition
 #   a = b                                         equality, elaborated to Eq
@@ -1546,6 +1547,7 @@ TYPE_ALIASES = {
     'N': 'Nat', 'mathbb{N}': 'Nat', 'R': 'Real', 'B': 'Bool',
 }
 FORALL = (r'\forall', r'\Pi', r'\prod')
+LAMBDA = (r'\lambda', r'\fun')
 ARROW = (r'\to', r'\rightarrow', r'\longrightarrow', r'\Rightarrow')
 COLON = (':', r'\in', r'\colon')
 
@@ -1605,10 +1607,19 @@ class LatexTypeParser:
 
     def expression(self):
         if self.peek() in FORALL:
-            return self.forall()
+            return self.binder(Pi)
+        if self.peek() in LAMBDA:
+            return self.binder(Lambda)
         return self.equality()
 
-    def forall(self):
+    def binder(self, kind):
+        r"""\forall x \in A, B and \lambda x : A, b are one shape twice.
+
+        A lambda is not a type, so a statement that is one denotes no
+        proposition -- but a type may contain one (a recursor's motive is a
+        lambda), and until this read it there were terms the kernel checks
+        that the statement language could not write down.
+        """
         self.next()
         opener = self.peek() if self.peek() in ('(', r'\{') else None
         implicit = opener == r'\{'
@@ -1629,7 +1640,7 @@ class LatexTypeParser:
             self.scope.pop(name, None)
         else:
             self.scope[name] = outer
-        return Pi(name, domain, body, implicit=implicit)
+        return kind(name, domain, body, implicit=implicit)
 
     def equality(self):
         left = self.arrow_type()
@@ -1666,7 +1677,7 @@ class LatexTypeParser:
             if t is None or t in ARROW or t in COLON \
                     or t in (',', ')', '}', '=', r'\}'):
                 return expr
-            if t in FORALL:
+            if t in FORALL or t in LAMBDA:
                 return expr
             expr = App(expr, self.atom())
 
@@ -1678,6 +1689,12 @@ class LatexTypeParser:
             inner = self.expression()
             self.expect(')')
             return inner
+        if t in FORALL or t in LAMBDA:
+            # a binder's body runs to the end, so one starting here can only
+            # have been meant to stop somewhere -- and saying so beats reading
+            # \forall as a variable named forall, which is what used to happen
+            raise KernelError(f"{t} starts a binder, which needs parentheses "
+                              f"in this position")
         if t in (r'\text', r'\mathrm', r'\mathbb', r'\mathbf', r'\texttt'):
             return self.named(self.braced())
         if t.startswith('\\'):
@@ -1754,7 +1771,7 @@ P_EXPR, P_ARROW, P_APP, P_ATOM = 0, 1, 2, 3
 
 
 class LatexPrinter:
-    r"""A kernel type -> the LaTeX subset LatexTypeParser reads."""
+    r"""A kernel term -> the LaTeX subset LatexTypeParser reads."""
 
     def __init__(self):
         self.scope = {}                       # name -> domain, as the parser's
@@ -1802,22 +1819,21 @@ class LatexPrinter:
         if isinstance(expr, Meta):
             self.refuse(f'?{expr.hint}{expr.index} is a hole; '
                         f'elaborate before writing')
-        if isinstance(expr, Lambda):
-            self.refuse('the subset states types; a lambda is a term')
-        if isinstance(expr, Pi):
-            return self.pi(expr, ctx)
+        if isinstance(expr, Binder):
+            return self.binder(expr, ctx)
         if isinstance(expr, App):
             return self.app(expr, ctx)
         self.refuse(f'unknown node {type(expr).__name__}')
 
-    def pi(self, expr, ctx):
-        """A -> B when nothing depends on the argument, \\forall otherwise.
+    def binder(self, expr, ctx):
+        """A -> B when nothing depends on the argument, a binder otherwise.
 
         Descending instantiates the binder with a named variable, so the body
         below is in exactly the form the parser builds before Pi() abstracts
         it -- which is what lets scope be compared without shifting anything.
         """
-        if not expr.implicit and not occurs(expr.body, 0):
+        pi = isinstance(expr, Pi)
+        if pi and not expr.implicit and not occurs(expr.body, 0):
             dom = self.write(expr.var_type, P_APP)      # left is application()
             body = self.write(instantiate(expr.body, Var('_')), P_ARROW)
             return self.wrap(rf'{dom} \to {body}', P_ARROW, ctx)
@@ -1830,8 +1846,14 @@ class LatexPrinter:
             self.scope.pop(name, None)
         else:
             self.scope[name] = outer
-        head = (rf'\forall \{{{name} : {dom}\}}' if expr.implicit
-                else rf'\forall {name} \in {dom}')
+        # \in for a Pi, since a statement reads "for every x in Nat"; a colon
+        # for a lambda, since that binder ascribes a type rather than ranging
+        # over one.  The reader takes either for both.
+        head = r'\forall' if pi else r'\lambda'
+        if expr.implicit:
+            head += rf' \{{{name} : {dom}\}}'
+        else:
+            head += rf' {name} \in {dom}' if pi else rf' {name} : {dom}'
         return self.wrap(f'{head}, {body}', P_EXPR, ctx)
 
     def app(self, expr, ctx):
@@ -1864,7 +1886,7 @@ class LatexPrinter:
 
 
 def type2latex(expr):
-    r"""A kernel type -> the LaTeX statement that denotes it."""
+    r"""A kernel term -> the LaTeX statement that denotes it."""
     return LatexPrinter().write(expr)
 
 
@@ -2504,9 +2526,29 @@ def selftest():
     check('and it does when the binder agrees',
           type2latex(Pi('x', Var('Nat'), _eq(Var('Nat'), Var('x'), Var('x'))))
           == r'\forall x \in \text{Nat}, x = x')
-    check('a lambda is refused: the subset states types',
-          raises(lambda: type2latex(Lambda('x', Var('Nat'), Var('x'))),
-                 'a lambda is a term'))
+    check('a lambda round-trips, in both directions',
+          type2latex(Lambda('x', Var('Nat'), Var('x')))
+          == r'\lambda x : \text{Nat}, x'
+          and latex2type(r'\lambda x : \text{Nat}, x')
+          == Lambda('x', Var('Nat'), Var('x')))
+    motive = App(App(Var('Nat.rec'),
+                     Lambda('_', Var('Nat'), arrow(Var('S'), Var('S')))),
+                 Lambda('s', Var('S'), Var('s')))
+    check('a motive passed to a recursor needs parentheses, and gets them',
+          type2latex(motive)
+          == r'\text{Nat.rec} (\lambda x : \text{Nat}, S \to S)'
+             r' (\lambda s : S, s)'
+          and latex2type(type2latex(motive)) == motive)
+    check("a lambda's body runs to the end, and binds for the = it contains",
+          latex2type(r'\lambda x : \text{Nat}, x = x')
+          == Lambda('x', Var('Nat'), _eq(Var('Nat'), Var('x'), Var('x'))))
+    check('a bare binder where an atom belongs is refused, not read as a name',
+          raises(lambda: latex2type(r'\text{Nat} \to \forall x \in \text{Nat}, x'),
+                 'needs parentheses'))
+    check('every value in the environment reads back, lambdas and all',
+          all(latex2type(type2latex(value_of(GLOBAL_ENV, n)))
+              == value_of(GLOBAL_ENV, n)
+              for n in GLOBAL_ENV if value_of(GLOBAL_ENV, n) is not None))
     check('a hole is refused rather than invented',
           raises(lambda: type2latex(latex2type('x = x')), 'is a hole'))
     check('Type 1 is refused, since the reader knows only Prop and Type',

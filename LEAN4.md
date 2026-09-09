@@ -6,6 +6,7 @@ imperative language built on it, used to model an seL4-style OS kernel.
 ```sh
 python3 lean4.py --selftest    # 153 checks
 python3 hoare.py               # 153 checks
+python3 crustproof.py          #  21 checks, incl. the differential test
 ```
 
 The environment `hoare.py` builds has 91 declarations: 7 inductive families,
@@ -342,13 +343,53 @@ termination and not for the result. The proof:
 
 ---
 
-## 8. What is not done
+## 8. Integration with Crust
 
-*   **No `crust` pass consumes a proof yet.** `from_crust` reads
-    `extensions.py`'s bound dicts as propositions, but `memsafe_elide.py` does
-    not ask for one. `scheme_of`'s bound is exactly the fact that would license
-    omitting its check, and that is the shortest path to a proof changing
-    generated code.
+`crustproof.py` turns a Crust contract into a term of the calculus of
+constructions. `{'len>=': 64, 'div-by': 4}` becomes `andb (dvdb 4 n)
+(leb 64 n)` of type `Nat -> Bool`; at a known length it reduces, and when it
+reduces to `true` a proof term is built and type-checked.
+
+```python
+>>> check(70, {'len>=': 64, 'div-by': 4})
+not proved: andb(dvdb(4)(70))(leb(64)(70)) at length 70 computes to false
+```
+
+**What the differential test found.** Crust's two consumers read one contract
+two ways. `simd_contracts._satisfies` conjoins every clause;
+`contracts._violates` returned on the first clause present. For
+`{'len>=': 64, 'div-by': 4}` -- the contract in `SIMD_CONTRACTS.md` -- a length
+of 70 clears `len>=`, so the `div-by` was never looked at: the call compiled,
+while `simd_contracts` correctly refused to prove it and kept the scalar tail.
+The pass that reports errors was the lenient one. Across a grid of six contracts
+and 130 lengths, 110 of 780 cases differed, all of them multi-clause.
+
+The fix is one reading, in `shivyc/proofs.py`, which both passes now call, and
+which raises on a clause it cannot read rather than skipping it. The diagnostic
+also names the clause the length *actually* breaks, which the first-clause
+reading could not do. Crust's own suite gained four tests, and `crustproof.py`
+keeps the two in step: it asserts the kernel agrees with both passes on every
+case, and pins the old reading as a regression.
+
+**Certification is opt-in.** `CRUST_PROOFS=1` makes `shivyc/proofs.py` ask the
+kernel and compare, raising if the two disagree rather than picking a winner.
+It is off by default for a reason worth stating: the kernel's numerals are
+unary, so settling a contract at length `n` walks `n` of them, and the cost
+grows with the *length* rather than with the size of the number -- about a
+second at 64, half a minute at 1024. `CRUST_PROOF_MAX` (default 128) bounds it.
+That is fine for a proof and wrong for a compiler, and making it cheap -- binary
+numerals, or an evaluator that does not build the intermediate terms -- is the
+next kernel problem rather than a detail of the bridge.
+
+---
+
+## 9. What is not done
+
+*   **A proof does not yet change generated code.** `crustproof.py` settles
+    Crust's contracts (see §8), but the passes it feeds decide errors and
+    codegen from the *reading*, not from the certificate. `scheme_of`'s bound
+    is exactly the fact that would license `memsafe_elide.py` omitting a check,
+    and that is the next step.
 *   **`preserves_by_loop` handles one loop per procedure.** Two loops in
     sequence need the sequence rule applied twice.
 *   **No heap.** Only a plain variable or a record field may be assigned. A

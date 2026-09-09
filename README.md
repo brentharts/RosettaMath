@@ -18,6 +18,7 @@ The project is two files:
 | `rosettaui.py` | An interactive PyQt5 explorer for that subset. Plain Python, deliberately not self-hosted. |
 | `lean4.py` | A dependent-type micro-kernel that checks proofs about Python code, with the theorem statements written in LaTeX. |
 | `hoare.py` | An imperative fragment on top of that kernel: Hoare triples, loop invariants, records, and a kernel-checked model of an seL4-style OS. See [LEAN4.md](LEAN4.md). |
+| `crustproof.py` | The bridge to [Crust](https://github.com/brentharts/crust): its contracts, as propositions the kernel settles. |
 | `neomath.tex` | The paper. |
 
 ---
@@ -78,9 +79,18 @@ invariant and that it finishes are theorems proved from `Nat.ind` and
 The details, the design decisions, and what is deliberately refused are in
 **[LEAN4.md](LEAN4.md)**.
 
+*   **Integrated with [Crust](https://github.com/brentharts/crust).**
+    `crustproof.py` reads Crust's contracts as propositions. Running it
+    against Crust's own two readings found that they disagreed: the pass that
+    reports contract violations stopped at the first clause, so
+    `assert len(p) >= 4` plus `assert not len(p) % 4` let a seven-byte
+    argument through. Crust now has one reading, in `shivyc/proofs.py`, that
+    both passes call and the kernel checks.
+
 ```sh
-python3 hoare.py     # 153 checks
-python3 lean4.py     # the micro-kernel's own 153
+python3 hoare.py       # 153 checks
+python3 lean4.py       # the micro-kernel's own 153
+python3 crustproof.py  # 21, including the differential test against Crust
 ```
 
 ---

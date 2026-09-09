@@ -1717,6 +1717,157 @@ def parse_type(text):
     return latex2type(text)
 
 
+# ------------------------------------------------------ LaTeX, the other way
+#
+# type2latex is LatexTypeParser read backwards, and the property that makes it
+# worth having is latex2type(type2latex(t)) == t.  It is therefore written
+# against the parser rather than against taste: every shape below is emitted
+# because the parser accepts it, and everything the parser cannot read is
+# refused with the reason rather than approximated.
+#
+# pretty() is not that function and cannot become it.  It prints Type 1, ?A7,
+# lambdas and x', none of which the parser reads, so its output is for a human
+# to look at and this one is for the reader to take back.
+#
+# Two places where the term does not determine the text:
+#
+#   Binder names.  key() ignores a binder's name hint, so a name is free to
+#   change -- but only within what the reader can lex.  tokenize() splits Nat
+#   into N, a, t, and a binder name is taken as one token, so a bound name has
+#   to be a single letter; fresh()'s x' is two tokens and would not come back.
+#   And N, R and B are aliases, so they are not available either.
+#
+#   a = b.  The parser recovers the carrier of Eq from the binder that
+#   introduced one of the operands, so a = b is written only when that lookup
+#   would return this very carrier.  Otherwise the application is written out
+#   as Eq A a b, which always reads back.
+
+# Single letters the reader would take as something other than a variable.
+RESERVED_NAMES = set(TYPE_ALIASES) | set(TYPE_WORDS)
+
+BINDER_LETTERS = [c for c in
+                  'xyzabcdefghijklmnopqrstuvwABCDEFGHIJKLMNOPQRSTUVWXYZ'
+                  if c not in RESERVED_NAMES]
+
+# Precedence, named for the parser method that accepts each level.
+P_EXPR, P_ARROW, P_APP, P_ATOM = 0, 1, 2, 3
+
+
+class LatexPrinter:
+    r"""A kernel type -> the LaTeX subset LatexTypeParser reads."""
+
+    def __init__(self):
+        self.scope = {}                       # name -> domain, as the parser's
+
+    def refuse(self, why):
+        raise KernelError('no LaTeX spelling: ' + why)
+
+    def wrap(self, text, mine, ctx):
+        return f'({text})' if mine < ctx else text
+
+    def word(self, name):
+        """A global or free name, as the reader would have to see it."""
+        if name in RESERVED_NAMES:
+            self.refuse(f'{name!r} is how the reader spells something else')
+        if len(name) == 1 and name.isidentifier():
+            return name
+        if not name.replace('.', '_').isidentifier():
+            self.refuse(f'{name!r} is not a name the reader can lex')
+        return r'\text{%s}' % rosettamath.escape(name)
+
+    def binder_name(self, hint, var_type, body):
+        """One letter that shadows nothing and captures nothing.
+
+        Avoiding the enclosing binders is not enough, for the same reason
+        fresh() gives: a free name in the body would print identically, and
+        the reader abstracts by name, so the two would come back as one.
+        """
+        taken = set(self.scope) | free_names(body) | free_names(var_type)
+        first = hint[0] if hint and hint[0].isalpha() else ''
+        for letter in [first] + BINDER_LETTERS:
+            if letter and letter not in taken and letter not in RESERVED_NAMES:
+                return letter
+        self.refuse('every single-letter binder name is already in use')
+
+    def write(self, expr, ctx=P_EXPR):
+        if isinstance(expr, Universe):
+            if expr.level in (0, 1):
+                return r'\text{Prop}' if expr.level == 0 else r'\text{Type}'
+            self.refuse(f'the reader knows Prop and Type, '
+                        f'not Type {expr.level - 1}')
+        if isinstance(expr, Var):
+            return '0' if expr.name == 'zero' else self.word(expr.name)
+        if isinstance(expr, Bound):
+            self.refuse(f'a loose de Bruijn index #{expr.index} has no name')
+        if isinstance(expr, Meta):
+            self.refuse(f'?{expr.hint}{expr.index} is a hole; '
+                        f'elaborate before writing')
+        if isinstance(expr, Lambda):
+            self.refuse('the subset states types; a lambda is a term')
+        if isinstance(expr, Pi):
+            return self.pi(expr, ctx)
+        if isinstance(expr, App):
+            return self.app(expr, ctx)
+        self.refuse(f'unknown node {type(expr).__name__}')
+
+    def pi(self, expr, ctx):
+        """A -> B when nothing depends on the argument, \\forall otherwise.
+
+        Descending instantiates the binder with a named variable, so the body
+        below is in exactly the form the parser builds before Pi() abstracts
+        it -- which is what lets scope be compared without shifting anything.
+        """
+        if not expr.implicit and not occurs(expr.body, 0):
+            dom = self.write(expr.var_type, P_APP)      # left is application()
+            body = self.write(instantiate(expr.body, Var('_')), P_ARROW)
+            return self.wrap(rf'{dom} \to {body}', P_ARROW, ctx)
+        dom = self.write(expr.var_type, P_ARROW)        # domain is arrow_type()
+        name = self.binder_name(expr.var_name, expr.var_type, expr.body)
+        outer = self.scope.get(name)
+        self.scope[name] = expr.var_type
+        body = self.write(instantiate(expr.body, Var(name)), P_EXPR)
+        if outer is None:
+            self.scope.pop(name, None)
+        else:
+            self.scope[name] = outer
+        head = (rf'\forall \{{{name} : {dom}\}}' if expr.implicit
+                else rf'\forall {name} \in {dom}')
+        return self.wrap(f'{head}, {body}', P_EXPR, ctx)
+
+    def app(self, expr, ctx):
+        digits = as_numeral(expr)
+        if digits is not None:
+            return str(digits)              # succ(succ(zero)) reads back as 2
+        if ctx == P_EXPR:
+            equation = self.equality(expr)
+            if equation is not None:
+                return equation
+        return self.wrap(f'{self.write(expr.func, P_APP)} '
+                         f'{self.write(expr.arg, P_ATOM)}', P_APP, ctx)
+
+    def equality(self, expr):
+        """a = b, but only when the reader would rebuild this very carrier."""
+        args, head = [], expr
+        while isinstance(head, App):
+            args.append(head.arg)
+            head = head.func
+        if not (isinstance(head, Var) and head.name == 'Eq' and len(args) == 3):
+            return None
+        carrier, left, right = args[2], args[1], args[0]
+        for side in (left, right):            # the parser tries left first
+            if isinstance(side, Var) and side.name in self.scope:
+                if self.scope[side.name] != carrier:
+                    return None               # it would recover a different one
+                return (f'{self.write(left, P_ARROW)} = '
+                        f'{self.write(right, P_ARROW)}')
+        return None                           # nothing in scope pins it down
+
+
+def type2latex(expr):
+    r"""A kernel type -> the LaTeX statement that denotes it."""
+    return LatexPrinter().write(expr)
+
+
 # --------------------------------------------------- Python AST to the kernel
 
 class PythonToLean(ast.NodeVisitor):
@@ -2325,6 +2476,43 @@ def selftest():
           == latex2type(r'\forall (A : \text{Type}), A \to A'))
     check('trailing junk is refused',
           raises(lambda: latex2type(r'\text{Nat} )'), 'Unexpected'))
+
+    print('LaTeX, the other way')
+    for text, want in cases:
+        check('%-42s' % type2latex(want),
+              latex2type(type2latex(want)) == want)
+    check('every declared type in the environment reads back',
+          all(latex2type(type2latex(type_of(GLOBAL_ENV, n)))
+              == type_of(GLOBAL_ENV, n) for n in GLOBAL_ENV))
+    check('an implicit binder stays implicit',
+          type2latex(Pi('A', Universe(1), arrow(Var('A'), Var('A')),
+                        implicit=True)).startswith(r'\forall \{A'))
+    check('a numeral is written as a numeral, not as succ',
+          type2latex(numeral(3)) == '3')
+    check('a forall on the right of an arrow is parenthesised',
+          type2latex(arrow(Var('Bool'), Pi('x', Var('Nat'), Var('x'))))
+          == r'\text{Bool} \to (\forall x \in \text{Nat}, x)')
+    captures = Pi.raw('x', Var('Nat'), App(Bound(0), Var('x')))
+    check('bug: a binder is renamed rather than capturing a free name',
+          type2latex(captures) == r'\forall y \in \text{Nat}, y x'
+          and latex2type(type2latex(captures)) == captures)
+    check("and not to fresh()'s x', which the reader cannot lex",
+          "'" not in type2latex(captures))
+    check('a = b only when the reader recovers this carrier',
+          type2latex(Pi('x', Var('Bool'), _eq(Var('Nat'), Var('x'), Var('x'))))
+          == r'\forall x \in \text{Bool}, \text{Eq} \text{Nat} x x')
+    check('and it does when the binder agrees',
+          type2latex(Pi('x', Var('Nat'), _eq(Var('Nat'), Var('x'), Var('x'))))
+          == r'\forall x \in \text{Nat}, x = x')
+    check('a lambda is refused: the subset states types',
+          raises(lambda: type2latex(Lambda('x', Var('Nat'), Var('x'))),
+                 'a lambda is a term'))
+    check('a hole is refused rather than invented',
+          raises(lambda: type2latex(latex2type('x = x')), 'is a hole'))
+    check('Type 1 is refused, since the reader knows only Prop and Type',
+          raises(lambda: type2latex(Universe(2)), 'not Type 1'))
+    check('a name the reader would alias away is refused',
+          raises(lambda: type2latex(Var('N')), 'spells something else'))
 
     print('Python bridge')
     src = "def f(x: 'Nat'):\n    return x\n"

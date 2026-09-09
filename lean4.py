@@ -131,6 +131,26 @@ class TheoremError(KernelError):
 
 # ---------------------------------------------------------------- expressions
 
+# Structural keys are interned integers.  The key of a node is looked up from
+# a shallow description of it -- its constructor, and the *keys* of its
+# children -- so building one is O(1) and so is hashing it.
+#
+# It used to be the nested tuple that description suggests, which was correct
+# and quietly quadratic-or-worse: substitution shares the term it inserts
+# rather than copying it, so a body mentioning its argument three times builds
+# a DAG with 3**n paths through it and only O(n) distinct nodes -- but hashing
+# a nested tuple walks paths, not nodes, so every cache lookup paid the 3**n.
+# An integer collapses that to the node count the DAG actually has.
+_KEYS = {}
+
+
+def intern_key(description):
+    key = _KEYS.get(description)
+    if key is None:
+        key = _KEYS[description] = len(_KEYS)
+    return key
+
+
 class Expr:
     """Base class for all logical expressions.
 
@@ -150,6 +170,20 @@ class Expr:
     def __hash__(self):
         return hash(self.key())
 
+    def fullkey(self):
+        """A structural key that also fixes the name hints and implicitness.
+
+        key() is deliberately blind to both, because that is what makes it
+        alpha-equivalence.  The rewrites below carry both through, so two
+        terms that compare equal can still rewrite to different results, and
+        a cache that cannot tell them apart will hand back the wrong one --
+        it reprinted symm's `{a : A}` as `a : A`.  Equality wants the blind
+        key; a cache wants this one.
+
+        A leaf carries neither, so for one the two keys coincide.
+        """
+        return self.key()
+
     def __repr__(self):
         return str(self)
 
@@ -161,7 +195,10 @@ class Universe(Expr):
         self.level = level
 
     def key(self):
-        return ('sort', self.level)
+        cached = getattr(self, '_key', None)
+        if cached is None:
+            cached = self._key = intern_key(('sort', self.level))
+        return cached
 
     def __str__(self):
         return pretty(self)
@@ -174,7 +211,10 @@ class Var(Expr):
         self.name = name
 
     def key(self):
-        return ('var', self.name)
+        cached = getattr(self, '_key', None)
+        if cached is None:
+            cached = self._key = intern_key(('var', self.name))
+        return cached
 
     def __str__(self):
         return pretty(self)
@@ -187,7 +227,10 @@ class Bound(Expr):
         self.index = index
 
     def key(self):
-        return ('bound', self.index)
+        cached = getattr(self, '_key', None)
+        if cached is None:
+            cached = self._key = intern_key(('bound', self.index))
+        return cached
 
     def __str__(self):
         return pretty(self)
@@ -201,7 +244,20 @@ class App(Expr):
         self.arg = arg
 
     def key(self):
-        return ('app', self.func.key(), self.arg.key())
+        # cached: a term is never mutated after construction, and key() is
+        # what every cache and comparison below is built on
+        cached = getattr(self, '_key', None)
+        if cached is None:
+            cached = self._key = intern_key(
+                ('app', self.func.key(), self.arg.key()))
+        return cached
+
+    def fullkey(self):
+        cached = getattr(self, '_fullkey', None)
+        if cached is None:
+            cached = self._fullkey = intern_key(
+                ('app!', self.func.fullkey(), self.arg.fullkey()))
+        return cached
 
     def __str__(self):
         return pretty(self)
@@ -223,7 +279,10 @@ class Meta(Expr):
         self.context = tuple(context)
 
     def key(self):
-        return ('meta', self.index)
+        cached = getattr(self, '_key', None)
+        if cached is None:
+            cached = self._key = intern_key(('meta', self.index))
+        return cached
 
     def __str__(self):
         return pretty(self)
@@ -262,7 +321,19 @@ class Binder(Expr):
         return type(self).raw(self.var_name, var_type, body, self.implicit)
 
     def key(self):
-        return (self.tag, self.var_type.key(), self.body.key())
+        cached = getattr(self, '_key', None)
+        if cached is None:
+            cached = self._key = intern_key(
+                (self.tag, self.var_type.key(), self.body.key()))
+        return cached
+
+    def fullkey(self):
+        cached = getattr(self, '_fullkey', None)
+        if cached is None:
+            cached = self._fullkey = intern_key(
+                (self.tag + '!', self.var_name, self.implicit,
+                 self.var_type.fullkey(), self.body.fullkey()))
+        return cached
 
     def __str__(self):
         return pretty(self)
@@ -369,8 +440,37 @@ def pretty(expr, names=None):
 
 # ------------------------------------------------------- de Bruijn operations
 
+# shift, abstract and instantiate are pure rewrites over immutable terms, so
+# the same input has the same output forever and remembering it is sound.
+# Memoising them is not only about repeated work: because a hit returns the
+# *same object*, a term that shares a subterm keeps sharing it after
+# substitution.  Without that, every substitution re-expanded the DAG into a
+# tree -- 4.5M shift calls to normalise `modb 10 4`, whose answer is 2.
+#
+# These are keyed on fullkey(), not on key().  A structural key is
+# deliberately blind to a binder's name hint and to whether it is implicit,
+# and `rebuild` carries both through, so two terms that compare equal can
+# still rewrite to different results: keying on key() quietly reprinted
+# symm's type with `{a : A}` as `a : A`.  Identity would be safe but too
+# sharp -- it misses the structurally identical copies that are the whole
+# point -- so fullkey() draws the line exactly where the rewrites do.
+_SHIFT_CACHE = {}
+_ABSTRACT_CACHE = {}
+_INSTANTIATE_CACHE = {}
+
+
 def shift(expr, amount, cutoff=0):
     """Renumber the free indices of expr, leaving those below cutoff alone."""
+    if amount == 0:
+        return expr
+    slot = (expr.fullkey(), amount, cutoff)
+    found = _SHIFT_CACHE.get(slot)
+    if found is None:
+        found = _SHIFT_CACHE[slot] = _shift(expr, amount, cutoff)
+    return found
+
+
+def _shift(expr, amount, cutoff):
     if isinstance(expr, Bound):
         return Bound(expr.index + amount) if expr.index >= cutoff else expr
     if isinstance(expr, App):
@@ -384,6 +484,14 @@ def shift(expr, amount, cutoff=0):
 
 def abstract(expr, name, depth=0):
     """Turn free occurrences of a named variable into the index depth."""
+    slot = (expr.fullkey(), name, depth)
+    found = _ABSTRACT_CACHE.get(slot)
+    if found is None:
+        found = _ABSTRACT_CACHE[slot] = _abstract(expr, name, depth)
+    return found
+
+
+def _abstract(expr, name, depth):
     if isinstance(expr, Var):
         return Bound(depth) if expr.name == name else expr
     if isinstance(expr, App):
@@ -397,6 +505,14 @@ def abstract(expr, name, depth=0):
 
 def instantiate(expr, value, depth=0):
     """Replace the index depth with value, closing up the binder above it."""
+    slot = (expr.fullkey(), value.fullkey(), depth)
+    found = _INSTANTIATE_CACHE.get(slot)
+    if found is None:
+        found = _INSTANTIATE_CACHE[slot] = _instantiate(expr, value, depth)
+    return found
+
+
+def _instantiate(expr, value, depth):
     if isinstance(expr, Bound):
         if expr.index == depth:
             return shift(value, depth)
@@ -429,6 +545,24 @@ def substitute(expr, var_name, replacement):
     return expr
 
 
+# normal form cache: id(env) -> [env, generation, {key: normal form}].
+# The environment is held by strong reference so its id cannot be reused by a
+# later object, and `declare` refuses to rebind a name, so len(env) is a
+# faithful generation counter: an entry is stale exactly when a name was added.
+_NORM_CACHE = {}
+
+
+def _norm_cache(env):
+    slot = _NORM_CACHE.get(id(env))
+    if slot is None or slot[0] is not env or slot[1] != len(env):
+        slot = [env, len(env), {}]
+        _NORM_CACHE[id(env)] = slot
+    return slot[2]
+
+
+_BETA_CACHE = {}
+
+
 def normalize(expr, env=None):
     """Full normalisation: beta, plus delta and iota when an environment is given.
 
@@ -439,7 +573,28 @@ def normalize(expr, env=None):
     Without an environment only beta fires, which is what the kernel did
     before definitions existed and is still the right behaviour for a term
     whose constants are all opaque.
+
+    The result is memoised on the term's structural key.  Nothing about what
+    a term normalises to changes, but a great deal about whether it finishes
+    does: substituting an argument and then normalising the result re-walks
+    that argument, so a fold over n re-derived each step from scratch and cost
+    2**n to produce a normal form of size O(n).  `leb 20 30` did not
+    terminate in any useful time; a loop of the length the SIMD contracts talk
+    about, `len(ptr) >= 64`, was hopeless.  Since a term is immutable and an
+    environment only ever grows, the same key has the same normal form
+    forever, so remembering it is sound.
     """
+    cache = _BETA_CACHE if env is None else _norm_cache(env)
+    slot = expr.fullkey()
+    found = cache.get(slot)
+    if found is not None:
+        return found
+    result = _normalize(expr, env)
+    cache[slot] = result
+    return result
+
+
+def _normalize(expr, env):
     if isinstance(expr, App):
         func = normalize(expr.func, env)
         arg = normalize(expr.arg, env)

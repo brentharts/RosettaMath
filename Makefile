@@ -202,11 +202,15 @@ pdf:
 paper:
 	$(PYTHON) rosettamath.py --pdf --appendix
 
+# The third paper: the micro-kernel, the imperative fragment, and Crust.
+leanproof:
+	cd /tmp && pdflatex -interaction=nonstopmode -halt-on-error $(CURDIR)/leanproof.tex >/dev/null && pdflatex -interaction=nonstopmode $(CURDIR)/leanproof.tex >/dev/null && echo "/tmp/leanproof.pdf"
+
 clean:
 	rm -rf __pycache__ /tmp/rosettaui-cache
 	rm -f /tmp/neomath.aux /tmp/neomath.log /tmp/neomath.out /tmp/neomath.tex
 
 .PHONY: default help install install-all check-deps ui test proofs \
-	render-test pdf paper clean \
+	render-test pdf paper leanproof clean \
 	install_apple install-apple install_apple-all \
 	install_windows install-windows

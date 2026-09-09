@@ -416,7 +416,50 @@ What is left is the representation: building a numeral for length `n` is still
 stack in a traceback. `CRUST_PROOF_MAX` (65536) is the compiler's budget within
 that.
 
-**A proof now changes generated code.** `simd_contracts` drops the scalar
+**A proof removes a runtime check.** `memsafe_elide` has a new rule.
+
+> **Rule 4 -- a parameter with a proven contract.** `assert len(p) >= 64` on a
+> parameter is a statement about every caller, and Crust can check it against
+> every caller. Where it holds at all of them, the callee may treat `p` as an
+> allocation of at least that size, and a constant offset into it is in bounds
+> by the same arithmetic rule 2 uses.
+
+`len` counts **elements**, so the byte extent is `len * sizeof(*p)` -- getting
+that backwards would hand the pass a bound four times too large on an `int *`,
+so the conversion is done once, in `simd_contracts.parameter_extents`, next to
+the element size it needs.
+
+Two conditions, both about not being wrong. The contract must have been
+*established*: every visible call site traced to an allocation large enough,
+and a certificate for it. An unchecked promise tells the callee nothing. And
+the callee must make no calls at all -- rule 2 gets liveness from the static
+pass and there is no such fact about a parameter, so the only safe substitute
+is a body in which nothing could have freed the buffer.
+
+```
+void fill(int *p) assert len(p) >= 4 { p[0]=1; p[1]=2; p[2]=3; p[3]=4; }
+```
+
+goes from **5 checks emitted, 0 avoided** to **1 emitted, 4 downgraded to a
+shadow update, 80% avoided**. A proved write becomes a bare shadow update
+rather than nothing, for the reason rule 2 already gives: the check is also
+what records which bytes are now defined.
+
+Everything that should refuse, refuses -- no contract, a caller that allocates
+less, a callee that calls anything, a withdrawn certificate. And the checks
+left behind still work: add `p[4] = 5` and the fifth check stays and catches
+the overflow at run time; let the caller pass two elements and the contract is
+not established, all five checks stay, and the runtime reports it. Eight tests
+in `tests/test_mem_safe_elide.py`.
+
+**One thing this needed was not about proofs at all.** `p[2]` is emitted as
+`Add(p, Mult(2, 4))`, so the offset is constant but is not a *literal*, and the
+origin tracker walked straight past it. `_constants()` folds through `*`, `+`
+and copies -- for values assigned once in the whole function, since IL values
+are not SSA and a stale constant would be a wrong offset. Rule 2 wanted that
+too, for every `a[3]` into a malloc'd array.
+
+**A proof also changes instruction selection.** `simd_contracts` drops the scalar
 remainder loop when a contract holds at every call site. Satisfying the
 contract is no longer on its own the licence: `proofs.licenses()` also wants
 the certificate, and a length past the budget or a bridge that will not load
@@ -439,12 +482,14 @@ decoration.
 
 ## 9. What is not done
 
-*   **`memsafe_elide.py` still does not consume a proof.** The SIMD tail is
-    gated on a certificate (§8); per-access bounds checks are not. Seeding its
-    rule 2 from a contract means deciding whether `len` counts bytes or
-    elements and identifying a parameter's ILValue, and that module's own
-    rule is that a dropped check on an unsafe access is the one error it must
-    never make -- so it is worth doing carefully rather than quickly.
+*   **Rule 4 only fires in a leaf.** A function that calls anything gets no
+    parameter bound, because nothing supplies liveness for a parameter and a
+    call may have freed it. Crust sees the whole call graph, so "no callee
+    transitively frees this" is knowable and would widen the rule a great
+    deal; "no calls at all" is what is implemented.
+*   **Rule 4 is for constant offsets.** `p[i]` in a loop is rule 3's problem,
+    and a contract bound is not yet joined up with the loop-carried ranges
+    that rule already computes.
 *   **The accelerators are trusted Python.** Nine of them, each checked
     against its definition over a grid, but checked is not proved.
 *   **`preserves_by_loop` handles one loop per procedure.** Two loops in

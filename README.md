@@ -86,9 +86,10 @@ The details, the design decisions, and what is deliberately refused are in
     `assert len(p) >= 4` plus `assert not len(p) % 4` let a seven-byte
     argument through. Crust now has one reading, in `shivyc/proofs.py`, that
     both passes call and the kernel checks. A proof now *changes generated
-    code*: `simd_contracts` drops a SIMD kernel's scalar remainder loop only
-    on a kernel-checked certificate, and withdrawing the certificate brings
-    the scalar loop back.
+    code*: a SIMD kernel's scalar remainder loop is dropped only on a
+    kernel-checked certificate, and a contract proven at every call site lets
+    `--mem-safe` skip the bounds work on a parameter (80% of the checks in a
+    small initializer). Withdraw the certificate and both come back.
 
 ```sh
 python3 hoare.py       # 157 checks

@@ -68,7 +68,7 @@ import inspect
 import sys
 import textwrap
 import lean4 as L
-from lean4 import (App, Bound, Expr, KernelError, Lambda, Pi, REC,
+from lean4 import (App, Binder, Bound, Expr, KernelError, Lambda, Pi, REC,
                    TheoremError, Universe, Var, arrow, define, inductive,
                    numeral, normalize, readable, type_check)
 
@@ -157,6 +157,28 @@ def record(env, name, fields):
 
 
 # ----------------------------------------------------------------- prelude
+
+def replace_subterm(expr, target, replacement):
+    r"""Every occurrence of `target` in `expr`, replaced.
+
+    Used to recover the part of a body that runs *after* a loop, as a function
+    of the loop's result: the body already has the loop's term substituted
+    into it, and this takes it back out.  Safe here because the target is
+    always an applied loop name -- a term with no bound variables of its own --
+    so an occurrence under a binder is the same term as one outside it and
+    needs no renumbering.
+    """
+    if expr.key() == target.key():
+        return replacement
+    if isinstance(expr, App):
+        return App(replace_subterm(expr.func, target, replacement),
+                   replace_subterm(expr.arg, target, replacement))
+    if isinstance(expr, Binder):
+        return expr.rebuild(
+            replace_subterm(expr.var_type, target, replacement),
+            replace_subterm(expr.body, target, replacement))
+    return expr
+
 
 def _abstract_over(term, bindings):
     for name, ty in bindings:
@@ -1170,7 +1192,7 @@ class ImpToLean:
             given(holds(app('ltb', after_var, before_var))), symbolic_types)))
         self.shapes.append({'cond': cond_fn, 'pass': pass_fn,
                             'state': acc_type, 'carried': list(carried),
-                            'fuel': fuel, 'init': init})
+                            'fuel': fuel, 'init': init, 'result': folded})
         return None
 
     def name_loop(self, term, result_type, stem='loop'):
@@ -1402,16 +1424,53 @@ def read_procedure(func, env=None, signatures=None, ensures=(),
         # wants and the only thing missing between the loop obligations
         # already stated and the syscall being composable.
         inv = Var(f'{preserves}.invariant')
+        hold = lambda x: App(Var('Holds'), x)
+        hands_on = lambda g: Pi('s', Var(preserves),
+                                arrow(hold(App(inv, Var('s'))),
+                                      hold(App(inv, g(Var('s'))))))
         for shape in reader.shapes:
             if not same_type(shape['state'], Var(preserves)):
                 continue
-            hold = lambda x: App(Var('Holds'), x)
             goal = Pi('s', Var(preserves),
                       arrow(hold(App(inv, Var('s'))),
                             arrow(hold(App(shape['cond'], Var('s'))),
                                   hold(App(inv,
                                            App(shape['pass'], Var('s')))))))
             type_check(env, goal)
+            # The loop is rarely the whole body.  What runs before it and what
+            # runs after are each a function of the state too, and each has to
+            # hand the invariant on, or the chain has a hole in it exactly
+            # where nobody is looking.  This is the sequence rule, inside one
+            # procedure rather than across several.
+            def named(body, stem):
+                # a segment gets a name for the same reason the loop does:
+                # inlined, these goals print as a lambda applied to a variable
+                if L.free_names(body) - set(env):
+                    return None
+                base, index = f'{tree.name}.{stem}', 1
+                while f'{base}{index}' in env:
+                    index += 1
+                define(env, f'{base}{index}',
+                       arrow(Var(preserves), Var(preserves)), body)
+                return Var(f'{base}{index}')
+
+            identity = Lambda('s', Var(preserves), Var('s'))
+            segments = []
+            for stem, label, body in (
+                    ('before', 'before the loop',
+                     Lambda(subject, Var(preserves), shape['init'])),
+                    ('after', 'after the loop',
+                     Lambda('_s', Var(preserves),
+                            replace_subterm(term, shape['result'],
+                                            Var('_s'))))):
+                if L.definitionally_equal(body, identity, env):
+                    continue          # nothing runs there; nothing to prove
+                fn = named(body, stem) or body
+                goal2 = hands_on(lambda x, fn=fn: App(fn, x))
+                type_check(env, goal2)
+                segments.append((label, goal2, fn))
+                shape[stem] = fn
+            shape['segments'] = segments
             pass_goals.append(goal)
     proc = Procedure(tree.name, params, result_type, term, pre, post, goal,
                      reader.obligations)
@@ -1456,6 +1515,9 @@ def procedure(env=None, ensures=(), signatures=None, verbose=True,
                 print(f"  preserves: {readable(proc.preservation)}")
             for goal in proc.pass_goals:
                 print(f"  one pass keeps it: {readable(goal)}")
+            for shape in proc.shapes:
+                for label, goal, _ in shape.get('segments', ()):
+                    print(f"  {label}: {readable(goal)}")
         return func
     return decorator
 
@@ -1603,43 +1665,42 @@ def preservation_goal(env, record_name, callee, params):
     return goal, subject
 
 
-def preserves_by_cases(env, record_name, proc, verbose=True):
-    r"""Prove preservation when the operation does not touch the invariant.
+def hands_on_by_cases(env, record_name, goal, verbose=False, what='this'):
+    r"""Prove `forall s, Holds (I s) -> Holds (I (g s))` by one case split.
 
     A projection of an update is stuck on a variable -- `Context.current
     (Context.with_ticks c v)` cannot reduce, because until `c` is known to be
-    built by the constructor there is nothing for iota to fire on.  So even an
-    operation that plainly leaves a field alone has nothing to compute with.
+    built by the constructor there is nothing for iota to fire on.  So even a
+    step that plainly leaves a field alone has nothing to compute with.
     `Record.ind` supplies the missing step: one constructor, so one case, and
-    inside it every projection fires.
-
-    Where the invariant then reads identically on both sides, the proof of the
-    case is the hypothesis itself.  Where it does not, this refuses, and the
-    operation needs a real argument rather than a convenient one.
+    inside it every projection fires.  Where the invariant then reads
+    identically on both sides, the proof of the case is the hypothesis.
     """
-    inv = f'{record_name}.invariant'
     fields = RECORDS[record_name]
-    subject = proc.preservation_subject
-    holds = lambda c: App(Var('Holds'), App(Var(inv), c))
-
+    subject = goal.var_name
     motive = Lambda(subject, Var(record_name),
-                    arrow(holds(Var(subject)),
-                          holds(App(Var(proc.declared_as), Var(subject)))))
+                    L.instantiate(goal.body, Var(subject)))
     built = app(f'{record_name}.mk',
                 *[Var(f'f{i}') for i in range(len(fields))])
-    case = Lambda('h', holds(built), Var('h'))
+    case = Lambda('h', L.instantiate(goal.body, built).var_type, Var('h'))
     for i in reversed(range(len(fields))):
         case = Lambda(f'f{i}', fields[i][1], case)
     term = Lambda(subject, Var(record_name),
                   app(f'{record_name}.ind', motive, case, Var(subject)))
     try:
-        return prove(proc.preservation, term, env, verbose=verbose)
+        return prove(goal, term, env, verbose=verbose)
     except KernelError:
         raise TheoremError(
-            f"{proc.declared_as} changes what the {record_name} invariant "
-            f"reads, so the hypothesis going in is not a proof of the "
-            f"conclusion coming out. This one needs a real argument: prove "
-            f"{readable(proc.preservation)} and pass it to compose().")
+            f"{what} changes what the {record_name} invariant reads, so the "
+            f"hypothesis going in is not a proof of the conclusion coming "
+            f"out. It needs a real argument: prove {readable(goal)} and pass "
+            f"it in.")
+
+
+def preserves_by_cases(env, record_name, proc, verbose=True):
+    """Prove a syscall hands the invariant on, when it does not touch it."""
+    return hands_on_by_cases(env, record_name, proc.preservation,
+                             verbose=verbose, what=proc.declared_as)
 
 
 def pass_by_cases(env, record_name, proc, which=0, verbose=True):
@@ -1689,30 +1750,49 @@ def pass_by_cases(env, record_name, proc, which=0, verbose=True):
 
 
 def preserves_by_loop(env, record_name, proc, pass_proof, which=0,
-                      verbose=True):
+                      before_proof=None, after_proof=None, verbose=True):
     r"""Turn the loop obligations into the syscall's preservation proof.
 
-    This is the step that makes a `while`-containing syscall composable.
     `loop_preserves` does the general work -- one guarded pass keeps the
-    invariant, so any number of them do -- and all that is left here is to
-    apply it at this loop's condition, pass, fuel and starting state.  The
-    result is exactly the `preserves` obligation, so the syscall can go into
-    `compose` alongside the ones whose proof was trivial.
+    invariant, so any number of them do.  What is left is the sequence: the
+    statements before the loop and the statements after it are each a step of
+    their own, and the proof is the three applied in turn, exactly as
+    `compose` chains separate procedures.  Where a segment does not touch the
+    invariant its proof is found by case split; where it does, pass one in.
     """
     shape = proc.shapes[which]
     subject = proc.preservation_subject
-    term = Lambda(subject, Var(record_name),
-                  app('loop_preserves', Var(record_name),
-                      Var(f'{record_name}.invariant'),
-                      shape['pass'], shape['cond'], pass_proof,
-                      shape['fuel'], shape['init']))
+    record = Var(record_name)
+    inv = Var(f'{record_name}.invariant')
+    supplied = {'before the loop': before_proof, 'after the loop': after_proof}
+    segment_proofs = {}
+    for label, goal, _fn in shape.get('segments', ()):
+        given = supplied.get(label)
+        segment_proofs[label] = given if given is not None else (
+            hands_on_by_cases(env, record_name, goal, verbose=False,
+                              what=f"what runs {label} in "
+                                   f"{proc.declared_as}"))
+
+    entered = Var(subject)
+    carried = Var('h')
+    if 'before the loop' in segment_proofs:
+        carried = app(segment_proofs['before the loop'], entered, carried)
+        entered = App(shape['before'], entered)
+    carried = App(app('loop_preserves', record, inv, shape['pass'],
+                      shape['cond'], pass_proof, shape['fuel'], entered),
+                  carried)
+    entered = shape['result']
+    if 'after the loop' in segment_proofs:
+        carried = app(segment_proofs['after the loop'], entered, carried)
+
+    term = Lambda(subject, record,
+                  Lambda('h', App(Var('Holds'), App(inv, Var(subject))),
+                         carried))
     try:
         return prove(proc.preservation, term, env, verbose=verbose)
     except KernelError as exc:
         raise TheoremError(
-            f"{proc.declared_as}'s loop proof does not close the gap: "
-            f"{exc}. This applies only when the body is the loop and "
-            f"nothing else follows it.")
+            f"{proc.declared_as}'s loop proof does not close the gap: {exc}")
 
 
 def compose(env, name, steps, record_name='Context', param='c'):
@@ -2336,6 +2416,66 @@ def selftest():
        normalize(app('Context.current', ran), env) == numeral(2))
     ok("and the ticks add up",
        normalize(app('Context.ticks', ran), env) == numeral(3))
+
+    ok("a loop that is the whole body raises no segment obligations",
+       sched.lean_procedure.shapes[0].get('segments') == [])
+
+    # -- the sequence rule: statements on both sides of a loop --------------
+    @procedure(env=env, preserves='Context', verbose=False,
+               ensures=['result.current == result.nthreads'])
+    def bootseq(c: 'Context') -> 'Context':
+        c.ticks = c.ticks + 1                   # before
+        while c.current < c.nthreads:
+            assert invariant(c.current <= c.nthreads)
+            assert variant(c.nthreads - c.current)
+            c.current = c.current + 1
+            c.ticks = c.ticks + 1
+        c.queue = cons(0, c.queue)              # after
+        c.ticks = c.ticks + 1
+        return c
+    labels = [lab for lab, _, _ in bootseq.lean_procedure.shapes[0]['segments']]
+    ok("both segments are raised as obligations",
+       labels == ['before the loop', 'after the loop'])
+    ok("and they are named, not inlined",
+       'bootseq.before1' in readable(
+           bootseq.lean_procedure.shapes[0]['segments'][0][1]))
+    seq_step = pass_by_cases(env, 'Context', bootseq.lean_procedure,
+                             verbose=False)
+    seq_proof = preserves_by_loop(env, 'Context', bootseq.lean_procedure,
+                                  seq_step, verbose=False)
+    ok("prefix, loop and suffix chain into one preservation proof",
+       seq_proof is not None)
+    # started is current=1 nthreads=2: one tick before, one pass, one after
+    ok("the whole thing runs",
+       normalize(app('Context.ticks',
+                     App(Var('bootseq'), started)), env) == numeral(3))
+    ok("and the loop reached the end",
+       normalize(app('Context.current',
+                     App(Var('bootseq'), started)), env) == numeral(2))
+    ok("and the suffix ran",
+       normalize(app('len', NAT, app('Context.queue',
+                     App(Var('bootseq'), started))), env) == numeral(2))
+    ok("and it composes with the rest",
+       compose(env, 'session',
+               [(tick.lean_procedure, tick_proof),
+                (bootseq.lean_procedure, seq_proof)])[1] is not None)
+
+    @procedure(env=env, preserves='Context', verbose=False,
+               ensures=['result.nthreads == c.nthreads'])
+    def bad_suffix(c: 'Context') -> 'Context':
+        while c.current < c.nthreads:
+            assert invariant(c.current <= c.nthreads)
+            assert variant(c.nthreads - c.current)
+            c.current = c.current + 1
+        c.current = c.current + 1           # runs past nthreads, after it
+        return c
+    bad_step = pass_by_cases(env, 'Context', bad_suffix.lean_procedure,
+                             verbose=False)
+    refuses("a suffix that breaks the invariant is refused",
+            lambda: preserves_by_loop(env, 'Context',
+                                      bad_suffix.lean_procedure, bad_step,
+                                      verbose=False),
+            "what runs after the loop in bad_suffix")
 
     @procedure(env=env, preserves='Context', verbose=False,
                ensures=['result.ticks == result.ticks'])

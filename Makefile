@@ -59,6 +59,7 @@ help:
 	@echo 'make proofs         check the lean4 theorems'
 	@echo 'make pdf            typeset the paper to /tmp/neomath.pdf'
 	@echo 'make paper          the paper with the source appendix'
+	@echo 'make crustos_eq     the supplement: Equation (1) checked by Lean 4'
 	@echo 'make clean          remove caches and build products'
 	@echo
 	@echo 'Windows has no make: double-click install_windows.bat, then'
@@ -206,11 +207,17 @@ paper:
 leanproof:
 	cd /tmp && pdflatex -interaction=nonstopmode -halt-on-error $(CURDIR)/leanproof.tex >/dev/null && pdflatex -interaction=nonstopmode $(CURDIR)/leanproof.tex >/dev/null && echo "/tmp/leanproof.pdf"
 
+# The supplement: one equation, checked by lean4.py and by Lean 4, read four
+# ways.  crustos_eq.py writes gen/ and CrustOS.lean (and runs lean if found).
+crustos_eq:
+	$(PYTHON) crustos_eq.py
+	pdflatex -interaction=nonstopmode -halt-on-error -output-directory=/tmp crustos_eq.tex >/dev/null && pdflatex -interaction=nonstopmode -output-directory=/tmp crustos_eq.tex >/dev/null && echo "/tmp/crustos_eq.pdf"
+
 clean:
 	rm -rf __pycache__ /tmp/rosettaui-cache
 	rm -f /tmp/neomath.aux /tmp/neomath.log /tmp/neomath.out /tmp/neomath.tex
 
 .PHONY: default help install install-all check-deps ui test proofs \
-	render-test pdf paper leanproof clean \
+	render-test pdf paper leanproof crustos_eq clean \
 	install_apple install-apple install_apple-all \
 	install_windows install-windows

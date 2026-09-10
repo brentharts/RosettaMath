@@ -30,7 +30,7 @@
 
 \newcommand{\code}[1]{\texttt{#1}}
 
-\title{Proofs Small Enough to Read:\\
+\title{LEAN Proofs Small Enough to Read:\\
 Kernel Contracts from \LaTeX{} Theorems to Compiler Decisions}
 \author{Brent S. Hartshorn \orcidlink{0009-0004-2853-655X} \small \url{brenthartshorn@proton.me}}
 
@@ -508,29 +508,7 @@ $\code{List}\ (\code{List}\ \code{Nat})$; on that, \code{find}, \code{take},
 \code{rev}. \code{find} returning the length when the separator is absent is
 how \code{str.find}'s $-1$ is expressed without a negative number \code{Nat}
 does not have. All four public functions of \code{schemes.py} are modelled from
-the real source, prefix routing included (Table~\ref{tab:routing}); \code{fil:}
-does not route to \code{file}, because \code{eqs} is equality and not prefix
-matching, and that distinction is the whole of the routing bug one would want
-caught.
-
-\begin{table}[h]
-\centering
-\small
-\begin{tabular}{lll}
-\toprule
-URL & \code{scheme\_of} & \code{path\_of} \\
-\midrule
-\code{sys:boot} & 0 & \code{boot} \\
-\code{file:/etc/passwd} & 2 & \code{/etc/passwd} \\
-\code{gpu:0} & 6 & \code{0} \\
-\code{nope:/x} & 7 (sentinel) & \code{/x} \\
-\code{/etc/passwd} & 7 & \code{/etc/passwd} \\
-\bottomrule
-\end{tabular}
-\caption{The model agrees with \code{crustos/schemes.py} on every case,
-including the absent colon.}
-\label{tab:routing}
-\end{table}
+the real source.
 
 The contracts are the safety-relevant ones, and all four are proved:
 \code{scheme\_of}'s returned index never leaves the scheme table;
@@ -541,7 +519,7 @@ URL, in order; and \code{accepted}'s result is never longer than its input,
 \subsection{\code{accepted}, end to end}
 \label{sec:accepted}
 
-\begin{lstlisting}
+\begin{lstlisting}[basicstyle=\tiny\ttfamily]
 @procedure(ensures=['len(result) <= len(split(urls, 44))'])
 def accepted(names: 'Strs', urls: 'Bytes') -> 'Array':
     parts = split(urls, 44)

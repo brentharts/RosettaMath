@@ -2,7 +2,7 @@
 
 *Bridging the gap between mathematical notation and executable Python.*
 - https://ai.vixra.org/abs/2609.0019 "LEAN Proofs Small Enough to Read: Kernel Contracts from LATEX Theorems to Compiler Decisions"
-- https://doi.org/10.5281/zenodo.22646969 "RosettaMath: Reading, Running and Proving Mathematics from LATEX"
+- https://dx.doi.org/10.2139/ssrn.7435598 "RosettaMath: Reading, Running and Proving Mathematics from LATEX"
 
 ## Overview
 

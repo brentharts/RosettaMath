@@ -333,6 +333,7 @@ indices of that occurrence.
 | `\text{Prop}`, `\text{Type}` | sorts |
 | `A \to B` | function type, right associative |
 | `\forall x \in A, B` / `\forall (x : A), B` | dependent function type |
+| `\lambda x : A, b` / `\fun x : A, b` | a function |
 | `f x` | application, by juxtaposition |
 | `\forall \{A : T\}, B` | implicit binder |
 | `a = b` | `Eq A a b`, with `A` from the binder, or inferred |
@@ -341,9 +342,50 @@ indices of that occurrence.
 The front end is shared with the rest of the project: `rosettaui.tokenize`
 lexes the subset and `rosettamath.unescape` handles `\text{}` content.
 
+### And back again
+
+`type2latex` is that table read right to left, and the property that makes it
+worth having is that
+
+```python
+latex2type(type2latex(t)) == t
+```
+
+for every term the kernel checks. It is therefore written against the parser
+rather than against taste: every shape it emits is emitted because the parser
+accepts it, and anything the parser could not read back is **refused with the
+reason** — a hole, a loose index, `Type 1`, or a name like `N` that the reader
+would alias away — rather than approximated.
+
+`pretty` is not that function and cannot become it. It prints `Type 1`, `?A7`,
+`λ` and `x'`, none of which the reader takes; its output is for a human to
+look at and this one is for the reader to take back.
+
+Two places where the term does not determine the text, and the rule each one
+needed:
+
+*   **Binder names.** `key()` ignores a binder's name hint, so a name is free
+    to change — but only within what the reader can lex. `tokenize` splits
+    `Nat` into `N`, `a`, `t`, and a binder name is taken as one token, so a
+    bound name must be a single letter; `fresh`'s `x'` is two tokens and would
+    not come back. The letter chosen also avoids the free names of the body,
+    or the reader would abstract two different variables into one.
+*   **`a = b`.** The parser recovers `Eq`'s carrier from the binder that
+    introduced an operand, so `a = b` is written only when that lookup would
+    return this very carrier. Otherwise the application is written out as
+    `\text{Eq} A a b`, which always reads back.
+
+The lambda is in the table above for this reason. Without it, five of the 91
+declarations `hoare.py` builds — `snoc_le`, `stuck`, `fold_preserves`,
+`fold_terminates`, `loop_preserves`, which is most of §4.2's list — had types
+the statement language could not write down, because an induction motive and
+the `Nat.rec` a loop lowers to are both lambdas appearing inside a type.
+Normalising removes neither. With it, every type **and every value** in that
+environment — 141 terms — round-trips.
+
 ```sh
 make proofs              # check the theorems
-python3 lean4.py --selftest      # 153 kernel, elaborator and front-end checks
+python3 lean4.py --selftest      # 177 kernel, elaborator and front-end checks
 python3 lean4.py --non-strict    # report failures instead of raising
 ```
 
@@ -742,7 +784,7 @@ python3 hoare.py   # the imperative fragment and the OS model
 the LaTeX-born Stage 1, then reports the fixed point. `rosettaui.py --selftest`
 covers the parser, the unicode converter, the equation classifier, the
 integrity of the knowledge base, and the bridge back to `rosettamath`.
-`hoare.py` runs 153 checks of its own: the prelude's arithmetic and string
+`hoare.py` runs 157 checks of its own: the prelude's arithmetic and string
 operations, the shape every construct lowers to, the proofs of the loop
 lemmas, the OS model, and — a third of them — the refusals, each pinned to the
 reason it gives.

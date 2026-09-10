@@ -246,6 +246,45 @@ hints and implicitness---that is what makes it $\alpha$-equivalence---but the
 rewrites carry both through. A second key, \code{fullkey()}, draws the line
 where the rewrites do.
 
+\subsection{The statement language, read backwards}
+\label{sec:roundtrip}
+
+The \LaTeX{} subset was an input language only. \code{type2latex} makes it an
+output language as well, and the property that makes that worth having is
+$\code{latex2type}(\code{type2latex}(t)) = t$ for every term the kernel
+checks. It is written against the parser rather than against taste: every
+shape it emits is emitted because the parser accepts it, and anything the
+parser could not read back is refused with the reason---a hole, a loose index,
+\code{Type 1}, a name like \code{N} that the reader would alias away---rather
+than approximated. The existing pretty-printer is not this function and cannot
+become it: it prints \code{Type 1}, \code{?A7}, $\lambda$ and \code{x'}, none
+of which the reader takes.
+
+Two places where the term does not determine the text. A binder's name is free
+to change, since the structural key ignores name hints, but only within what
+the lexer can read: \code{Nat} lexes as three tokens and a binder name is
+taken as one, so a bound name must be a single letter, and the letter chosen
+must also avoid the free names of the body or the reader would abstract two
+variables into one. And \code{a = b} is written only when the parser's
+recovery of \code{Eq}'s carrier---from the binder that introduced an
+operand---would return this very carrier; otherwise the application is written
+out, which always reads back.
+
+\textbf{The printer found what the language was missing.} Of the 91
+declarations the environment holds, five had types it refused, and they are
+most of Table~\ref{tab:lemmas}: \code{snoc\_le}, \code{stuck},
+\code{fold\_preserves}, \code{fold\_terminates},
+\code{loop\_preserves}. Every one for the same reason, a $\lambda$ inside a
+\emph{type}: an induction motive in the first, the \code{Nat.rec} of
+\S\ref{sec:loops} in the rest. Normalising removes neither. So the subset gained $\lambda x : A,\ b$ on both sides at
+once, which is what keeps the two inverse; every type and every value in that
+environment, 141 terms, now round-trips, and
+Appendix~\ref{sec:appendix} is written in \LaTeX{} on the strength of it. A
+latent bug came out with it: the parser stopped an application at a
+\code{\textbackslash forall} but an atom did not, so an arrow whose right side
+began with one read the binder as a variable \emph{named} \code{forall}, and
+failed later, somewhere confusing.
+
 \section{Contracts as decidable propositions}
 \label{sec:contracts}
 
@@ -294,6 +333,7 @@ several loop-carried variables & packed into a right-nested \code{Prod} \\
 \end{table}
 
 \subsection{The \code{while} rule}
+\label{sec:whilerule}
 
 A while loop terminates for a reason the text does not state, so lowering one
 unannotated means inventing a variant---a guess where a guess is an unproved
@@ -499,6 +539,7 @@ URL, in order; and \code{accepted}'s result is never longer than its input,
 \emph{for every input}.
 
 \subsection{\code{accepted}, end to end}
+\label{sec:accepted}
 
 \begin{lstlisting}
 @procedure(ensures=['len(result) <= len(split(urls, 44))'])
@@ -748,13 +789,125 @@ the same checker changes what a C compiler emits is the demonstration that
 verification is not a subject but a discipline, running from a theorem in
 \LaTeX{} to the instruction a machine executes.
 
+\appendix
+
+\section{The OS model as one proposition}
+\label{sec:appendix}
+
+Everything \S\ref{sec:state} and \S\ref{sec:os} prove about \code{crustos} is
+two theorems, and their conjunction is a proposition the kernel checks.
+Equation~\eqref{eq:crustos} is that conjunction, with the braces expanding
+each name into what it stands for, down to the fold a \code{while} lowers to.
+
+It can be written at all because the statement language now reads and writes a
+$\lambda$ (\S\ref{sec:kernel}). Every fragment below is \code{type2latex}
+output, so every fragment reads back as the term it came from; the equation
+abbreviates only the names, per Table~\ref{tab:abbrev}, and curries the fold's
+three binders into one $\lambda$. Listing~\ref{lst:raw} gives one of them
+unabbreviated, exactly as printed.
+
+\newcommand{\ctx}{\code{Ctx}}
+\newcommand{\cur}[1]{#1.\code{cur}}
+\newcommand{\nth}[1]{#1.\code{n}}
+\newcommand{\hld}{\code{Holds}}
+
+\begin{equation}
+\label{eq:crustos}
+\footnotesize
+\begin{aligned}
+&\overbrace{
+  \underbrace{\forall c \in \ctx}_{\text{every state, not a tested one}},\;
+  \hld\,\bigl(\underbrace{I}_{\lambda c,\ \code{leb}\,(\cur{c})\,(\nth{c})}\; c\bigr)
+  \;\to\;
+  \hld\,\bigl(I\;(\underbrace{\code{tick}\,(\code{sched}\,(\code{tick}\;c))}_{\code{run}\ =\ \text{three syscalls, proofs chained}})\bigr)
+}^{\textbf{the state layer}\ (\S\ref{sec:state})}
+\\[2.2ex]
+&\hspace{3em}\text{where}\quad
+\code{sched}\;c \;=\;
+\underbrace{
+  \code{Nat.rec}\;(\lambda n,\ \ctx \to \ctx)\;(\lambda s,\ s)\;\code{step}\;
+  \underbrace{(\code{rank}\ c)}_{\code{sub}\,(\nth{c})\,(\cur{c})}\;c
+}_{\code{sched.loop1}:\ \text{the variant bounds the passes, so the fold is the loop}}
+\\[2.2ex]
+&\hspace{3em}\phantom{\text{where}}\quad
+\code{step} \;=\;
+\lambda k\ \mathit{ih}\ s,\ \mathit{ih}\,\bigl(\code{ite}\;\ctx\;
+    \underbrace{(\code{cond}\ s)}_{\code{ltb}\,(\cur{s})\,(\nth{s})}\;
+    (\code{pass}\ s)\;s\bigr)
+\\[2.2ex]
+&\;\wedge\;
+\overbrace{
+  \forall\,\mathit{ns}\;\mathit{us},\;
+  \hld\,\Bigl(\code{leb}\;
+    \bigl(\code{len}\;\underbrace{(\code{accepted}\;\mathit{ns}\;\mathit{us})}_{\text{a \code{while} carrying a } \code{Prod}}\bigr)\;
+    \bigl(\code{len}\;(\underbrace{\code{split}\;\mathit{us}\;44}_{44\ \text{is}\ \code{,}})\bigr)\Bigr)
+}^{\textbf{the routing layer}\ (\S\ref{sec:os})}
+\end{aligned}
+\end{equation}
+
+Read from the outside in. The first conjunct is preservation: assume the
+invariant of an arbitrary context, and it still holds of the context the three
+composed syscalls hand back. The \code{where} line is the only place a
+$\lambda$ is unavoidable --- \code{Nat.rec}'s motive is one, and so is each
+minor premise --- which is why five of the environment's declarations had no
+\LaTeX{} spelling before this paper. The second conjunct is
+\code{accepted}'s postcondition from \S\ref{sec:accepted}, quantified over
+every input rather than checked at a batch.
+
+Nothing in the equation is a metatheorem stated in prose. \code{cond},
+\code{pass} and \code{rank} are separate definitions in the environment
+because a general lemma about folds can only apply to a particular loop if
+that loop's parts are named; \code{fold\_terminates} and
+\code{loop\_preserves} are the lemmas, and the four obligations of
+\S\ref{sec:whilerule} are what connect them to this \code{sched}.
+
+\begin{table}[h]
+\centering
+\small
+\begin{tabular}{lll}
+\toprule
+in \eqref{eq:crustos} & in the environment & is \\
+\midrule
+$\ctx$ & \code{Context} & a six-field record \\
+$I$ & \code{Context.invariant} & $\lambda c,\ \code{leb}\ (\cur{c})\ (\nth{c})$ \\
+$\cur{c}$, $\nth{c}$ & \code{Context.current}, \code{Context.nthreads} & projections, by $\iota$ \\
+\code{cond}, \code{pass}, \code{rank} & \code{sched.cond1}, \code{sched.pass1}, \code{sched.rank1} & the loop, in parts \\
+\code{tick} (second use) & \code{tick2} & see below \\
+\bottomrule
+\end{tabular}
+\caption{The equation shortens names and nothing else.}
+\label{tab:abbrev}
+\end{table}
+
+Two honest notes. \code{run} composes \code{tick}, \code{sched} and
+\code{tick}, but the environment holds the second under the name \code{tick2}:
+\code{declare} refuses to rebind a name, so a section that has already defined
+a \code{tick} gets a fresh one rather than a silent overwrite. And
+\code{sched.pass1} is written out in \eqref{eq:crustos} as \code{pass}; in
+full it applies \code{Context.with\_current} and then reads \code{ticks} back
+off the result, because an assignment is a substitution in the compiler and
+two assignments to the same context nest:
+
+\begin{lstlisting}[language={},caption={\code{type2latex(value\_of(env, 'sched.pass1'))}: line-wrapped to fit, and otherwise character for character what the printer emitted.},label={lst:raw}]
+\lambda x : \text{Context}, \text{Context.with\_ticks}
+  (\text{Context.with\_current} x (\text{add} (\text{Context.current} x) 1))
+  (\text{add} (\text{Context.ticks}
+     (\text{Context.with\_current} x (\text{add} (\text{Context.current} x) 1))) 1)
+\end{lstlisting}
+
+\noindent
+Handed back to \code{latex2type}, that string is the same term again. The
+whole environment behind \eqref{eq:crustos} --- 141 types and values --- has
+that property, which is what makes an appendix written in \LaTeX{} a claim
+about the model rather than a description of it.
+
 \section*{Reproducibility - Source Code}
 
 \url{https://github.com/brentharts/RosettaMath} \\
 \url{https://github.com/brentharts/crust}
 
 \begin{lstlisting}[language={}]
-python3 lean4.py --selftest    # 153 checks, byte-identical to before this work
+python3 lean4.py --selftest    # 177 checks; the demo output is byte-identical
 python3 hoare.py               # 157 checks, about a third of them refusals
 python3 crustproof.py          #  21 checks, including the differential test
 make test_crust                # 495 tests; plus test_contracts (15),

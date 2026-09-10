@@ -4,7 +4,7 @@
 imperative language built on it, used to model an seL4-style OS kernel.
 
 ```sh
-python3 lean4.py --selftest    # 153 checks
+python3 lean4.py --selftest    # 177 checks
 python3 hoare.py               # 157 checks
 python3 crustproof.py          #  21 checks, incl. the differential test
 ```
@@ -57,6 +57,49 @@ drawing the line exactly where the rewrites do.
 
 Every kernel change was gated on **byte-identical selftest and demo output**.
 The demo caught the bug the selftest did not.
+
+---
+
+## 1.2 The statement language, and the way back
+
+The front end reads a small LaTeX subset: `\text{Nat}`, `A \to B`,
+`\forall x \in A, B`, `\lambda x : A, b`, `\forall \{A : T\}, B`, application
+by juxtaposition, `a = b`, and numerals. `type2latex` is that grammar read
+right to left, and the property that makes it worth having is
+
+```
+latex2type(type2latex(t)) == t
+```
+
+It is written against the parser, not against taste: every shape it emits is
+emitted because the parser accepts it, and anything the parser could not read
+back is refused with the reason — a hole, a loose index, `Type 1`, a name like
+`N` that the reader would alias away. `pretty` is not this function and cannot
+become it; it prints `Type 1`, `?A7`, `λ` and `x'`, none of which the reader
+takes.
+
+Two places where the term does not determine the text:
+
+| | |
+| :--- | :--- |
+| binder names | `key()` ignores a name hint, so the name may change — but `tokenize` splits `Nat` into `N`, `a`, `t` and a binder name is one token, so it must be a single letter, and `fresh`'s `x'` is two tokens. The letter chosen also avoids the free names of the body, or the reader would abstract two variables into one. |
+| `a = b` | the parser recovers `Eq`'s carrier from the binder that introduced an operand, so this form is written only when that lookup returns *this* carrier; otherwise `Eq A a b` is written out, which always reads back. |
+
+**The lambda was added because the printer found what was missing.** Five of
+the 91 declarations below — `snoc_le`, `stuck`, `fold_preserves`,
+`fold_terminates`, `loop_preserves`, which is most of §4.2 — had types the
+statement language could not write down, since an induction motive and the
+`Nat.rec` a loop lowers to are both lambdas *inside a type*. Normalising
+removes neither: `snoc_le`'s is an unreduced motive redex and
+`fold_preserves`'s is the fold itself. Widening the grammar on both sides at
+once is what keeps the two inverse. Every type and every value in the
+environment — 141 terms — now round-trips, which is how the OS model in
+Appendix A of `leanproof.tex` is written in LaTeX at all.
+
+A related bug fell out of it. `application()` stopped at `\forall` but
+`atom()` did not, so `\text{Nat} \to \forall x \in \text{Nat}, x` read
+`\forall` as a variable *named* `forall` and failed later, somewhere
+confusing. A binder where an atom belongs is now refused by name.
 
 ---
 

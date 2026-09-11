@@ -1,6 +1,7 @@
 # RosettaMath
 
 *Bridging the gap between mathematical notation and executable Python.*
+- https://dx.doi.org/10.2139/ssrn.7443439 "A Second Kernel Agrees: "LEAN Proofs Small Enough to Read", Checked by Lean4 and Read Four Ways"
 - https://ai.vixra.org/abs/2609.0019 "LEAN Proofs Small Enough to Read: Kernel Contracts from LATEX Theorems to Compiler Decisions"
 - https://dx.doi.org/10.2139/ssrn.7435598 "RosettaMath: Reading, Running and Proving Mathematics from LATEX"
 

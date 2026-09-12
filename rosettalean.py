@@ -357,7 +357,7 @@ def conjecture(derivation, name=None):
     label = name or _label(derivation)
     notes = ['%s : %s' % (step.equation.label, step.expr)
              for step in derivation.steps]
-    notes.append('joined on %s' % derivation.pivot)
+    notes.append('joined on %s' % P.pivot_tex(derivation.pivot))
     return Conjecture(label, statement, reader, source, notes)
 
 

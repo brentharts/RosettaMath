@@ -1050,6 +1050,62 @@ interference. The measurable prediction is the squared modulus, which is real,
 but the phase that got you there is not decoration.
 """, 'Complex_number', ['i', '\\exp', '\\Re', '\\Im'])
 
+add_concept('Aperiodic tilings and the domino problem', 'Tilings', """
+A set of tiles is aperiodic when it tiles the plane and every tiling it admits
+lacks a translational period. That such a set exists at all was not obvious.
+Wang conjectured in 1961 that any set of tiles able to cover the plane could
+cover it periodically, and observed that if he were right, the question of
+whether a given set tiles at all would be decidable: search outward from a
+patch, and either you close up a period or you jam.
+
+Berger disproved the conjecture in 1966 by constructing an aperiodic set, and
+in doing so proved the domino problem undecidable -- a set of Wang tiles can
+encode the tape of a Turing machine, so asking whether it tiles the plane is
+asking whether the machine runs forever. Berger's set had over twenty thousand
+tiles; Jeandel and Rao brought the minimum to eleven in 2015, and proved that
+eleven cannot be beaten.
+
+This is worth stating in a library of equations precisely because it cannot be
+one. Everything else here is a relation between quantities that some procedure
+could in principle evaluate. The domino problem is a statement about tiles that
+is perfectly precise, entirely finite to write down, and provably beyond any
+procedure at all. It marks the edge of what a knowledge base of this kind can
+promise: the Lean conjectures this module generates ask whether a statement is
+well formed, which is decidable, and never whether it is true, which in general
+is not.
+
+The Penrose tilings are the famous aperiodic set, and their obstruction is
+arithmetic rather than computational: fat and thin rhombs occur in the ratio of
+the golden ratio, and a periodic tiling would force that ratio to be rational.
+""", 'Wang_tile', [], ['Golden ratio', 'Penrose tile ratio',
+                       'Inflation quadratic'])
+
+add_concept('Area as an action', 'Extremal geometry', """
+A soap film spanning a wire loop has no memory, no dynamics and nothing to
+compute with, and it finds a minimal surface anyway. The reason is that surface
+tension makes energy proportional to area, so the film's equilibrium is
+whatever shape makes area stationary. Setting the first variation of the area
+integral to zero gives the minimal surface equation, and the condition it
+encodes is that mean curvature vanishes everywhere.
+
+The same sentence, with two words changed, is the founding statement of string
+theory. A relativistic point particle extremises the length of its worldline. A
+relativistic string extremises the area of the sheet it sweeps out, and the
+Nambu-Goto action is that area multiplied by a tension. Nothing has been added:
+the variational problem is the one Plateau posed about films, transplanted from
+Euclidean space to Minkowski spacetime, where the signature puts a minus sign
+under the square root.
+
+What this group of entries is really about is the price of a constraint. Hold a
+boundary fixed and area cannot go below some value. Demand a segment in every
+direction and measure can be pushed to zero but dimension cannot. Close a
+surface up and total curvature is pinned to a whole number by Gauss-Bonnet, no
+matter how the surface is bent. In each case a geometric demand is made and the
+answer comes back as a number that will not move.
+""", 'Plateau%27s_problem', [], ['Area functional', 'Minimal surface equation',
+                                 'Minimal surface condition',
+                                 'Nambu-Goto action', 'Gauss-Bonnet theorem'])
+
 
 # ---------------------------------------------------------------- equations
 #
@@ -1532,6 +1588,216 @@ EQUATIONS = [
                    'apart. One power of r rather than two: the force is the '
                    'derivative of this, and differentiating is where the '
                    'second power comes from.'),
+
+    # -- tilings ---------------------------------------------------------
+    #
+    # These sit here because the library is about notation, and the notation
+    # of an aperiodic tiling is arithmetic: the whole obstruction to a tiling
+    # repeating is that a ratio of counts comes out irrational.
+
+    equation(name='Golden ratio', field='Tilings',
+             latex=r'\phi = \frac{1 + \sqrt{5}}{2}', slug='Golden_ratio',
+             must=['phi', 'S:frac', 'S:sqrt'], nice=[],
+             blurb='The positive root of x^2 = x + 1, and the inflation factor '
+                   'of the Penrose tilings. Its irrationality is not a '
+                   'curiosity here: a tiling with a translational period has '
+                   'only finitely many tiles per cell, so its tile ratios are '
+                   'rational, and a tiling whose ratio is this number '
+                   'therefore cannot have one.'),
+    equation(name='Inflation quadratic', field='Tilings',
+             latex=r'\lambda^2 = \lambda + 1', slug='Substitution_tiling',
+             must=['lambda', 'S:sup2'], nice=[],
+             blurb='The characteristic equation of the Fibonacci substitution '
+                   'matrix, and the defining property of the golden ratio: a '
+                   'length that reproduces itself plus a copy of what came '
+                   'before. The eigenvalue is what a substitution rule '
+                   'multiplies lengths by, and whether it is rational decides '
+                   'whether the tiling can repeat. Note the collision: lambda '
+                   'is a wavelength three entries above this one.'),
+    equation(name='Penrose tile ratio', field='Tilings',
+             latex=r'N_f = \phi N_t', slug='Penrose_tiling',
+             must=['N', 'phi'], nice=['S:sub'],
+             blurb='In any Penrose tiling of the plane, fat rhombs outnumber '
+                   'thin ones by the golden ratio in the limit of a large '
+                   'patch. The counts themselves are unbounded and mean '
+                   'nothing; the ratio is the invariant, and it is the same '
+                   'for every one of the uncountably many distinct tilings.'),
+    equation(name='Inflation of area', field='Tilings',
+             latex=r"A' = \phi^2 A", slug='Penrose_tiling',
+             must=['A', 'phi', 'S:sup2'], nice=[],
+             blurb='One step of inflation scales lengths by the golden ratio '
+                   'and so scales areas by its square. This is where the '
+                   'tilings meet the rest of this group: an inflation rule is '
+                   'a statement about how area is budgeted, which is also what '
+                   'a minimal surface and a string worldsheet are about.'),
+
+    # -- extremal geometry -----------------------------------------------
+
+    equation(name='Euler characteristic of a closed surface', field='Extremal geometry',
+             latex=r'\chi = 2 - 2 g', slug='Euler_characteristic',
+             must=['chi', 'g'], nice=[],
+             blurb='Two for a sphere, nought for a torus, and down by two for '
+                   'every handle added. Nothing short of cutting the surface '
+                   'changes it, which is what makes it worth computing -- and '
+                   'in string perturbation theory the genus counting handles '
+                   'is also the genus counting loops.'),
+    equation(name='Riemann-Hurwitz (unbranched)', field='Extremal geometry',
+             latex=r'\chi_C = n \chi_B', slug='Riemann%E2%80%93Hurwitz_formula',
+             must=['chi', 'n'], nice=['S:sub'],
+             blurb='An n-sheeted cover of a surface has n times its Euler '
+                   'characteristic, provided nothing is branched. The full '
+                   'formula subtracts a term for each ramification point; this '
+                   'is the case where that term is absent, which is the case '
+                   'that says a torus can cover a torus and nothing can cover '
+                   'a sphere except a sphere.'),
+    equation(name='Gauss-Bonnet theorem', field='Extremal geometry',
+             latex=r'\int_M K \, dA + \oint_{\partial M} k_g \, ds = 2 \pi \chi',
+             slug='Gauss%E2%80%93Bonnet_theorem',
+             must=['K', 'chi', 'pi', 'S:int'], nice=['S:sub'],
+             blurb='Total curvature is topology. The left side is measured '
+                   'with a ruler and depends on the shape; the right side is a '
+                   'whole number that does not. Bend the surface however you '
+                   'like and the curvature moves around without the integral '
+                   'changing, which is the sharpest statement in this group of '
+                   'what a constraint on geometry costs.'),
+    equation(name='Mean curvature', field='Extremal geometry',
+             latex=r'H = \frac{\kappa_1 + \kappa_2}{2}',
+             slug='Mean_curvature',
+             must=['H', 'kappa', 'S:frac'], nice=['S:sub'],
+             blurb='The average of the two principal curvatures at a point. '
+                   'Note the collision: H is a Hamiltonian everywhere else in '
+                   'this library.'),
+    equation(name='Minimal surface condition', field='Extremal geometry',
+             latex=r'H = 0', slug='Minimal_surface',
+             must=['H'], nice=[],
+             blurb='A surface is minimal exactly when its mean curvature '
+                   'vanishes everywhere. It does not say the surface has least '
+                   'area outright -- only that area is stationary under small '
+                   'deformations, which is the same distinction as between a '
+                   'minimum and a turning point. A soap film finds one of '
+                   'these because surface tension makes area the energy.'),
+    equation(name='Minimal surface equation', field='Extremal geometry',
+             latex=r'(1 + u_y^2) u_{xx} - 2 u_x u_y u_{xy} + (1 + u_x^2) u_{yy} = 0',
+             slug='Minimal_surface',
+             must=['u', 'S:sub', 'S:sup2'], nice=[],
+             blurb='The mean-curvature condition written out for a surface '
+                   'given as a height above the plane. It is the Euler-Lagrange '
+                   'equation of the area functional, and it is quasilinear '
+                   'rather than linear -- the coefficients contain the slopes '
+                   'of the very solution being sought, which is why soap films '
+                   'are hard and Laplace\'s equation is easy.'),
+    equation(name='Catenoid', field='Extremal geometry',
+             latex=r'r = c \cosh \left( \frac{z}{c} \right)', slug='Catenoid',
+             must=['r', 'c', 'z'], nice=['S:frac'],
+             blurb='The surface swept by rotating a catenary, and after the '
+                   'plane the first minimal surface anyone found. Stretch the '
+                   'two rings holding the soap film too far apart and no '
+                   'catenoid joins them: the solution stops existing and the '
+                   'film snaps to two discs.'),
+    equation(name='Area functional', field='Extremal geometry',
+             latex=r'A = \int \int \sqrt{1 + |\nabla u|^2} \, dx \, dy',
+             slug='Plateau%27s_problem',
+             must=['A', 'nabla', 'S:int', 'S:sqrt'], nice=[],
+             blurb='The area of a surface given as a height above the plane. '
+                   'Plateau\'s problem is to minimise this with the boundary '
+                   'held fixed, and the minimal surface equation is what comes '
+                   'out of setting its first variation to zero. The square '
+                   'root is the whole difficulty.'),
+    equation(name='Kakeya conjecture', field='Extremal geometry',
+             latex=r'\dim_H K = n', slug='Kakeya_set',
+             must=['K', 'n'], nice=['S:sub'],
+             blurb='A Kakeya set contains a unit segment in every direction '
+                   'and can have measure zero, which is Besicovitch\'s '
+                   'construction. The conjecture is that it cannot be small in '
+                   'the dimensional sense as well: its Hausdorff dimension '
+                   'must be the full n. Settled in the plane long ago, and in '
+                   'three dimensions by Wang and Zahl in 2025.'),
+    equation(name='Perron tree bound', field='Extremal geometry',
+             latex=r'A \leq \frac{C}{\log n}', slug='Kakeya_set',
+             must=['A', 'C', 'S:frac'], nice=[],
+             blurb='Bisect a triangle, slide the halves together so they '
+                   'overlap, and repeat: after n steps the figure still points '
+                   'in all the original directions but its area has fallen '
+                   'like one over log n. The decay is slow, and unbounded, '
+                   'which is how a needle turns around in arbitrarily little '
+                   'area.'),
+
+    # -- string theory ----------------------------------------------------
+    #
+    # A note on the signatures below.  The classifier in rosettaui reads a
+    # drawn formula and emits 'alpha' for \alpha', because the prime is a
+    # separate glyph to it; the algebra here reads the same thing as one
+    # quantity called alpha_prime, because a prime belongs to the name.  Both
+    # are right for what they do, and the two vocabularies have to meet
+    # somewhere.
+    #
+    # They meet in the signature.  'alpha' goes in must, so the classifier can
+    # still identify these from a drawing; 'alpha_prime' goes in nice, where
+    # the graph can pivot on it and where never matching costs nothing, since
+    # a nice feature is optional by definition.  Teaching extract_features to
+    # emit both would let the two agree properly, and is the better fix.
+
+    equation(name='Nambu-Goto action', field='String theory',
+             latex=r'S = -T \int d^2\sigma \sqrt{-\det(h_{ab})}',
+             slug='Nambu%E2%80%93Goto_action',
+             must=['S', 'T', 'sigma', 'S:int', 'S:sqrt'], nice=['S:sup2'],
+             blurb='The action of a string is the area of the sheet it sweeps '
+                   'through spacetime, times its tension. That is the whole '
+                   'content: a point particle extremises its worldline length, '
+                   'a string extremises its worldsheet area, and everything '
+                   'else in the subject is consequence. It is also why minimal '
+                   'surfaces belong in the same group as this.'),
+    equation(name='String tension', field='String theory',
+             latex=r"T = \frac{1}{2 \pi \alpha'}", slug='String_(physics)',
+             must=['T', 'alpha', 'pi', 'S:frac'], nice=['alpha_prime'],
+             blurb='Tension and the Regge slope are the same parameter '
+                   'inverted. Note the collision: T is a temperature and a '
+                   'period elsewhere in this library, and alpha prime is not '
+                   'alpha -- the prime is part of the name, not an operation.'),
+    equation(name='Regge trajectory', field='String theory',
+             latex=r"J = \alpha' M^2 + \alpha_0", slug='Regge_theory',
+             must=['J', 'alpha', 'M', 'S:sup2'], nice=['S:sub', 'alpha_prime'],
+             blurb='Spin against mass squared, and the points lie on a line. '
+                   'This was measured in hadron spectra before anyone proposed '
+                   'a string, and explaining the straightness is what strings '
+                   'were invented to do: a spinning relativistic string has '
+                   'exactly this relation between its angular momentum and its '
+                   'energy.'),
+    equation(name='String length', field='String theory',
+             latex=r"\ell_s = \sqrt{\alpha'}", slug='String_(physics)',
+             must=['ell', 'alpha', 'S:sqrt'], nice=['S:sub', 'alpha_prime'],
+             blurb='The one length the theory has, in natural units. Every '
+                   'statement about strings being small is a statement about '
+                   'this number, and nothing in the theory predicts it.'),
+    equation(name='Genus expansion', field='String theory',
+             latex=r'Z = \sum_g g_s^{-\chi} Z_g', slug='String_theory',
+             must=['Z', 'chi', 'S:sum'], nice=['S:sub', 'S:sup'],
+             blurb='The perturbation series of string theory is a sum over '
+                   'surfaces, ordered by how many handles they have. The '
+                   'exponent is minus the Euler characteristic, so by chi = 2 '
+                   '- 2g each extra handle costs two powers of the coupling. '
+                   'A loop expansion and a classification of surfaces turn out '
+                   'to be the same list.'),
+    equation(name='Critical dimension', field='String theory',
+             latex=r'D = 26', slug='Critical_dimension',
+             must=['D'], nice=[],
+             blurb='The bosonic string is only consistent in twenty-six '
+                   'spacetime dimensions; the superstring, in ten. The number '
+                   'is not chosen. It is what makes a quantum anomaly cancel, '
+                   'and getting a specific integer out of a consistency '
+                   'condition rather than out of observation is the most '
+                   'unusual thing about the subject.'),
+    equation(name='Hagedorn temperature', field='String theory',
+             latex=r"T_H = \frac{1}{4 \pi \sqrt{\alpha'} k_B}",
+             slug='Hagedorn_temperature',
+             must=['T', 'alpha', 'k', 'S:frac', 'S:sqrt'],
+             nice=['pi', 'S:sub', 'alpha_prime'],
+             blurb='Heat a gas of strings and the number of available states '
+                   'grows exponentially with energy, so above this temperature '
+                   'the partition function diverges and temperature stops '
+                   'meaning anything. It is where this group rejoins ordinary '
+                   'physics: the Boltzmann constant appears, and the quantity '
+                   'on the left is the same temperature as in the gas laws.'),
 ]
 
 EQUATION_FAMILIES = [
@@ -1795,6 +2061,7 @@ NON_ALGEBRAIC = {
     r'\Box': "the d'Alembert operator",
     r'\sum': 'a summation',
     r'\prod': 'a product over an index',
+    r'\dim': 'a dimension, not a factor',
     r'\int': 'an integral',
     r'\oint': 'a contour integral',
     r'\pm': 'an ambiguous sign',
@@ -1956,11 +2223,37 @@ class TermParser:
     def power(self, stop=()):
         base = self.atom()
         while self.peek() == '^':
+            if self._prime_ahead():
+                # \alpha^\prime and \alpha^{\prime} are the same quantity as
+                # \alpha', and none of the three is alpha raised to anything.
+                # Left alone, this reads as a power whose exponent is a symbol
+                # called 'prime', which then joins to every other equation
+                # mentioning it.
+                base = self._primed(base)
+                continue
             self.next()
             base = Op('pow', base, self.group())
         if self.peek() == '_':                    # a trailing index on a group
             raise Unreadable('a subscript in a position that is not a name')
         return base
+
+    def _prime_ahead(self):
+        """Is the ^ at the cursor followed by nothing but a prime mark?"""
+        if self.peek(1) == r'\prime':
+            return True
+        return (self.peek(1) == '{' and self.peek(2) == r'\prime'
+                and self.peek(3) == '}')
+
+    def _primed(self, base):
+        """Consume a ^\\prime or ^{\\prime} and mark the name it belongs to."""
+        self.next()                                       # the ^
+        self.next()                                       # \prime or {
+        if self.peek() == r'\prime':
+            self.next()
+            self.expect('}')
+        if not isinstance(base, Sym):
+            raise Unreadable('a prime on something that is not a name')
+        return Sym(base.name + '_prime', base.tex + "'")
 
     def atom(self):
         t = self.next()
@@ -2013,6 +2306,16 @@ class TermParser:
             base = tex = token
         else:
             raise Unreadable('no reading for %r' % token)
+        # a prime is part of the name, not an operation on it.  alpha' is the
+        # Regge slope and alpha is a different number entirely; x' is the
+        # coordinate in the other frame.  Reading the mark as anything else
+        # would let the rearranger cancel a quantity against its own primed
+        # version, which is the same class of error as joining two equations on
+        # a letter they disagree about.
+        primes = 0
+        while self.peek() in ("'", r'\prime'):
+            self.next()
+            primes += 1
         if self.peek() == '_':
             self.next()
             index = self.raw_group()
@@ -2021,6 +2324,16 @@ class TermParser:
             # keeps them apart when it comes time to solve for one
             base = '%s_%s' % (base, _clean_index(index))
             tex = '%s_{%s}' % (tex, index)
+        while self.peek() in ("'", r'\prime'):     # x'_i and x_i' both occur
+            self.next()
+            primes += 1
+        if primes:
+            # spelt out, because the name has to survive becoming a Python
+            # identifier, and Python does not accept an apostrophe.  Lean would
+            # have taken alpha' happily; the printer keeps the mark in tex, so
+            # only the internal name is spelt.
+            base = base + '_prime' * primes
+            tex = tex + "'" * primes
         return Sym(base, tex)
 
 
@@ -2053,11 +2366,25 @@ def algebraic(latex):
 # nothing in this algebra can divide by one.  The test is deliberately narrow:
 # a \text{...} label under a brace is also a command inside a subscript, and
 # refusing those would refuse every composed statement this module builds.
+#
+# Narrow, but the first version was not narrow enough: it refused a brace that
+# merely *contained* a Greek command anywhere, which is true of an index and
+# equally true of an exponent.  So e^{i \pi} was read as a tensor component and
+# Euler's identity was refused for a reason that was not about it, and
+# g_s^{-\chi} -- the string genus expansion, where chi is a number and not an
+# index -- would have been refused the same way.
+#
+# An index is the whole of what sits in the brace: one or more Greek letters
+# and nothing else.  The moment a digit, a sign, an operator or a Latin letter
+# appears alongside, the brace is an expression, and an expression is the
+# algebra's business.  A lone braced Greek is still read as an index, because
+# T^{\mu} is a component and the exponent that wanted to be a power should have
+# been written without the brace.
 _GREEK_INDEX = ('alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta',
                 'theta', 'iota', 'kappa', 'lambda', 'mu', 'nu', 'xi', 'pi',
                 'rho', 'sigma', 'tau', 'upsilon', 'phi', 'chi', 'psi', 'omega')
 _TENSOR_INDEX = re.compile(
-    r'[_^]\s*\{[^{}]*\\(?:%s)\b' % '|'.join(_GREEK_INDEX))
+    r'[_^]\s*\{\s*(?:\\(?:%s)\b\s*)+\}' % '|'.join(_GREEK_INDEX))
 
 
 def read_term(latex, strict=True):
@@ -2470,6 +2797,108 @@ add_quantity('dimensionless', '1',
              'A pure number: a ratio, a count, an index, or an argument to a '
              'logarithm.', 'Dimensionless_quantity')
 
+# -- geometry, topology and the string ------------------------------------
+#
+# Two warnings about what follows.
+#
+# First, most of these are dimensionless, and dimensional analysis therefore
+# cannot tell a genus from a tile count from a Hausdorff dimension.  That is
+# precisely why they are listed separately rather than all folded into
+# 'dimensionless': the dimension string is not what keeps them apart, the name
+# is, and a pivot needs the name.
+#
+# Second, the string entries are in natural units, where hbar and c are one.
+# The Regge slope is written L^2 and the tension L^-2 because that is what they
+# are once the constants are set to one -- not because a tension is really an
+# inverse area.  Restoring the constants is a separate job, and pretending
+# otherwise here would put a false dimension in the table.
+
+add_quantity('golden ratio', '1',
+             'The positive root of x^2 = x + 1. It is the inflation factor of '
+             'the Penrose tilings, and the reason those tilings cannot repeat: '
+             'a periodic tiling forces a rational ratio of tile counts, and '
+             'this number is not one.', 'Golden_ratio', kind='constant')
+add_quantity('inflation factor', '1',
+             'What a substitution rule multiplies a length by each time it is '
+             'applied. When it is irrational the tiling it generates has no '
+             'translational period.', 'Substitution_tiling')
+add_quantity('patch area', 'L^2',
+             'The area of a finite patch of a tiling. An area, and joinable '
+             'to nothing else that is one: a tiling patch can be made as large '
+             'as you like, so equating it to a horizon area or a soap film '
+             'would be a true conditional about nothing. Dimensional agreement '
+             'is not the test -- the test is whether the two equations are '
+             'about the same thing.', 'Penrose_tiling')
+add_quantity('tile count', '1',
+             'How many tiles of one kind appear in a patch. Only ratios of '
+             'these are meaningful, since the patch can always be made bigger.',
+             'Penrose_tiling')
+add_quantity('genus', '1',
+             'The number of handles on a closed orientable surface: nought for '
+             'a sphere, one for a torus. In string perturbation theory it is '
+             'also the loop order.', 'Genus_(mathematics)')
+add_quantity('euler characteristic', '1',
+             'A whole number attached to a surface that no amount of bending '
+             'can change. It is what makes topology quantitative, and it is '
+             'the exponent the string coupling is raised to.',
+             'Euler_characteristic')
+add_quantity('covering degree', '1',
+             'How many sheets of a covering surface sit over each point of the '
+             'surface below.', 'Covering_space')
+add_quantity('mean curvature', 'L^-1',
+             'The average of the two principal curvatures. Setting it to zero '
+             'is what makes a surface minimal.', 'Mean_curvature')
+add_quantity('principal curvature', 'L^-1',
+             'The largest and smallest curvatures of the normal sections at a '
+             'point on a surface.', 'Principal_curvature')
+add_quantity('gaussian curvature', 'L^-2',
+             'The product of the principal curvatures. Unlike the mean '
+             'curvature it survives bending the surface without stretching it, '
+             'which is what Gauss called remarkable.', 'Gaussian_curvature')
+add_quantity('geodesic curvature', 'L^-1',
+             'How far a curve drawn on a surface bends away from being a '
+             'geodesic of that surface.', 'Geodesic_curvature')
+add_quantity('slope', '1',
+             'A partial derivative of a height function: how steeply a surface '
+             'written as a graph rises in one direction.', 'Slope')
+add_quantity('hausdorff dimension', '1',
+             'A dimension that need not be a whole number, defined by how a '
+             'covering of the set scales. A Kakeya set can have measure zero '
+             'and still have full Hausdorff dimension.', 'Hausdorff_dimension')
+add_quantity('count', '1',
+             'A plain whole number of things -- steps in a construction, '
+             'sheets in a cover.', 'Natural_number')
+add_quantity('action', 'M L^2 T^-1',
+             'Energy times time: the quantity a physical path makes '
+             'stationary. Dimensionally identical to the Planck constant, '
+             'which is the point of calling h the quantum of action.',
+             'Action_(physics)')
+add_quantity('regge slope', 'L^2',
+             'Alpha prime, the one free parameter of the string: the square of '
+             'the string length, and the slope of the line that mass-squared '
+             'and spin lie on.', 'Regge_theory')
+add_quantity('string tension', 'L^-2',
+             'Energy per unit length of a string, which in natural units is '
+             'the reciprocal of the Regge slope up to a factor of two pi.',
+             'String_(physics)')
+add_quantity('string coupling', '1',
+             'The number that controls how readily a worldsheet splits. It is '
+             'not put in by hand: it is set by the vacuum value of the '
+             'dilaton.', 'String_theory')
+add_quantity('spin', '1',
+             'Angular momentum in units of hbar, which for the states on a '
+             'Regge trajectory is a whole number.', 'Spin_(physics)')
+add_quantity('partition function', '1',
+             'A sum over configurations, weighted. Everything thermodynamic, '
+             'and in string theory everything perturbative, is a derivative of '
+             'it.', 'Partition_function_(statistical_mechanics)')
+add_quantity('spacetime dimension', '1',
+             'How many coordinates it takes to label an event. A count, but '
+             'kept apart from other counts on purpose: pivoting the dimension '
+             'of spacetime against a number of steps in a construction would '
+             'be dimensionally impeccable and entirely meaningless.',
+             'Dimension_(vector_space)')
+
 # ---------------------------------------------------------------- readings
 #
 # What each equation's letters denote.  Keyed by equation name, then by the
@@ -2560,14 +2989,122 @@ READINGS = {
         'm_e': 'mass'},
     'Pythagorean theorem': {
         'a': 'length', 'b': 'length', 'c': 'length'},
+
+    # -- tilings, geometry and the string --------------------------------
+    #
+    # Three of these tables exist only to be read, not to be joined: an
+    # equation the algebra has refused cannot be solved for anything, so its
+    # readings buy no derivations.  They are here because the appendix prints
+    # this table as the library's statement of what its letters mean, and an
+    # equation that declines to say is a gap in that statement rather than a
+    # saving.
+
+    'Golden ratio': {'phi': 'golden ratio'},
+    'Inflation quadratic': {'lambda': 'inflation factor'},
+    'Penrose tile ratio': {
+        'N_f': 'tile count', 'phi': 'golden ratio', 'N_t': 'tile count'},
+    'Inflation of area': {
+        'A_prime': 'patch area', 'phi': 'golden ratio', 'A': 'patch area'},
+    'Euler characteristic of a closed surface': {
+        'chi': 'euler characteristic', 'g': 'genus'},
+    'Riemann-Hurwitz (unbranched)': {
+        'chi_C': 'euler characteristic', 'n': 'covering degree',
+        'chi_B': 'euler characteristic'},
+    'Gauss-Bonnet theorem': {
+        'K': 'gaussian curvature', 'k_g': 'geodesic curvature',
+        'pi': 'pi', 'chi': 'euler characteristic'},
+    'Mean curvature': {
+        'H': 'mean curvature', 'kappa_1': 'principal curvature',
+        'kappa_2': 'principal curvature'},
+    'Minimal surface condition': {'H': 'mean curvature'},
+    'Minimal surface equation': {'u_x': 'slope', 'u_y': 'slope'},
+    'Catenoid': {'r': 'length', 'c': 'length', 'z': 'length'},
+    'Area functional': {'A': 'area'},
+    'Kakeya conjecture': {'n': 'hausdorff dimension'},
+    'Perron tree bound': {
+        'A': 'area', 'C': 'dimensionless', 'n': 'count'},
+    'Nambu-Goto action': {'S': 'action', 'T': 'string tension'},
+    'String tension': {
+        'T': 'string tension', 'pi': 'pi', 'alpha_prime': 'regge slope'},
+    'Regge trajectory': {
+        'J': 'spin', 'alpha_prime': 'regge slope', 'M': 'mass',
+        'alpha_0': 'dimensionless'},
+    'String length': {'ell_s': 'length', 'alpha_prime': 'regge slope'},
+    'Genus expansion': {
+        'Z': 'partition function', 'chi': 'euler characteristic',
+        'g_s': 'string coupling'},
+    'Critical dimension': {'D': 'spacetime dimension'},
+    'Hagedorn temperature': {
+        'T_H': 'temperature', 'pi': 'pi', 'alpha_prime': 'regge slope',
+        'k_B': 'boltzmann constant'},
 }
+
+
+_SYMBOL_CACHE = {}
+
+
+def _symbols_present(eq):
+    """Every symbol name in an equation, parsed once and remembered."""
+    key = eq['name']
+    if key not in _SYMBOL_CACHE:
+        try:
+            _SYMBOL_CACHE[key] = set(read_relation(eq['latex']).symbols())
+        except Unreadable:
+            _SYMBOL_CACHE[key] = set()
+    return _SYMBOL_CACHE[key]
+
+
+def resolve_feature(eq, feature):
+    r"""Which symbol of `eq` a signature feature names.
+
+    The two vocabularies disagree about subscripts.  A signature says
+    'epsilon', because the classifier that reads a drawn formula folds the
+    subscript away; the algebra says 'epsilon_0', because m_1 and m_2 are two
+    masses and the subscript is part of the name.  Where they disagree the
+    join machinery used to fail silently -- solve() looked for a symbol called
+    'epsilon', found none, and returned None -- so Coulomb's law and the Debye
+    length could never be joined on a constant they both state.
+
+    Folding the subscript back is only safe for a constant, and the reason is
+    worth stating.  There is one permittivity of free space, so the epsilon_0
+    in Coulomb's law and the epsilon_0 in the Debye length are the same number
+    and equating them assumes nothing.  There are many energies.  Resolving
+    'E' to whichever energy an equation happens to mention produces
+
+        m c^2 = 1/2 m v^2
+
+    which identifies a rest energy with a kinetic one, and
+
+        1/2 m v^2 = k_B T
+
+    which looks like equipartition and is wrong by three halves -- the worse of
+    the two, because a reader might not stop.  Requiring the same letter was
+    never really about letters: it was a proxy for the two equations meaning
+    the same *instance*, and for anything but a constant the proxy is all there
+    is.  So the fold is allowed exactly where instance identity is free.
+
+    Ambiguity is refused outright.  Newton's law of gravitation has m_1 and
+    m_2, and 'm' names neither of them.
+    """
+    name = _term_name(feature)
+    present = _symbols_present(eq)
+    if name in present or not present:
+        return name
+    hits = [s for s in present if s.split('_')[0] == name]
+    if len(hits) != 1:
+        return name                  # absent, or two candidates: refuse
+    quantity = READINGS.get(eq['name'], {}).get(hits[0])
+    entry = QUANTITIES.get(quantity) if quantity else None
+    if entry is None or not entry.is_constant:
+        return name
+    return hits[0]
 
 
 def reading(eq, quantity):
     """What `eq` takes a symbol to denote, or None if it does not say."""
     eq = _as_equation(eq)
     table = READINGS.get(eq['name'], {})
-    return table.get(_term_name(quantity))
+    return table.get(resolve_feature(eq, quantity))
 
 
 def agree(a, b, quantity):
@@ -2735,7 +3272,23 @@ def structures(eq):
 # not thereby related; nearly every equation in mechanics mentions m.  Pivoting
 # a derivation on one of these produces a true statement that explains nothing,
 # which is worse than no statement at all.
-COMMON = {'m', 'r', 't', 'x', 'n', 'k', 'pi', 'i', 'd', 'a', 'f', 'partial'}
+#
+# The list predates the readings table, and was doing two jobs at once: keeping
+# out pivots that are uninformative, and keeping out pivots that are ambiguous.
+# agree() does the second job now and does it properly, so what is left here
+# should only be the first.  Measured against the current library, m suppresses
+# twenty-one statements, k and pi eight each and r three, and every one of them
+# is either vacuous or unwarranted -- so those stay.
+#
+# f was different.  It suppressed exactly one statement, omega / 2 pi = v /
+# lambda, which relates an angular frequency to a wave speed and is precisely
+# the kind of thing the library is for.  A letter that blocks one good join and
+# nothing else is not earning its place, so f is gone.
+#
+# t, x, i, d and a currently suppress nothing at all.  They are kept as a guard
+# for entries not yet written, which is a judgement rather than a measurement,
+# and worth revisiting if the list ever has to be defended.
+COMMON = {'m', 'r', 't', 'x', 'n', 'k', 'pi', 'i', 'd', 'a', 'partial'}
 
 
 def shared_quantities(a, b, interesting=True):
@@ -2842,6 +3395,57 @@ LINKS = [
      'the relation that says how fast'),
     ("Hubble's law", FIELD, 'Friedmann equation',
      'the Friedmann equation is what H obeys; Hubble\'s law is what H means'),
+
+    # -- tilings, geometry and the string --------------------------------
+
+    ('Golden ratio', SPECIALISES, 'Inflation quadratic',
+     'the surd is the solution of the quadratic; the quadratic is what the '
+     'number is for'),
+    ('Inflation of area', DEFINES, 'Golden ratio',
+     'inflation scales lengths by phi, so it scales areas by phi squared -- '
+     'the same constant, one dimension up'),
+    ('Riemann-Hurwitz (unbranched)', SPECIALISES,
+     'Euler characteristic of a closed surface',
+     'a cover has n times the Euler characteristic of what it covers, so by '
+     'chi = 2 - 2g it also has n times the handles, less n - 1 of them'),
+    ('Gauss-Bonnet theorem', DEFINES,
+     'Euler characteristic of a closed surface',
+     'the integral of curvature over a closed surface is 2 pi chi, which is '
+     'what makes a topological count something a ruler can measure'),
+    ('Mean curvature', DEFINES, 'Minimal surface condition',
+     'minimal means H = 0, and this is what H is'),
+    ('Minimal surface equation', SPECIALISES, 'Minimal surface condition',
+     'the same condition written out for a surface given as a height above '
+     'the plane, where it becomes a quasilinear partial differential equation'),
+    ('Catenoid', SPECIALISES, 'Minimal surface equation',
+     'the rotationally symmetric solution, and the first minimal surface found '
+     'that was not the plane'),
+    ('Area functional', DEFINES, 'Minimal surface equation',
+     'setting the first variation of the area integral to zero is where the '
+     'minimal surface equation comes from'),
+    ('Perron tree bound', SPECIALISES, 'Kakeya conjecture',
+     'the Perron construction settles the measure -- it can be made as small '
+     'as you like -- and leaves open the dimension, which is what the '
+     'conjecture is about'),
+    ('Nambu-Goto action', FIELD, 'Area functional',
+     'the same variational problem in a different signature: a soap film '
+     'extremises area in Euclidean space, a string extremises area in '
+     'Minkowski spacetime, and the minus sign under the root is the only '
+     'difference the mathematics sees'),
+    ('String tension', DEFINES, 'Nambu-Goto action',
+     'the T multiplying the worldsheet area is this tension, and writing it '
+     'as one over two pi alpha prime is what introduces the only free '
+     'parameter the string has'),
+    ('String length', DEFINES, 'String tension',
+     'alpha prime is a length squared, so the tension is an inverse area -- '
+     'in natural units, the only scale in the theory'),
+    ('Euler characteristic of a closed surface', DEFINES, 'Genus expansion',
+     'the coupling is raised to minus the Euler characteristic, so chi = 2 - '
+     '2g is what turns a sum over surfaces into an expansion ordered by loops'),
+    ('Hagedorn temperature', FIELD, 'Boltzmann entropy',
+     'counting string states is counting microstates, and they grow '
+     'exponentially with energy -- fast enough that above this temperature the '
+     'sum defining the partition function stops converging'),
 ]
 
 
@@ -2912,6 +3516,7 @@ GRAPH = _build_graph()
 def rebuild():
     """Re-derive the graph after entries have been added at runtime."""
     global GRAPH
+    _SYMBOL_CACHE.clear()        # an entry may have been added or reworded
     GRAPH = _build_graph()
     return GRAPH
 
@@ -3077,10 +3682,33 @@ class Derivation:
 
 
 
+def pivot_tex(quantity):
+    """How a pivot should be written for a human: 'alpha_prime' -> \\alpha'.
+
+    Public because the internal name is not fit to print. Anything that shows a
+    pivot to a reader -- a caption, a Lean comment, a derivation note -- goes
+    through here, so that the spelling the algebra uses internally stays
+    internal.
+    """
+    return _pivot_tex(quantity)
+
+
 def _pivot_tex(quantity):
-    """The pivot as it should be typeset: 'hbar' -> \\hbar."""
-    entry = _symbol_for(quantity) if quantity else None
-    return entry['latex'] if entry is not None else (quantity or '?')
+    """The pivot as it should be typeset: 'hbar' -> \\hbar, 'alpha_prime' -> \\alpha'.
+
+    The primes come off before the lookup and go back on after it, because the
+    symbol table knows \\alpha and has never heard of alpha_prime -- and left
+    alone the name would typeset as an italic alpha subscripted with the word
+    prime, which is not what anybody wrote.
+    """
+    name = quantity or ''
+    primes = 0
+    while name.endswith('_prime'):
+        name = name[:-len('_prime')]
+        primes += 1
+    entry = _symbol_for(name) if name else None
+    base = entry['latex'] if entry is not None else (name or '?')
+    return base + "'" * primes
 
 
 def _tex_escape(text):
@@ -3216,7 +3844,7 @@ def solve(eq, quantity):
     left_tex, relation, right_tex = parts
     if relation != '=':
         return None
-    name = _term_name(quantity)
+    name = resolve_feature(eq, quantity)
     try:
         left = read_term(left_tex)
         right = read_term(right_tex)
@@ -3357,17 +3985,30 @@ def family(quantity, graph=None, minimum=3):
 
 
 def families(graph=None, minimum=3):
-    """Every quantity the library states in three or more independent ways."""
+    """Every quantity the library states in three or more independent ways.
+
+    Deduplicated by membership, not by the letter asked about.  Two symbols can
+    now name one family -- k_B is the Boltzmann constant and so is the k of
+    Boltzmann entropy, and since resolve_feature() folds the subscript for a
+    constant, asking about either builds the same chain.  Counting it twice
+    would overstate what the library knows, and the count is quoted in the
+    abstract.
+    """
     graph = graph or GRAPH
-    seen, out = set(), []
+    seen, members, out = set(), set(), []
     for eq in graph.of_kind('equation'):
         for symbol in READINGS.get(eq['name'], {}):
             if symbol in seen:
                 continue
             seen.add(symbol)
             chained = family(symbol, graph, minimum)
-            if chained is not None:
-                out.append(chained)
+            if chained is None:
+                continue
+            who = tuple(sorted(step.equation['name'] for step in chained.steps))
+            if who in members:
+                continue
+            members.add(who)
+            out.append(chained)
     out.sort(key=lambda d: -len(d.steps))
     return out
 
@@ -3419,6 +4060,14 @@ SHORT = {
     'Debye length': 'Debye',
     'Plasma frequency': 'plasma freq.',
     'Pythagorean theorem': 'Pythagoras',
+    'String tension': 'tension',
+    'Regge trajectory': 'Regge',
+    'String length': 'string length',
+    'Hagedorn temperature': 'Hagedorn',
+    'Mean curvature': 'mean curvature',
+    'Minimal surface condition': 'minimal',
+    'Golden ratio': 'golden ratio',
+    'Penrose tile ratio': 'Penrose ratio',
 }
 
 
@@ -3432,7 +4081,7 @@ def short(eq):
 # first, then the quantities that tie mechanics to quantum theory and
 # gravitation.  Named rather than computed, because "every family" does not fit
 # on a page and choosing by size alone would open with the ugliest one.
-GRAND_PIVOTS = ('E', 'F', 'm', 'G', 'h', 'T', 'v', 'g')
+GRAND_PIVOTS = ('E', 'F', 'm', 'G', 'h', 'T', 'v', 'g', 'alpha_prime')
 
 
 def grand(pivots=GRAND_PIVOTS, graph=None, compact=True):
@@ -3510,6 +4159,135 @@ def all_joins(graph=None):
             if derivation is not None:
                 out.append(derivation)
     return out
+
+
+def ungated_joins(graph=None):
+    """Every pair that would join if nobody checked what the letters mean.
+
+    This is the library as it was before the readings table: a pivot is any
+    quantity both equations state, and whether they mean the same thing by it
+    is not asked.  The difference between this count and all_joins() is what
+    declaring the readings actually bought, which is a number the paper would
+    otherwise have to be told.
+    """
+    graph = graph or GRAPH
+    equations = graph.of_kind('equation')
+    out = []
+    for i, a in enumerate(equations):
+        for b in equations[i + 1:]:
+            for quantity in shared_quantities(a, b):
+                left = solve(a, quantity)
+                right = solve(b, quantity)
+                if left is None or right is None:
+                    continue
+                if left.term == right.term:
+                    continue
+                out.append((a, b, quantity))
+                break
+    return out
+
+
+def quantity_joins(graph=None):
+    """What pivoting on quantities instead of letters would make available.
+
+    Not used to build anything.  It exists so the paper can report the size of
+    an alternative design rather than assert it, and so that anyone tempted by
+    that design can see its output before adopting it.
+
+    The rule here is the permissive one: two equations may be joined whenever
+    each declares *some* letter to denote the same quantity, regardless of
+    whether the letters match.  It is what the Hagedorn temperature seems to
+    ask for, since it writes T_H where the gas laws write T and consequently
+    joins to nothing outside its own cluster.  Running it shows why the
+    obvious repair is the wrong one: see resolve_feature() for the cases.
+    """
+    graph = graph or GRAPH
+    equations = graph.of_kind('equation')
+    out = []
+    for i, a in enumerate(equations):
+        for b in equations[i + 1:]:
+            ta = READINGS.get(a['name'], {})
+            tb = READINGS.get(b['name'], {})
+            found = None
+            for sa, qa in ta.items():
+                for sb, qb in tb.items():
+                    if qa != qb:
+                        continue
+                    left, right = solve(a, sa), solve(b, sb)
+                    if left is None or right is None:
+                        continue
+                    if left.term == right.term:
+                        continue
+                    found = (a, b, qa, sa, sb)
+                    break
+                if found:
+                    break
+            if found:
+                out.append(found)
+    return out
+
+
+def folded_joins(graph=None):
+    """The joins that exist only because a subscript was folded for a constant.
+
+    The difference resolve_feature() made, as a list rather than a claim.
+    """
+    out = []
+    for derivation in all_joins(graph):
+        a, b = derivation.equations
+        pivot = derivation.pivot
+        if (resolve_feature(a, pivot) != _term_name(pivot)
+                or resolve_feature(b, pivot) != _term_name(pivot)):
+            out.append(derivation)
+    return out
+
+
+def quantity_join_census(graph=None):
+    r"""Classify every statement quantity_joins() would add, and why.
+
+    The paper needs to say what the permissive rule is worth, and 'nearly all
+    of it is false' is not a measurement.  Truth is also the wrong test: every
+    join in this library is an equation between two expressions that holds only
+    where both really do equal the pivot, and that is as true of the
+    gravitational family as of anything the permissive rule produces.
+
+    The right test is whether the transitivity step is *licensed* -- whether
+    the two equations are about the same instance of the pivot quantity.  Three
+    outcomes, and the rule for each is stated here rather than left to
+    judgement:
+
+        unlicensed  different symbols, and the quantity is not a constant.  The
+                    join asserts that two differently named things are the same
+                    instance, which nothing in the library says.
+        known       the pivot quantity is already recorded as a family, so the
+                    library knows it is multiply determined and is suppressing
+                    the pairwise statements deliberately.  Nothing is learnt.
+        novel       licensed, and about a quantity no family covers.
+
+    Returns the three lists.  If `novel` is ever non-empty, the permissive rule
+    is offering something the library actually wants, and COMMON is probably
+    the thing standing in the way.
+    """
+    graph = graph or GRAPH
+    today = set()
+    for derivation in all_joins(graph):
+        a, b = derivation.equations
+        today.add(tuple(sorted((a['name'], b['name']))))
+    known_quantities = set(f.quantity for f in families(graph))
+
+    unlicensed, known, novel = [], [], []
+    for a, b, quantity, sym_a, sym_b in quantity_joins(graph):
+        if tuple(sorted((a['name'], b['name']))) in today:
+            continue
+        entry = QUANTITIES.get(quantity)
+        licensed = (entry is not None and entry.is_constant) or sym_a == sym_b
+        if not licensed:
+            unlicensed.append((a, b, quantity, sym_a, sym_b))
+        elif quantity in known_quantities:
+            known.append((a, b, quantity, sym_a, sym_b))
+        else:
+            novel.append((a, b, quantity, sym_a, sym_b))
+    return unlicensed, known, novel
 
 
 # ---------------------------------------------------------------- browsing
@@ -3695,9 +4473,13 @@ def _check_algebra(fail):
         why = algebraic(eq['latex'])
         if why is not None:
             continue                      # refused on purpose; nothing to test
+        # split on whatever relation the statement uses, not on '=' alone:
+        # plenty of physics is an inequality, and handing the parser a fragment
+        # with a \leq still in it tests the splitter rather than the reader
+        parts = split_relation(eq['latex'])
+        side = parts[0] if parts else eq['latex']
         try:
-            term = read_term(eq['latex'].split('=')[0]) if '=' in eq['latex'] \
-                else read_term(eq['latex'])
+            term = read_term(side)
         except Unreadable as exc:
             fail('%s: algebraic() passed it but the parser did not (%s)'
                  % (eq.label, exc))
@@ -3725,6 +4507,42 @@ def _check_algebra(fail):
         except Unreadable:
             continue
         fail('isolate accepted %r for %s, but %s' % (left, name, why))
+
+    # a prime belongs to the name, and all three spellings of it are the same
+    # quantity -- otherwise alpha' joins to alpha, which are different numbers
+    spellings = [r"\alpha'", r'\alpha^\prime', r'\alpha^{\prime}']
+    reference = None
+    for text in spellings:
+        try:
+            got = read_term(text)
+        except Unreadable as exc:
+            fail('%s has no reading, but it is a name (%s)' % (text, exc))
+            continue
+        if not isinstance(got, Sym):
+            fail('%s reads as %r, not as a name' % (text, got))
+            continue
+        if reference is None:
+            reference = got
+        elif got != reference:
+            fail('%s and %s are spellings of one quantity but read as two'
+                 % (spellings[0], text))
+    if reference is not None and reference == read_term(r'\alpha'):
+        fail("alpha' reads as the same quantity as alpha")
+
+    # a brace holding nothing but Greek is an index; a brace holding an
+    # expression is an expression, even when a Greek letter occurs in it
+    indexed = [r'G_{\mu\nu}', r'A_{\mu \nu}', r'T^{\mu}']
+    for text in indexed:
+        if algebraic(text) != 'an indexed tensor component':
+            fail('%s is a tensor component and should be refused as one' % text)
+    for text in (r'e^{i \pi}', r'g_s^{-\chi}', r'x^{2 \chi}'):
+        why = algebraic(text)
+        if why == 'an indexed tensor component':
+            fail('%s is an exponent, not an index' % text)
+
+    # an operator applied to a set is not a factor times a set
+    if algebraic(r'\dim_H K') is None:
+        fail('dim is being read as a symbol multiplied by its argument')
 
     # and what it accepts must actually invert
     checks = [('P V', 'n R T', 'V'), ('F', 'm a', 'm'), ('S', 'k \\log W', 'W')]
@@ -3771,6 +4589,51 @@ def _check_readings(fail):
                  % (derivation, derivation.pivot))
         if derivation.steps[0].expr == derivation.steps[1].expr:
             fail('%s is an identity, not a claim' % derivation)
+
+    # a folded subscript resolves for a constant, because there is only one
+    # permittivity of free space and identifying two mentions of it assumes
+    # nothing
+    if resolve_feature(GRAPH.find("Coulomb's law", 'equation'),
+                       'epsilon') != 'epsilon_0':
+        fail('epsilon does not resolve to epsilon_0, so constants cannot join')
+    if join("Coulomb's law", 'Debye length') is None:
+        fail('two equations stating the same constant were not joined')
+
+    # and does not resolve for anything else, because there are many energies,
+    # speeds and temperatures, and picking whichever one an equation happens to
+    # mention asserts an identity nobody declared
+    for a, b, why in [
+            ('Mass-energy equivalence', 'Kinetic energy',
+             'a rest energy is not a kinetic energy'),
+            ('Kinetic energy', 'Thermal energy',
+             'that is equipartition, and wrong by three halves'),
+            ('Escape velocity', "Hubble's law",
+             'an escape velocity is not a recession velocity'),
+            ('Ideal gas law', 'Hagedorn temperature',
+             'a gas temperature is not the Hagedorn temperature')]:
+        if join(a, b) is not None:
+            fail('%s and %s were joined: %s' % (a, b, why))
+
+    # an ambiguous fold is refused outright: m_1 and m_2 are two masses, and
+    # 'm' names neither
+    if resolve_feature(GRAPH.find("Newton's law of gravitation", 'equation'),
+                       'm') != 'm':
+        fail('m resolved to one of two masses, which is a guess')
+
+    # the alternative pivot rule must still be offering nothing worth having.
+    # If this fires, the permissive rule has found a licensed statement about a
+    # quantity no family covers, and the reason is probably an over-broad entry
+    # in COMMON rather than a case for adopting the rule.
+    _unlicensed, _known, novel = quantity_join_census()
+    for a, b, quantity, sym_a, sym_b in novel:
+        fail('quantity pivoting offers %s + %s on %s (%s/%s), which is '
+             'licensed and not already a family'
+             % (a.label, b.label, quantity, sym_a, sym_b))
+
+    # f was taken out of COMMON for exactly one statement; it should still be
+    # there, or the removal bought nothing
+    if join('Angular frequency', 'Wave speed') is None:
+        fail('the join f was removed from COMMON for has gone missing')
 
     # and the collisions we know about must still be caught
     for a, b, q in [('Boltzmann entropy', 'Work done by a force', 'W'),

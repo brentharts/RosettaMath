@@ -828,6 +828,9 @@ def appendices():
         reads = ', '.join('$%s$: %s' % (sym.replace('_', r'\_'), esc(q))
                           for sym, q in sorted(table.items()))
         rows.append(r'%s & $%s$ & %s \\' % (esc(eq.label), eq['latex'], reads))
+    source_rows = '\n'.join(
+        r'%s & \code{%s} \\' % (esc(eq.label), esc(src))
+        for eq, src in P.sourced())
     return r"""
 \appendix
 \footnotesize
@@ -846,6 +849,30 @@ Equation & Statement & Readings \\
 \bottomrule
 \end{longtable}
 
+\section{Entries derived rather than quoted}
+\label{app:sources}
+
+Most of the library can be checked against a textbook. %s cannot: their values
+were computed, and an entry that says only which Wikipedia article explains the
+idea does not say where its number came from. Those entries carry a
+\code{source} naming the matrix or function it was computed from.
+
+The field exists because of a near-miss. Two of the substitutions below give
+different inflation factors for the aperiodic monotile---$\phi^4$ for the hat
+and $4+\sqrt{15}$ for the spectre---and both are right, because they are
+different substitutions on different numbers of species. Written without
+provenance the two entries read as a contradiction, and the first draft of the
+tilings group made exactly that mistake.
+
+\begin{longtable}{p{4.4cm}p{10cm}}
+\toprule
+Entry & Computed from \\
+\midrule
+\endhead
+%s
+\bottomrule
+\end{longtable}
+
 \section{The generated Lean 4 source}
 \label{app:lean}
 
@@ -858,7 +885,9 @@ neither is claimed.
 \begin{lstlisting}[language=lean,style=appendix]
 %s
 \end{lstlisting}
-""" % ('\n'.join(rows), lean)
+""" % ('\n'.join(rows),
+       words(len(P.sourced()), 'entry', 'entries').capitalize(),
+       source_rows, lean)
 
 
 BIBLIOGRAPHY = r"""
@@ -967,6 +996,10 @@ def selftest():
     # and must never reach the page
     check('no internal primed name leaks into the document',
           'alpha_prime' not in text)
+    check('the provenance appendix lists every sourced entry',
+          all(esc(src) in text for _eq, src in P.sourced()))
+    check('both monotile inflation factors are present and distinguished',
+          '4 + \\sqrt{15}' in text and '7 + 3 \\sqrt{5}' in text)
 
     print('the numbers are the live ones')
     check('the equation count matches the library',

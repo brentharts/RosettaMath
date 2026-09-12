@@ -435,16 +435,19 @@ axiom Real : Type"""]
     lines.append('-- resolves those through type classes, so an axiomatic')
     lines.append('-- Real needs the instances spelled out or none of it')
     lines.append('-- elaborates.')
+    # written with the named constructor rather than the anonymous
+    # \u27e8...\u27e9 form, so the whole file stays ASCII.  Lean accepts both;
+    # listings, pdflatex and half the terminals in the world accept only one
     for cls, op in (('Add', 'add'), ('Sub', 'sub'), ('Mul', 'mul'),
                     ('Div', 'div'), ('Neg', 'neg'), ('LE', 'le'),
                     ('LT', 'lt')):
-        lines.append('instance : %s Real := \u27e8Real.%s\u27e9' % (cls, op))
-    lines.append('instance : HPow Real Nat Real := \u27e8Real.pow\u27e9')
+        lines.append('instance : %s Real := %s.mk Real.%s' % (cls, cls, op))
+    lines.append('instance : HPow Real Nat Real := HPow.mk Real.pow')
     lines.append('')
     lines.append('-- so that a numeral in an equation means a real number.')
     lines.append('-- Without it `4 * pi` does not elaborate: Real is an')
     lines.append('-- axiom here and carries no arithmetic instances of its own.')
-    lines.append('instance (n : Nat) : OfNat Real n := \u27e8Real.lit n\u27e9')
+    lines.append('instance (n : Nat) : OfNat Real n := OfNat.mk (Real.lit n)')
     lines.append('')
     lines.append('-- physical constants: named, not quantified')
     for name in CONSTANT_NAMES:
@@ -659,6 +662,7 @@ def selftest():
 
     whole = lean_file([conj])
     check('a file carries the preamble', 'namespace RosettaPhys' in whole)
+    check('the whole file is ASCII', whole.isascii())
     check('and closes it', 'end RosettaPhys' in whole)
 
     print('the library')

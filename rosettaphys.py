@@ -2936,7 +2936,8 @@ def rebuild():
 class Step:
     """One equation in a chain, and the pivot that got us here."""
 
-    __slots__ = ('equation', 'pivot', 'expr', 'note', 'direct')
+    __slots__ = ('equation', 'pivot', 'expr', 'note', 'direct',
+                 'expr_term')
 
     def __init__(self, equation, pivot=None, expr=None, note='', direct=True):
         self.equation = equation
@@ -2948,6 +2949,7 @@ class Step:
         # and a rearranged one are believable to different degrees and the
         # reader deserves to be told which they are looking at.
         self.direct = direct
+        self.expr_term = None         # the Term behind expr, when we have it
 
     def __repr__(self):
         return '<Step %s via %s>' % (self.equation.label, self.pivot)
@@ -2963,9 +2965,13 @@ class Derivation:
     the job of the kernel, not of this file.
     """
 
-    def __init__(self, steps=(), pivot=None):
+    def __init__(self, steps=(), pivot=None, quantity=None):
         self.steps = list(steps)
-        self.pivot = pivot
+        self.pivot = pivot            # the letter the chain turns on
+        # the physical quantity that letter denotes, when the equations say.
+        # Preferred in captions: 'all six equal the gravitational constant' is
+        # a statement about physics, 'all six equal G' is one about spelling.
+        self.quantity = quantity
 
     @property
     def equations(self):
@@ -2991,28 +2997,56 @@ class Derivation:
         joined = (' %s ' % relation).join(parts)
         if braces and self.pivot:
             joined = r'\overbrace{%s}^{\text{%s}}' % (
-                joined, _tex_escape('both equal %s' % _pretty(self.pivot)))
+                joined, _tex_escape(self.caption()))
         return joined
+
+    def caption(self):
+        """What the overbrace over the whole statement says."""
+        word = 'both' if len(self.steps) == 2 else 'all %d' % len(self.steps)
+        return '%s equal the %s' % (word, self.name())
+
+    def name(self):
+        """What the chain is about, in words."""
+        return self.quantity or _pretty(self.pivot)
+
+    def aligned(self, per_line=1):
+        r"""The chain as an align* body, one equation to a line.
+
+        A six-way chain does not fit across a page, and breaking it by hand is
+        how a generated document starts disagreeing with the data that
+        generated it.  The pivot leads, so every line reads as a statement
+        about the same quantity rather than as a fragment of a longer one.
+        """
+        lines = [r'%s &= \underbrace{%s}_{\text{%s}}'
+                 % (_pivot_tex(self.pivot), step.expr,
+                    _tex_escape(step.equation.label))
+                 for step in self.steps]
+        return ' \\\\\n'.join(lines)
 
     def statement(self):
         """The bare claim, with no provenance -- what has to be true."""
         return self.latex(braces=False)
 
-    def prose(self):
-        """Why the chain holds, one sentence per join."""
+    def prose(self, math='%s'):
+        """Why the chain holds, one sentence per join.
+
+        `math` wraps every expression, so a caller that is writing LaTeX can
+        pass '$%%s$' and get typeset formulae instead of raw source in the
+        middle of a sentence.
+        """
         lines = []
         for i, step in enumerate(self.steps):
             if i == 0:
-                lines.append('%s gives %s for %s.'
-                             % (step.equation.label, step.expr,
-                                _pretty(self.pivot)))
+                lines.append('%s gives %s for the %s.'
+                             % (step.equation.label, math % step.expr,
+                                self.name()))
             else:
                 lines.append('%s gives %s for the same quantity.'
-                             % (step.equation.label, step.expr))
+                             % (step.equation.label, math % step.expr))
                 if step.note:
                     lines.append('(%s)' % step.note)
-        lines.append('Both expressions denote %s, so they are equal.'
-                     % _pretty(self.pivot))
+        lines.append('Every expression here denotes the %s, so they are all '
+                     'equal.' % self.name())
         rearranged = [s.equation.label for s in self.steps if not s.direct]
         if rearranged:
             lines.append('(%s had to be rearranged to say so; the join is only '
@@ -3040,6 +3074,13 @@ class Derivation:
     def __repr__(self):
         return '<Derivation %s on %s>' % (
             ' = '.join(s.equation.label for s in self.steps), self.pivot)
+
+
+
+def _pivot_tex(quantity):
+    """The pivot as it should be typeset: 'hbar' -> \\hbar."""
+    entry = _symbol_for(quantity) if quantity else None
+    return entry['latex'] if entry is not None else (quantity or '?')
 
 
 def _tex_escape(text):
@@ -3245,7 +3286,8 @@ def join(a, b, pivot=None, graph=None):
         note = edge.note if edge is not None and edge.kind != SHARES else ''
         return Derivation([Step(a, quantity, left.latex, direct=left.direct),
                            Step(b, quantity, right.latex, note,
-                                direct=right.direct)], pivot=quantity)
+                                direct=right.direct)],
+                          pivot=quantity, quantity=reading(a, quantity))
     return None
 
 
@@ -3273,6 +3315,61 @@ def chain(*equations, **kw):
         steps.append(Step(node, pivot, found.latex, direct=found.direct))
     return Derivation(steps, pivot=pivot)
 
+
+
+
+def family(quantity, graph=None, minimum=3):
+    """Every equation that states the same quantity, as one chain.
+
+    This is what the graph is for.  Six equations in this library can be solved
+    for the gravitational constant -- Newton's, Schwarzschild's, Hawking's, the
+    Planck length, the escape velocity and the surface gravity -- and none of
+    them was written down with the others in mind.  Chaining them produces a
+    single statement that no one entered, and that is the closest this project
+    comes to finding something out.
+
+    Only equations that declare the same reading take part, so the chain is
+    about a quantity rather than about a letter.
+    """
+    graph = graph or GRAPH
+    name = _term_name(quantity)
+    wanted = None
+    members = []
+    for eq in graph.of_kind('equation'):
+        says = reading(eq, name)
+        if says is None:
+            continue
+        if wanted is None:
+            wanted = says
+        if says != wanted:
+            continue
+        found = solve(eq, name)
+        if found is None:
+            continue
+        if any(found.term == s.expr_term for s in members):
+            continue                 # the same expression twice is no chain
+        step = Step(eq, name, found.latex, direct=found.direct)
+        step.expr_term = found.term
+        members.append(step)
+    if len(members) < minimum:
+        return None
+    return Derivation(members, pivot=name, quantity=wanted)
+
+
+def families(graph=None, minimum=3):
+    """Every quantity the library states in three or more independent ways."""
+    graph = graph or GRAPH
+    seen, out = set(), []
+    for eq in graph.of_kind('equation'):
+        for symbol in READINGS.get(eq['name'], {}):
+            if symbol in seen:
+                continue
+            seen.add(symbol)
+            chained = family(symbol, graph, minimum)
+            if chained is not None:
+                out.append(chained)
+    out.sort(key=lambda d: -len(d.steps))
+    return out
 
 
 def joins_for(eq, graph=None):

@@ -3372,6 +3372,120 @@ def families(graph=None, minimum=3):
     return out
 
 
+# --------------------------------------------------------- the whole thing
+#
+# One display, linking every family the library knows.  It exists because the
+# graph makes it possible to ask a question no single entry answers: if every
+# equation here is true at once, what does that say?
+#
+# Fitting it on a page is the constraint that shapes everything below.  Full
+# equation names will not go under a brace -- "Newton's law of gravitation" is
+# wider than the fraction it labels -- so each entry carries a short form, and
+# the short forms have to stay distinct or the display starts lying about
+# which equation a term came from.
+
+SHORT = {
+    'Mass-energy equivalence': 'mass-energy',
+    "Newton's second law": 'Newton II',
+    "Newton's law of gravitation": 'Newton grav.',
+    "Coulomb's law": 'Coulomb',
+    'Coulomb potential energy': 'Coulomb p.e.',
+    'Kinetic energy': 'kinetic',
+    'Momentum': 'momentum',
+    'Work done by a force': 'work',
+    'Gravitational potential energy': 'grav. p.e.',
+    'Surface gravity': 'surface grav.',
+    "Hooke's law": 'Hooke',
+    'Escape velocity': 'escape vel.',
+    'Angular frequency': 'angular freq.',
+    'Wave speed': 'wave speed',
+    'Planck relation': 'Planck',
+    'de Broglie relation': 'de Broglie',
+    'Compton wavelength': 'Compton',
+    'Boltzmann entropy': 'Boltzmann',
+    'Bekenstein-Hawking entropy': 'Bekenstein-Hawking',
+    'Thermal energy': 'thermal',
+    'Ideal gas law': 'ideal gas',
+    'Heat capacity': 'heat capacity',
+    'Stefan-Boltzmann law': 'Stefan-Boltzmann',
+    'Density': 'density',
+    'Hydrostatic pressure': 'hydrostatic',
+    "Ohm's law": 'Ohm',
+    'Electrical power': 'elec. power',
+    'Capacitor charge': 'capacitor',
+    'Schwarzschild radius': 'Schwarzschild',
+    'Planck length': 'Planck length',
+    "Hubble's law": 'Hubble',
+    'Debye length': 'Debye',
+    'Plasma frequency': 'plasma freq.',
+    'Pythagorean theorem': 'Pythagoras',
+}
+
+
+def short(eq):
+    """A name short enough to sit under a brace.  Falls back to the full one."""
+    eq = _as_equation(eq)
+    return SHORT.get(eq['name'], eq['name'])
+
+
+# Which families go into the display, in the order they read best: mechanics
+# first, then the quantities that tie mechanics to quantum theory and
+# gravitation.  Named rather than computed, because "every family" does not fit
+# on a page and choosing by size alone would open with the ugliest one.
+GRAND_PIVOTS = ('E', 'F', 'm', 'G', 'h', 'T', 'v', 'g')
+
+
+def grand(pivots=GRAND_PIVOTS, graph=None, compact=True):
+    r"""Every named family as one display: many braces, one side brace.
+
+    Each row is a quantity, overbraced with what it is; each term is an
+    expression some equation in the library gives for it, underbraced with
+    which. The side brace on the right gathers the rows into a single claim,
+    which is the point -- separately these are ordinary formulae, and together
+    they are a conjecture about the whole library at once.
+    """
+    graph = graph or GRAPH
+    rows, count = [], 0
+    for pivot in pivots:
+        chained = family(pivot, graph, minimum=2)
+        if chained is None:
+            continue
+        count += len(chained)
+        rows.append(_grand_row(chained, compact))
+    if not rows:
+        return ''
+    body = ' \\\\[1.2ex]\n'.join(rows)
+    tally = (r'\begin{array}{l} \text{one conjecture:} \\ '
+             r'\text{%d equations, %d quantities} \end{array}'
+             % (count, len(rows)))
+    return ('\\left.\n\\begin{aligned}\n%s\n\\end{aligned}\n'
+            '\\;\\right\\} %s' % (body, tally))
+
+
+def _grand_row(chained, compact):
+    """One quantity, overbraced, equal to everything the library says it is."""
+    frac = r'\tfrac' if compact else r'\frac'
+    terms = []
+    for step in chained.steps:
+        expr = step.expr.replace(r'\frac', frac) if compact else step.expr
+        terms.append(r'\underbrace{%s}_{\text{\tiny %s}}'
+                     % (expr, _tex_escape(short(step.equation))))
+    head = r'\overbrace{%s}^{\text{\tiny %s}}' % (
+        _pivot_tex(chained.pivot), _tex_escape(chained.name()))
+    return '%s &= %s' % (head, ' = '.join(terms))
+
+
+def grand_members(pivots=GRAND_PIVOTS, graph=None):
+    """The (quantity, equations) the display is built from."""
+    graph = graph or GRAPH
+    out = []
+    for pivot in pivots:
+        chained = family(pivot, graph, minimum=2)
+        if chained is not None:
+            out.append(chained)
+    return out
+
+
 def joins_for(eq, graph=None):
     """Every equation this one can actually be joined to, and on what."""
     graph = graph or GRAPH
@@ -3668,6 +3782,30 @@ def _check_readings(fail):
             fail('%s and %s were joined on %s anyway' % (a, b, q))
 
 
+
+def _check_short(fail):
+    """Short labels must stay distinct, or the grand display misattributes."""
+    seen = {}
+    for name, text in SHORT.items():
+        if GRAPH.find(name, 'equation') is None:
+            fail('SHORT names %r, which is not an equation' % name)
+        if text in seen:
+            fail('%r and %r share the short label %r'
+                 % (name, seen[text], text))
+        seen[text] = name
+        if len(text) > 20:
+            fail('%r is too long to sit under a brace' % text)
+    display = grand()
+    for chained in grand_members():
+        for step in chained.steps:
+            if _tex_escape(short(step.equation)) not in display:
+                fail('%s is in the display but unlabelled' % step.equation.label)
+    if display.count(r'\underbrace') != sum(len(f) for f in grand_members()):
+        fail('the display does not brace every term')
+    if display.count(r'\overbrace') != len(grand_members()):
+        fail('the display does not brace every row')
+
+
 def selftest():
     """Validate every entry.  Returns the number of problems found."""
     problems = []
@@ -3683,6 +3821,7 @@ def selftest():
     _check_derivations(fail)
     _check_algebra(fail)
     _check_readings(fail)
+    _check_short(fail)
 
     for msg in problems:
         print('FAIL  ' + msg)

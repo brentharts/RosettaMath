@@ -59,6 +59,7 @@ help:
 	@echo 'make proofs         check the lean4 theorems'
 	@echo 'make pdf            typeset the paper to /tmp/neomath.pdf'
 	@echo 'make paper          the paper with the source appendix'
+	@echo 'make physpaper      the physics knowledge graph paper'
 	@echo 'make crustos_eq     the supplement: Equation (1) checked by Lean 4'
 	@echo 'make clean          remove caches and build products'
 	@echo
@@ -188,6 +189,7 @@ test:
 	$(PYTHON) rosettamath.py
 	$(PYTHON) rosettaphys.py --selftest
 	$(PYTHON) rosettalean.py --selftest
+	$(PYTHON) rosettapaper.py --selftest
 	$(PYTHON) rosettaui.py --selftest
 	$(PYTHON) lean4.py --selftest
 
@@ -210,6 +212,17 @@ collisions:
 RosettaPhys.lean:
 	$(PYTHON) rosettalean.py --lean > $@
 	@echo 'wrote $@ -- `lake env lean $@` to have Lean check it'
+
+# The fourth paper.  Every number, table and equation in it is generated from
+# rosettaphys.py at build time, so the paper cannot disagree with the code.
+rosettaphys.tex: rosettaphys.py rosettalean.py rosettapaper.py
+	$(PYTHON) rosettapaper.py
+
+physpaper: rosettaphys.tex
+	cd /tmp && pdflatex -interaction=nonstopmode -halt-on-error \
+	  $(CURDIR)/rosettaphys.tex >/dev/null \
+	  && pdflatex -interaction=nonstopmode $(CURDIR)/rosettaphys.tex >/dev/null \
+	  && echo '/tmp/rosettaphys.pdf'
 
 # The micro-kernel on its own: proofs raise on failure, so this gates CI.
 proofs:
@@ -240,7 +253,7 @@ clean:
 	rm -f /tmp/neomath.aux /tmp/neomath.log /tmp/neomath.out /tmp/neomath.tex
 
 .PHONY: default help install install-all check-deps ui test census \
-	conjectures collisions proofs \
+	conjectures collisions physpaper proofs \
 	render-test pdf paper leanproof crustos_eq clean \
 	install_apple install-apple install_apple-all \
 	install_windows install-windows

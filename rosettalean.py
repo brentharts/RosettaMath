@@ -84,6 +84,11 @@ def physics_env():
     # the relations physics states that are not equalities
     for name in ('Real.le', 'Real.lt', 'Real.ge', 'Real.gt'):
         L.axiom(env, name, arrow(REAL, arrow(REAL, Universe(0))))
+    # conjunction, so that a page of equations can be one proposition.  An
+    # axiom rather than an inductive on purpose: nothing here proves anything,
+    # and a declared And is enough to *state* the claim, which is all a
+    # conjecture does.
+    L.axiom(env, 'And', arrow(Universe(0), arrow(Universe(0), Universe(0))))
     return env
 
 
@@ -129,7 +134,7 @@ def _un(op, arg):
 GREEK_NAMES = {
     'α': 'alpha', 'β': 'beta', 'γ': 'gamma', 'δ': 'delta', 'ε': 'varepsilon',
     'ϵ': 'epsilon', 'ζ': 'zeta', 'η': 'eta', 'θ': 'theta', 'ι': 'iota',
-    'κ': 'kappa', 'λ': 'lamda', 'μ': 'mu', 'ν': 'nu', 'ξ': 'xi', 'π': 'pi',
+    'κ': 'kappa', 'λ': 'lambda', 'μ': 'mu', 'ν': 'nu', 'ξ': 'xi', 'π': 'pi',
     'ρ': 'rho', 'σ': 'sigma', 'τ': 'tau', 'υ': 'upsilon', 'φ': 'varphi',
     'ϕ': 'phi', 'χ': 'chi', 'ψ': 'psi', 'ω': 'omega',
     'Γ': 'Gamma', 'Δ': 'Delta', 'Θ': 'Theta', 'Λ': 'Lambda', 'Ξ': 'Xi',
@@ -356,6 +361,39 @@ def conjecture(derivation, name=None):
     return Conjecture(label, statement, reader, source, notes)
 
 
+
+def grand_conjecture(pivots=None, name='physics'):
+    """Every family in the display, as one proposition.
+
+    The rows of the display are conjoined and the quantities shared between
+    them are bound once, over the whole thing.  That last part is what makes
+    this more than a list: the m in mass-energy and the m in Newton's second
+    law become the same bound variable, so the conjunction says the equations
+    agree about it rather than each using a letter privately.
+    """
+    families = (P.grand_members() if pivots is None
+                else P.grand_members(pivots))
+    reader = TermReader()
+    claims, notes = [], []
+    for chained in families:
+        pivot = reader.term(P.Sym(P._term_name(chained.pivot),
+                                  P._pivot_tex(chained.pivot)))
+        for step in chained.steps:
+            claims.append(App(App(App(Var('Eq'), REAL), pivot),
+                              reader.read(step.expr)))
+            notes.append('%s : %s = %s' % (step.equation.label,
+                                           P._pivot_tex(chained.pivot),
+                                           step.expr))
+    if not claims:
+        raise Unreadable('no families to conjoin')
+    body = claims[-1]
+    for claim in reversed(claims[:-1]):
+        body = App(App(Var('And'), claim), body)
+    statement = _close(body, reader)
+    return Conjecture(name, statement, reader,
+                      'the whole library, conjoined', notes)
+
+
 def from_equation(eq, name=None):
     """A single equation from the library as a proposition, with no joining."""
     eq = P._as_equation(eq)
@@ -522,6 +560,9 @@ def _lean_expr(expr, names, prec=0):
                                 _nat_literal(args[1]))
         if name == 'Real.lit' and len(args) == 1:
             return _nat_literal(args[0])
+        if name == 'And' and len(args) == 2:
+            return '%s /\\ %s' % (_lean_expr(args[0], names, 2),
+                                  _lean_expr(args[1], names, 1))
         if name in ('Real.le', 'Real.ge') and len(args) == 2:
             op = '<=' if name == 'Real.le' else '>='
             return '%s %s %s' % (_lean_expr(args[0], names, 3), op,
@@ -664,6 +705,14 @@ def selftest():
     check('a file carries the preamble', 'namespace RosettaPhys' in whole)
     check('the whole file is ASCII', whole.isascii())
     check('and closes it', 'end RosettaPhys' in whole)
+
+    print('the whole library at once')
+    grand = grand_conjecture()
+    check('it is a single proposition', grand.check() == 'Prop')
+    check('conjoining many equations', grand.notes and len(grand.notes) > 20)
+    check('sharing its variables across them',
+          'm' in grand.variables and grand.statement is not None)
+    check('and printing as a conjunction', '/\\' in grand.lean())
 
     print('the library')
     results = conjectures()

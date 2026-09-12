@@ -27,7 +27,7 @@ ones that raise confidence.  The feature vocabulary comes from rosettaui's
 extract_features(): bare symbol names ('psi', 'hbar', 'E') and structural tags
 prefixed with 'S:' ('S:frac', 'S:nabla2', 'S:sup2').
 
-    dict(name=, field=, latex=, slug=, must=[], nice=[], blurb=)
+    equation(name=, field=, latex=, slug=, must=[], nice=[], blurb=)
 
 EQUATION_FAMILIES -- the fallback when no single equation matches: a feature
 set paired with a description of the genre it belongs to.
@@ -42,6 +42,181 @@ c and hbar being inferred as function arguments during translation.
 WIKI = 'https://en.wikipedia.org/wiki/'
 
 
+# ------------------------------------------------------------------- nodes
+#
+# Everything the knowledge base knows about is a node, and nodes are joined by
+# typed edges.  The three kinds -- Symbol, Concept, Equation -- differ in the
+# fields they carry, not in how they connect, so the graph code below never has
+# to ask what sort of thing it is looking at.
+#
+# Each class subclasses dict.  That is deliberate: the entries were plain dicts
+# before, every reader in rosettaui.py says entry['blurb'], and none of those
+# readers should have to change for the graph to exist.  Attribute access is
+# added on top because entry.blurb reads better in new code.
+
+class Node(dict):
+    """One thing the knowledge base knows about."""
+
+    kind = 'node'
+    key_field = 'name'
+
+    def __init__(self, **fields):
+        dict.__init__(self, fields)
+        self.out = []                 # edges leaving this node
+        self.inn = []                 # edges arriving at it
+
+    # entry.blurb as a synonym for entry['blurb'], without losing the dict
+    def __getattr__(self, attr):
+        try:
+            return self[attr]
+        except KeyError:
+            raise AttributeError('%s has no %r' % (type(self).__name__, attr))
+
+    @property
+    def key(self):
+        """What this node is called in the graph.  Unique across all kinds."""
+        return '%s:%s' % (self.kind, self[self.key_field])
+
+    @property
+    def label(self):
+        """A human readable one-liner."""
+        return self[self.key_field]
+
+    def links(self, kind=None, outgoing=True, incoming=False):
+        """Edges touching this node, optionally of one relation only."""
+        edges = (list(self.out) if outgoing else []) + \
+                (list(self.inn) if incoming else [])
+        return [e for e in edges if kind is None or e.kind == kind]
+
+    def related(self, kind=None, outgoing=True, incoming=False):
+        """The nodes on the other end of those edges."""
+        out = []
+        for e in self.links(kind, outgoing, incoming):
+            other = e.dst if e.src is self else e.src
+            if other not in out:
+                out.append(other)
+        return out
+
+    def __repr__(self):
+        return '<%s %s>' % (type(self).__name__, self.label)
+
+    # dicts are unhashable by default; nodes are identities, so hash on one
+    __hash__ = object.__hash__
+
+    def __eq__(self, other):
+        return self is other
+
+    def __ne__(self, other):
+        return self is not other
+
+
+class Symbol(Node):
+    """One glyph, its readings, and where it comes from."""
+
+    kind = 'symbol'
+    key_field = 'latex'
+
+    @property
+    def label(self):
+        return self['name']
+
+
+class Concept(Node):
+    """A prose article about a convention, joined to what it talks about."""
+
+    kind = 'concept'
+    key_field = 'title'
+
+
+class Equation(Node):
+    """A named equation, its signature, and the symbols it is built from."""
+
+    kind = 'equation'
+    key_field = 'name'
+
+    def features(self):
+        """Every feature in the signature, must and nice together."""
+        return list(self.get('must', ())) + list(self.get('nice', ()))
+
+    def sides(self):
+        """(left, right) of the top level =, or None if there is no top =.
+
+        Only a depth-zero equals counts, so the = inside a \\frac or a
+        subscript is not mistaken for the one that splits the statement.
+        """
+        return split_relation(self['latex'])
+
+
+class Edge:
+    """A typed, directed link between two nodes.
+
+    The direction is the one the relation is named for -- an equation USES a
+    symbol, not the other way round -- but every edge is filed on both nodes,
+    so either end can be walked from.
+    """
+
+    __slots__ = ('kind', 'src', 'dst', 'note')
+
+    def __init__(self, kind, src, dst, note=''):
+        self.kind = kind
+        self.src = src
+        self.dst = dst
+        self.note = note
+
+    def __repr__(self):
+        return '<%s %s -> %s%s>' % (self.kind, self.src.label, self.dst.label,
+                                    ' (%s)' % self.note if self.note else '')
+
+
+# The relation vocabulary.  Kept as names rather than bare strings so that a
+# typo is an AttributeError here instead of an edge that silently never matches.
+USES = 'uses'                 # equation -> symbol it is built from
+MENTIONS = 'mentions'         # concept  -> symbol it discusses
+CITES = 'cites'               # concept  -> equation it discusses
+SHARES = 'shares'             # equation -> equation, via a common quantity
+FIELD = 'field'               # equation -> equation, same field of physics
+SPECIALISES = 'specialises'   # equation -> the more general one it comes from
+LIMIT_OF = 'limit-of'         # equation -> what it becomes in some limit
+DEFINES = 'defines'           # equation -> the quantity it introduces
+
+
+def split_relation(latex):
+    r"""Split a LaTeX statement on its top level relation symbol.
+
+    Returns (left, relation, right), or None when there is no relation at
+    depth zero.  Brace depth is tracked so that the = in \frac{a=b}{c} is not
+    mistaken for the one that splits the statement, and \leq and friends count
+    as well as = because plenty of physics is stated as an inequality.
+    """
+    depth = 0
+    i = 0
+    while i < len(latex):
+        ch = latex[i]
+        if ch == '\\':                      # a command; skip its name whole
+            j = i + 1
+            while j < len(latex) and (latex[j].isalpha()):
+                j += 1
+            word = latex[i:j] or latex[i:i + 2]
+            if depth == 0 and word in RELATIONS:
+                return latex[:i].strip(), word, latex[j:].strip()
+            i = max(j, i + 2)
+            continue
+        if ch in '{[':
+            depth += 1
+        elif ch in '}]':
+            depth -= 1
+        elif ch == '=' and depth == 0:
+            # not part of \neq, and not the = of a \sum_{n=0} (that is braced)
+            return latex[:i].strip(), '=', latex[i + 1:].strip()
+        i += 1
+    return None
+
+
+RELATIONS = (r'\leq', r'\geq', r'\neq', r'\equiv', r'\approx', r'\simeq',
+             r'\propto', r'\sim', r'\to')
+
+
+
 # ---------------------------------------------------------------- symbols
 #
 # Every entry:  unicode, display name, category, blurb, wikipedia slug.
@@ -53,10 +228,10 @@ SYMBOLS = {}
 
 
 def add_symbol(latex, uni, name, category, blurb, slug, aka=''):
-    SYMBOLS[latex] = {
-        'latex': latex, 'unicode': uni, 'name': name, 'category': category,
-        'blurb': blurb, 'wiki': WIKI + slug, 'aka': aka,
-    }
+    SYMBOLS[latex] = Symbol(
+        latex=latex, unicode=uni, name=name, category=category,
+        blurb=blurb, wiki=WIKI + slug, aka=aka)
+    return SYMBOLS[latex]
 
 
 GREEK_LOWER = [
@@ -581,10 +756,10 @@ CONCEPTS = {}
 
 
 def add_concept(title, category, body, slug, symbols=(), equations=()):
-    CONCEPTS[title] = {
-        'title': title, 'category': category, 'body': body.strip(),
-        'wiki': WIKI + slug, 'symbols': list(symbols), 'equations': list(equations),
-    }
+    CONCEPTS[title] = Concept(
+        title=title, category=category, body=body.strip(),
+        wiki=WIKI + slug, symbols=list(symbols), equations=list(equations))
+    return CONCEPTS[title]
 
 
 add_concept('Overloaded notation', 'Conventions', """
@@ -881,28 +1056,33 @@ but the phase that got you there is not decoration.
 # ('psi', 'hbar', 'E'), and structural tags prefixed with 'S:' ('S:frac',
 # 'S:nabla2', 'S:sup2').
 
+def equation(**fields):
+    """One entry in the signature library, as a graph node."""
+    return Equation(**fields)
+
+
 EQUATIONS = [
-    dict(name='Mass-energy equivalence', field='Relativity',
+    equation(name='Mass-energy equivalence', field='Relativity',
          latex=r'E = m c^2', slug='Mass%E2%80%93energy_equivalence',
          must=['E', 'm', 'c', 'S:sup2'], nice=[],
          blurb='Mass and energy are the same thing in different units, and the '
                'conversion factor is enormous. The equation does not say mass '
                'turns into energy; it says a system with energy has inertia, '
                'and a body at rest already carries energy m*c^2.'),
-    dict(name='Newton\'s second law', field='Classical mechanics',
+    equation(name='Newton\'s second law', field='Classical mechanics',
          latex=r'F = m a', slug='Newton%27s_laws_of_motion',
          must=['F', 'm', 'a'], nice=[],
          blurb='Force equals mass times acceleration -- more precisely, force '
                'is the rate of change of momentum. It is the definition that '
                'makes mass measurable and turns mechanics into a solvable '
                'differential equation.'),
-    dict(name='Newton\'s law of gravitation', field='Classical mechanics',
+    equation(name='Newton\'s law of gravitation', field='Classical mechanics',
          latex=r'F = G \frac{m_1 m_2}{r^2}', slug='Newton%27s_law_of_universal_gravitation',
          must=['F', 'G', 'm', 'r', 'S:frac'], nice=['S:sup2', 'S:sub'],
          blurb='An inverse-square attraction between any two masses. The '
                'inverse square is not arbitrary: it is what a flux spreading '
                'over the surface of a sphere must do in three dimensions.'),
-    dict(name='Coulomb\'s law', field='Electromagnetism',
+    equation(name='Coulomb\'s law', field='Electromagnetism',
          latex=r'F = \frac{1}{4 \pi \epsilon_0} \frac{q_1 q_2}{r^2}',
          slug='Coulomb%27s_law',
          must=['F', 'epsilon', 'r', 'S:frac', 'pi'], nice=['q', 'S:sup2'],
@@ -911,7 +1091,7 @@ EQUATIONS = [
                'stronger and able to take either sign -- which is why bulk '
                'matter is electrically neutral and gravity wins at large '
                'scales.'),
-    dict(name='Schrodinger equation (time-dependent)', field='Quantum mechanics',
+    equation(name='Schrodinger equation (time-dependent)', field='Quantum mechanics',
          latex=r'i \hbar \frac{\partial \Psi}{\partial t} = \hat{H} \Psi',
          slug='Schr%C3%B6dinger_equation',
          must=['i', 'hbar', 'partial', 'Psi'], nice=['H', 'S:frac', 't', 'S:hat'],
@@ -920,7 +1100,7 @@ EQUATIONS = [
                'instead of smoothing out, solutions rotate in phase and '
                'interfere. It is first order in time, so the present state '
                'determines the entire future.'),
-    dict(name='Schrodinger equation (time-independent)', field='Quantum mechanics',
+    equation(name='Schrodinger equation (time-independent)', field='Quantum mechanics',
          latex=r'-\frac{\hbar^2}{2m} \nabla^2 \psi + V \psi = E \psi',
          slug='Schr%C3%B6dinger_equation',
          must=['hbar', 'psi', 'E', 'S:nabla2'], nice=['m', 'V', 'S:frac', 'S:sup2'],
@@ -928,7 +1108,7 @@ EQUATIONS = [
                'well-behaved solutions, and that discreteness is where '
                'quantisation comes from. Atomic energy levels are the '
                'eigenvalues of this equation for a Coulomb potential.'),
-    dict(name='Klein-Gordon equation', field='Quantum field theory',
+    equation(name='Klein-Gordon equation', field='Quantum field theory',
          latex=r'\left( \Box + \frac{m^2 c^2}{\hbar^2} \right) \phi = 0',
          slug='Klein%E2%80%93Gordon_equation',
          must=['phi', 'm', 'hbar'],
@@ -938,7 +1118,7 @@ EQUATIONS = [
                'is what makes it Lorentz invariant -- and also what forced the '
                'reinterpretation of its negative-energy solutions as '
                'antiparticles.'),
-    dict(name='Dirac equation', field='Quantum field theory',
+    equation(name='Dirac equation', field='Quantum field theory',
          latex=r'( i \gamma^\mu \partial_\mu - m ) \psi = 0',
          slug='Dirac_equation',
          must=['i', 'gamma', 'partial', 'psi', 'm'], nice=['mu', 'S:sup', 'S:sub'],
@@ -946,7 +1126,7 @@ EQUATIONS = [
                'insisted on first order in time, which required the '
                'coefficients to be matrices; spin and antimatter both fell out '
                'of the algebra rather than being put in by hand.'),
-    dict(name="d'Alembert operator", field='Relativity',
+    equation(name="d'Alembert operator", field='Relativity',
          latex=r'\Box = \frac{1}{c^2} \frac{\partial^2}{\partial t^2} - \nabla^2',
          slug="D'Alembert_operator",
          must=['Box', 'S:nabla2', 'partial'], nice=['c', 'S:frac', 'S:sup2', 't'],
@@ -955,7 +1135,7 @@ EQUATIONS = [
                'is the whole difference between Minkowski spacetime and '
                'Euclidean space. Written out this way it is clear why the '
                'operator is Lorentz invariant and the Laplacian alone is not.'),
-    dict(name='Wave equation (box form)', field='Waves',
+    equation(name='Wave equation (box form)', field='Waves',
          latex=r'\Box \psi = 0', slug='Wave_equation',
          must=['Box'], nice=['psi', 'phi', 'A', 'u', 'F'],
          blurb='The wave equation written with the d\'Alembertian. Compressing '
@@ -963,7 +1143,7 @@ EQUATIONS = [
                'relativistic content visible at a glance: the equation has the '
                'same form in every inertial frame, and its solutions propagate '
                'at exactly the speed c buried inside the operator.'),
-    dict(name='Wave equation', field='Waves',
+    equation(name='Wave equation', field='Waves',
          latex=r'\frac{\partial^2 u}{\partial t^2} = c^2 \nabla^2 u',
          slug='Wave_equation',
          must=['partial', 'c', 'S:nabla2'], nice=['S:frac', 't', 'S:sup2', 'u'],
@@ -971,7 +1151,7 @@ EQUATIONS = [
                'propagate at fixed speed c without changing shape. Sound, '
                'light, and a plucked string all obey it, and the constant c is '
                'set by the medium.'),
-    dict(name='Heat / diffusion equation', field='Thermodynamics',
+    equation(name='Heat / diffusion equation', field='Thermodynamics',
          latex=r'\frac{\partial u}{\partial t} = \alpha \nabla^2 u',
          slug='Heat_equation',
          must=['partial', 'S:nabla2'], nice=['alpha', 'S:frac', 't', 'u', 'D'],
@@ -979,41 +1159,41 @@ EQUATIONS = [
                'out irreversibly. Unlike the wave equation it has a preferred '
                'direction of time -- you cannot run it backwards stably, which '
                'is the arrow of time appearing in a differential equation.'),
-    dict(name='Laplace\'s equation', field='Fields',
+    equation(name='Laplace\'s equation', field='Fields',
          latex=r'\nabla^2 \phi = 0', slug='Laplace%27s_equation',
          must=['S:nabla2'], nice=['phi', 'Phi', 'u'],
          blurb='The Laplacian vanishes: the field everywhere equals the '
                'average of its neighbours. Such harmonic functions describe '
                'static fields in empty space, and they have no local maxima or '
                'minima in the interior -- extremes live on the boundary.'),
-    dict(name='Poisson\'s equation', field='Fields',
+    equation(name='Poisson\'s equation', field='Fields',
          latex=r'\nabla^2 \phi = \rho', slug='Poisson%27s_equation',
          must=['S:nabla2', 'rho'], nice=['phi', 'Phi', 'epsilon', 'S:frac'],
          blurb='Laplace\'s equation with a source. The density on the right '
                'tells the potential how to curve; solving it recovers the '
                'gravitational or electrostatic potential produced by a given '
                'distribution of mass or charge.'),
-    dict(name='Helmholtz equation', field='Waves',
+    equation(name='Helmholtz equation', field='Waves',
          latex=r'\nabla^2 A + k^2 A = 0', slug='Helmholtz_equation',
          must=['S:nabla2', 'k'], nice=['A', 'S:sup2'],
          blurb='What the wave equation becomes after separating out a single '
                'frequency. k is the wavenumber; the equation governs standing '
                'waves, waveguides and optical modes.'),
-    dict(name='Gauss\'s law', field='Electromagnetism',
+    equation(name='Gauss\'s law', field='Electromagnetism',
          latex=r'\nabla \cdot E = \frac{\rho}{\epsilon_0}', slug='Gauss%27s_law',
          must=['nabla', 'rho', 'E'], nice=['epsilon', 'S:frac', 'S:cdot'],
          blurb='The divergence of the electric field is the charge density: '
                'field lines begin and end on charge. Integrated over a closed '
                'surface it says the flux out equals the charge enclosed, '
                'regardless of how that charge is arranged.'),
-    dict(name='Gauss\'s law for magnetism', field='Electromagnetism',
+    equation(name='Gauss\'s law for magnetism', field='Electromagnetism',
          latex=r'\nabla \cdot B = 0', slug='Gauss%27s_law_for_magnetism',
          must=['nabla', 'B'], nice=['S:cdot'],
          blurb='The magnetic field has zero divergence: there are no magnetic '
                'monopoles. Every field line closes on itself, which is why '
                'cutting a magnet in half gives two magnets rather than a north '
                'and a south pole.'),
-    dict(name='Faraday\'s law of induction', field='Electromagnetism',
+    equation(name='Faraday\'s law of induction', field='Electromagnetism',
          latex=r'\nabla \times E = -\frac{\partial B}{\partial t}',
          slug='Faraday%27s_law_of_induction',
          must=['nabla', 'E', 'B', 'partial'], nice=['S:times', 'S:frac', 't'],
@@ -1021,7 +1201,7 @@ EQUATIONS = [
                'field. This is the principle behind every generator and '
                'transformer, and the minus sign (Lenz\'s law) is what keeps '
                'the induced effect opposing the change that caused it.'),
-    dict(name='Ampere-Maxwell law', field='Electromagnetism',
+    equation(name='Ampere-Maxwell law', field='Electromagnetism',
          latex=r'\nabla \times B = \mu_0 J + \mu_0 \epsilon_0 \frac{\partial E}{\partial t}',
          slug='Amp%C3%A8re%27s_circuital_law',
          must=['nabla', 'B', 'mu'], nice=['J', 'epsilon', 'partial', 'E', 'S:times'],
@@ -1029,14 +1209,14 @@ EQUATIONS = [
                'magnetic fields. Maxwell\'s addition of the second term is '
                'what made the equations self-consistent and predicted '
                'electromagnetic waves travelling at the speed of light.'),
-    dict(name='Continuity equation', field='Conservation laws',
+    equation(name='Continuity equation', field='Conservation laws',
          latex=r'\frac{\partial \rho}{\partial t} + \nabla \cdot J = 0',
          slug='Continuity_equation',
          must=['partial', 'rho', 'nabla'], nice=['J', 't', 'S:frac', 'S:cdot'],
          blurb='The local statement of a conservation law: whatever the '
                'density loses, the flux must carry across the boundary. The '
                'same form governs mass, charge, energy and probability.'),
-    dict(name='Navier-Stokes equation', field='Fluid dynamics',
+    equation(name='Navier-Stokes equation', field='Fluid dynamics',
          latex=r'\rho \left( \frac{\partial v}{\partial t} + v \cdot \nabla v \right) = -\nabla p + \eta \nabla^2 v',
          slug='Navier%E2%80%93Stokes_equations',
          must=['rho', 'partial', 'nabla', 'v'], nice=['eta', 'p', 'mu', 'S:nabla2'],
@@ -1044,7 +1224,7 @@ EQUATIONS = [
                'the velocity advects itself is what produces turbulence, and '
                'why proving that smooth solutions always exist is an open '
                'Millennium Prize problem.'),
-    dict(name='Euler-Lagrange equation', field='Classical mechanics',
+    equation(name='Euler-Lagrange equation', field='Classical mechanics',
          latex=r'\frac{d}{dt} \frac{\partial L}{\partial \dot{q}} - \frac{\partial L}{\partial q} = 0',
          slug='Euler%E2%80%93Lagrange_equation',
          must=['partial', 'L'], nice=['q', 'S:dot', 'S:frac', 't'],
@@ -1052,21 +1232,21 @@ EQUATIONS = [
                'Lagrangian and it hands back the equations of motion; for a '
                'particle in a potential it reduces to F = ma, but it works '
                'just as well in awkward coordinates where forces are painful.'),
-    dict(name='Boltzmann entropy', field='Thermodynamics',
+    equation(name='Boltzmann entropy', field='Thermodynamics',
          latex=r'S = k_B \log W', slug='Boltzmann%27s_entropy_formula',
          must=['S', 'k'], nice=['log', 'W', 'ln', 'S:sub'],
          blurb='Entropy is the logarithm of the number of microstates. This '
                'formula, carved on Boltzmann\'s gravestone, is the bridge '
                'between the microscopic world of atoms and the macroscopic '
                'laws of thermodynamics.'),
-    dict(name='Shannon entropy', field='Information theory',
+    equation(name='Shannon entropy', field='Information theory',
          latex=r'H = -\sum p_i \log p_i', slug='Entropy_(information_theory)',
          must=['S:sum', 'p'], nice=['H', 'log', 'S:sub', 'i'],
          blurb='The average information content of a distribution, measured in '
                'bits when the logarithm is base two. It is Boltzmann\'s formula '
                'again in a different guise, and it sets the hard limit on how '
                'far data can be compressed.'),
-    dict(name='Planck relation', field='Quantum mechanics',
+    equation(name='Planck relation', field='Quantum mechanics',
          latex=r'E = h \nu', slug='Planck_relation',
          must=['E', 'h'], nice=['nu', 'omega', 'hbar', 'f'],
          blurb='A photon\'s energy is proportional to its frequency, with '
@@ -1074,14 +1254,14 @@ EQUATIONS = [
                'hypothesis in its smallest form: light comes in discrete '
                'packets, which is why the photoelectric effect depends on '
                'colour rather than brightness.'),
-    dict(name='de Broglie relation', field='Quantum mechanics',
+    equation(name='de Broglie relation', field='Quantum mechanics',
          latex=r'\lambda = \frac{h}{p}', slug='Matter_wave',
          must=['lambda', 'h', 'p'], nice=['S:frac'],
          blurb='Every particle has a wavelength inversely proportional to its '
                'momentum. For everyday objects it is unmeasurably small; for '
                'electrons it is atom-sized, which is why they diffract and why '
                'electron microscopes work.'),
-    dict(name='Heisenberg uncertainty principle', field='Quantum mechanics',
+    equation(name='Heisenberg uncertainty principle', field='Quantum mechanics',
          latex=r'\Delta x \Delta p \geq \frac{\hbar}{2}',
          slug='Uncertainty_principle',
          must=['Delta', 'hbar'], nice=['x', 'p', 'geq', 'S:frac'],
@@ -1089,7 +1269,7 @@ EQUATIONS = [
                'not a limit on instruments but a property of Fourier conjugate '
                'pairs: a narrow wave packet in space is necessarily broad in '
                'wavenumber.'),
-    dict(name='Einstein field equations', field='General relativity',
+    equation(name='Einstein field equations', field='General relativity',
          latex=r'G_{\mu\nu} + \Lambda g_{\mu\nu} = \frac{8 \pi G}{c^4} T_{\mu\nu}',
          slug='Einstein_field_equations',
          must=['mu', 'nu', 'G', 'T'], nice=['Lambda', 'pi', 'c', 'g', 'S:frac', 'S:sub'],
@@ -1097,14 +1277,14 @@ EQUATIONS = [
                'spacetime tells matter how to move, matter tells spacetime how '
                'to curve. Ten coupled nonlinear equations, which is why exact '
                'solutions are rare and precious.'),
-    dict(name='Schwarzschild radius', field='General relativity',
+    equation(name='Schwarzschild radius', field='General relativity',
          latex=r'r_s = \frac{2 G M}{c^2}', slug='Schwarzschild_radius',
          must=['G', 'c', 'r'], nice=['M', 'm', 'S:frac', 'S:sup2', 'S:sub'],
          blurb='The radius at which the escape velocity reaches the speed of '
                'light -- the event horizon of a non-rotating black hole. For '
                'the Sun it is about three kilometres, for the Earth about nine '
                'millimetres.'),
-    dict(name='Bekenstein-Hawking entropy', field='General relativity',
+    equation(name='Bekenstein-Hawking entropy', field='General relativity',
          latex=r'S = \frac{k_B c^3 A}{4 G \hbar}', slug='Black_hole_thermodynamics',
          must=['S', 'G', 'hbar', 'c'], nice=['k', 'A', 'S:frac', 'S:sup'],
          blurb='A black hole\'s entropy is proportional to the area of its '
@@ -1113,7 +1293,7 @@ EQUATIONS = [
                'thermodynamic -- is why this formula is treated as a clue to '
                'quantum gravity, and it is the origin of the holographic '
                'principle.'),
-    dict(name='Lorentz factor', field='Relativity',
+    equation(name='Lorentz factor', field='Relativity',
          latex=r'\gamma = \frac{1}{\sqrt{1 - \frac{v^2}{c^2}}}',
          slug='Lorentz_factor',
          must=['gamma', 'v', 'c', 'S:sqrt'], nice=['S:frac', 'S:sup2'],
@@ -1121,19 +1301,19 @@ EQUATIONS = [
                'essentially one at everyday speeds and diverges as v '
                'approaches c, which is why massive objects cannot reach the '
                'speed of light.'),
-    dict(name='Ideal gas law', field='Thermodynamics',
+    equation(name='Ideal gas law', field='Thermodynamics',
          latex=r'P V = n R T', slug='Ideal_gas_law',
          must=['V', 'T', 'R'], nice=['P', 'n', 'p', 'N', 'k'],
          blurb='Pressure times volume equals amount times temperature. An '
                'excellent approximation whenever the molecules are far enough '
                'apart to ignore their size and mutual attraction.'),
-    dict(name='Stefan-Boltzmann law', field='Thermodynamics',
+    equation(name='Stefan-Boltzmann law', field='Thermodynamics',
          latex=r'j = \sigma T^4', slug='Stefan%E2%80%93Boltzmann_law',
          must=['sigma', 'T'], nice=['S:sup', 'j', 'P', 'A'],
          blurb='Radiated power scales as the fourth power of temperature. The '
                'steepness is why a modest rise in a star\'s surface '
                'temperature makes it dramatically brighter.'),
-    dict(name='Plasma frequency', field='Plasma physics',
+    equation(name='Plasma frequency', field='Plasma physics',
          latex=r'\omega_p = \sqrt{\frac{n e^2}{\epsilon_0 m_e}}',
          slug='Plasma_oscillation',
          must=['omega', 'n', 'e', 'epsilon', 'S:sqrt'], nice=['m', 'S:frac', 'S:sub'],
@@ -1141,7 +1321,7 @@ EQUATIONS = [
                'Waves below it cannot propagate and are reflected -- which is '
                'how the ionosphere bounces radio signals around the curve of '
                'the Earth.'),
-    dict(name='Debye length', field='Plasma physics',
+    equation(name='Debye length', field='Plasma physics',
          latex=r'\lambda_D = \sqrt{\frac{\epsilon_0 k_B T}{n e^2}}',
          slug='Debye_length',
          must=['lambda', 'epsilon', 'T', 'n', 'e'], nice=['k', 'S:sqrt', 'S:frac'],
@@ -1149,7 +1329,7 @@ EQUATIONS = [
                'surrounding plasma. Beyond it the plasma looks neutral, and a '
                'system is only genuinely a plasma if it is much larger than '
                'this length.'),
-    dict(name='Vlasov equation', field='Plasma physics',
+    equation(name='Vlasov equation', field='Plasma physics',
          latex=r'\frac{\partial f}{\partial t} + v \cdot \nabla f + \frac{F}{m} \cdot \nabla_v f = 0',
          slug='Vlasov_equation',
          must=['partial', 'f', 'nabla', 'v'], nice=['F', 'm', 't', 'S:frac', 'S:cdot'],
@@ -1157,7 +1337,7 @@ EQUATIONS = [
                'space for a collisionless plasma. It is a continuity equation '
                'in six dimensions, with the electromagnetic force supplied '
                'self-consistently by the particles themselves.'),
-    dict(name='Friedmann equation', field='Cosmology',
+    equation(name='Friedmann equation', field='Cosmology',
          latex=r'H^2 = \frac{8 \pi G}{3} \rho - \frac{k c^2}{a^2} + \frac{\Lambda c^2}{3}',
          slug='Friedmann_equations',
          must=['H', 'G', 'rho'], nice=['pi', 'Lambda', 'a', 'c', 'k', 'S:frac', 'S:sup2'],
@@ -1165,27 +1345,27 @@ EQUATIONS = [
                'terms are matter, spatial curvature and the cosmological '
                'constant, and which one dominates decides whether the universe '
                'expands forever.'),
-    dict(name='Euler\'s identity', field='Mathematics',
+    equation(name='Euler\'s identity', field='Mathematics',
          latex=r'e^{i \pi} + 1 = 0', slug='Euler%27s_identity',
          must=['e', 'i', 'pi', 'S:sup'], nice=[],
          blurb='Rotating by half a turn in the complex plane lands you at -1. '
                'It links the additive identity, the multiplicative identity, '
                'and the three constants e, i and pi in one line.'),
-    dict(name='Pythagorean theorem', field='Mathematics',
+    equation(name='Pythagorean theorem', field='Mathematics',
          latex=r'a^2 + b^2 = c^2', slug='Pythagorean_theorem',
          must=['a', 'b', 'c', 'S:sup2'], nice=[],
          blurb='In a right triangle the squares on the legs sum to the square '
                'on the hypotenuse. Generalised, it is the definition of '
                'distance in Euclidean space -- and changing the signs gives '
                'the spacetime interval of relativity.'),
-    dict(name='Quadratic formula', field='Mathematics',
+    equation(name='Quadratic formula', field='Mathematics',
          latex=r'x = \frac{-b \pm \sqrt{b^2 - 4ac}}{2a}',
          slug='Quadratic_formula',
          must=['x', 'S:sqrt', 'S:frac', 'pm'], nice=['a', 'b', 'c', 'S:sup2'],
          blurb='The roots of a quadratic. The discriminant under the root '
                'decides everything: positive gives two real roots, zero a '
                'repeated one, negative a complex conjugate pair.'),
-    dict(name='Bayes\' theorem', field='Probability',
+    equation(name='Bayes\' theorem', field='Probability',
          latex=r'P(A \mid B) = \frac{P(B \mid A) P(A)}{P(B)}',
          slug='Bayes%27_theorem',
          must=['P', 'S:frac'], nice=['A', 'B', 'mid'],
@@ -1193,7 +1373,7 @@ EQUATIONS = [
                'multiplied by how well the hypothesis predicted the data and '
                'renormalised -- the whole of Bayesian inference is repeated '
                'application of this one line.'),
-    dict(name='Normal distribution', field='Probability',
+    equation(name='Normal distribution', field='Probability',
          latex=r'f(x) = \frac{1}{\sigma \sqrt{2\pi}} e^{-\frac{(x-\mu)^2}{2\sigma^2}}',
          slug='Normal_distribution',
          must=['sigma', 'mu', 'pi', 'S:exp_or_e'], nice=['x', 'S:frac', 'S:sqrt', 'S:sup2'],
@@ -1201,7 +1381,7 @@ EQUATIONS = [
                'ubiquity: add up enough independent small effects and the '
                'total is normally distributed almost regardless of what you '
                'started with.'),
-    dict(name='Kullback-Leibler divergence', field='Information theory',
+    equation(name='Kullback-Leibler divergence', field='Information theory',
          latex=r'D(P \parallel Q) = \sum P(x) \log \frac{P(x)}{Q(x)}',
          slug='Kullback%E2%80%93Leibler_divergence',
          must=['S:sum', 'log', 'P'], nice=['Q', 'D', 'S:frac', 'x'],
@@ -1209,7 +1389,7 @@ EQUATIONS = [
                'information cost of using the wrong model. It is never '
                'negative, zero only when the distributions agree, and is not '
                'symmetric -- so it is a divergence, not a distance.'),
-    dict(name='Geometric series', field='Mathematics',
+    equation(name='Geometric series', field='Mathematics',
          latex=r'\sum_{n=0}^{\infty} r^n = \frac{1}{1-r}',
          slug='Geometric_series',
          must=['S:sum', 'r', 'infty'], nice=['n', 'S:frac', 'S:sup', 'S:sub'],
@@ -1245,6 +1425,517 @@ CONSTANTS = {
     'epsilon_0': 'epsilon_0', 'mu_0': 'mu_0', 'N_A': 'N_A', 'pi': 'pi',
     'm_e': 'm_e', 'm_p': 'm_p', 'm_n': 'm_n',
 }
+
+
+# ------------------------------------------------------------------- graph
+#
+# The tables above say what each thing is; this says how they connect.  Most
+# edges are derived rather than written down -- an equation's signature already
+# names the symbols it uses, and two equations that mention the same quantity
+# are related whether or not anyone noticed -- so the graph grows on its own as
+# entries are added, which is the point of deriving it.
+#
+# The edges that cannot be derived are the interesting ones: that the
+# time-independent Schrodinger equation is a special case of the time-dependent
+# one is a fact about physics, not about notation, so it is stated in LINKS.
+
+
+class Graph:
+    """Nodes and typed edges, with the walks the rest of the project needs."""
+
+    def __init__(self):
+        self.nodes = {}                   # key -> Node
+        self.edges = []
+
+    def add(self, node):
+        self.nodes[node.key] = node
+        return node
+
+    def get(self, key):
+        return self.nodes.get(key)
+
+    def find(self, label, kind=None):
+        """A node by its human label, searched across kinds or within one."""
+        for node in self.nodes.values():
+            if kind and node.kind != kind:
+                continue
+            if node.label == label or node[node.key_field] == label:
+                return node
+        return None
+
+    def link(self, kind, src, dst, note=''):
+        """Join two nodes.  Silently ignores a link to a node we do not have."""
+        if src is None or dst is None or src is dst:
+            return None
+        edge = Edge(kind, src, dst, note)
+        self.edges.append(edge)
+        src.out.append(edge)
+        dst.inn.append(edge)
+        return edge
+
+    def of_kind(self, kind):
+        return [n for n in self.nodes.values() if n.kind == kind]
+
+    def neighbours(self, node, kinds=None):
+        """Every node one edge away, in either direction."""
+        out = []
+        for edge in node.out + node.inn:
+            if kinds and edge.kind not in kinds:
+                continue
+            other = edge.dst if edge.src is node else edge.src
+            if other is not node and other not in out:
+                out.append(other)
+        return out
+
+    def path(self, start, goal, kinds=None, limit=6):
+        """A shortest chain of nodes from one to another, or None.
+
+        Breadth first, so the chain it finds is the shortest -- which matters
+        when the chain is about to become a derivation, because a longer route
+        between the same two equations is a worse explanation of why they are
+        connected, not a different one.
+        """
+        if start is goal:
+            return [start]
+        seen = {id(start): None}
+        frontier = [start]
+        for _ in range(limit):
+            nxt = []
+            for node in frontier:
+                for other in self.neighbours(node, kinds):
+                    if id(other) in seen:
+                        continue
+                    seen[id(other)] = node
+                    if other is goal:
+                        chain = [other]
+                        while seen[id(chain[-1])] is not None:
+                            chain.append(seen[id(chain[-1])])
+                        return list(reversed(chain))
+                    nxt.append(other)
+            if not nxt:
+                break
+            frontier = nxt
+        return None
+
+    def edge_between(self, a, b, kind=None):
+        for edge in a.out + a.inn:
+            if kind and edge.kind != kind:
+                continue
+            if edge.src is b or edge.dst is b:
+                return edge
+        return None
+
+    def census(self):
+        kinds = {}
+        for edge in self.edges:
+            kinds[edge.kind] = kinds.get(edge.kind, 0) + 1
+        return kinds
+
+    def __repr__(self):
+        return '<Graph %d nodes, %d edges>' % (len(self.nodes), len(self.edges))
+
+
+# ---------------------------------------------------------------- features
+#
+# The classifier in rosettaui turns LaTeX into the feature names an equation's
+# signature is written in.  The graph needs the same vocabulary to decide what
+# two equations have in common, but it must not import rosettaui -- the
+# dependency runs the other way -- so the part that matters here, the bare
+# symbol names, is recovered from the signatures themselves.
+
+def quantities(eq):
+    """The physical quantities in a signature: features that are not 'S:' tags.
+
+    These are what two equations can meaningfully share.  A shared 'S:frac' says
+    only that both happen to be written as a fraction; a shared 'E' says both
+    are talking about energy, which is a fact worth an edge.
+    """
+    return [f for f in eq.features() if not f.startswith('S:')]
+
+
+def structures(eq):
+    """The structural half of a signature: 'S:frac', 'S:nabla2' and friends."""
+    return [f[2:] for f in eq.features() if f.startswith('S:')]
+
+
+# Quantities too common to mean anything.  Two equations both mentioning m are
+# not thereby related; nearly every equation in mechanics mentions m.  Pivoting
+# a derivation on one of these produces a true statement that explains nothing,
+# which is worse than no statement at all.
+COMMON = {'m', 'r', 't', 'x', 'n', 'k', 'pi', 'i', 'd', 'a', 'f', 'partial'}
+
+
+def shared_quantities(a, b, interesting=True):
+    """What two equations have in common, most specific first."""
+    common = [q for q in quantities(a) if q in quantities(b)]
+    if interesting:
+        common = [q for q in common if q not in COMMON]
+    # a quantity that names the subject of both equations is the better pivot,
+    # so rank by how rare it is across the whole library
+    return sorted(common, key=lambda q: _rarity.get(q, 0))
+
+
+_rarity = {}
+
+
+def _rank_quantities():
+    _rarity.clear()
+    for eq in EQUATIONS:
+        for q in quantities(eq):
+            _rarity[q] = _rarity.get(q, 0) + 1
+
+
+# --------------------------------------------------------- hand-made edges
+#
+# Relations between equations that no amount of reading the notation would
+# reveal.  (source, relation, target, note) -- the note is the sentence the
+# derivation prints when it walks across this edge.
+
+LINKS = [
+    ('Schrodinger equation (time-independent)', SPECIALISES,
+     'Schrodinger equation (time-dependent)',
+     'separating the time dependence of a stationary state leaves an '
+     'eigenvalue problem in space alone'),
+    ('Wave equation (box form)', SPECIALISES, 'Klein-Gordon equation',
+     'the massless case: with m = 0 the Klein-Gordon mass term vanishes and '
+     'nothing but the d\'Alembertian is left'),
+    ("d'Alembert operator", DEFINES, 'Wave equation (box form)',
+     'the box is what makes the one-symbol form of the wave equation mean '
+     'anything -- it is an abbreviation, not a new idea'),
+    ("Laplace's equation", SPECIALISES, "Poisson's equation",
+     'the source-free case: Laplace is Poisson with the density set to zero'),
+    ('Helmholtz equation', SPECIALISES, 'Wave equation',
+     'separating out a single frequency turns the wave equation into a '
+     'condition on the spatial part alone'),
+    ('Wave equation', FIELD, 'Heat / diffusion equation',
+     'the same Laplacian, set equal to a second time derivative rather than a '
+     'first -- which is the whole difference between propagating and diffusing'),
+    ('Boltzmann entropy', DEFINES, 'Shannon entropy',
+     'counting microstates and counting messages are the same sum, differing '
+     'only in the base of the logarithm and a constant'),
+    ('Bekenstein-Hawking entropy', SPECIALISES, 'Boltzmann entropy',
+     'a black hole obeys the same entropy law as a gas, but the microstates '
+     'being counted scale with horizon area rather than with volume'),
+    ('Schwarzschild radius', SPECIALISES, 'Einstein field equations',
+     'the radius falls out of the spherically symmetric vacuum solution'),
+    ('Planck relation', DEFINES, 'de Broglie relation',
+     'the same Planck constant, read the other way round: if a wave carries '
+     'energy in quanta then a particle carries a wavelength'),
+    ('Continuity equation', SPECIALISES, 'Ampere-Maxwell law',
+     'taking the divergence of the Ampere-Maxwell law forces charge '
+     'conservation -- which is why the displacement current had to be there'),
+    ('Lorentz factor', DEFINES, 'Mass-energy equivalence',
+     'gamma is what the rest energy gets multiplied by once the body moves'),
+]
+
+
+def _build_graph():
+    """Assemble the graph from the tables.  Idempotent; safe to call again."""
+    g = Graph()
+    for entry in SYMBOLS.values():
+        entry.out, entry.inn = [], []
+        g.add(entry)
+    for entry in CONCEPTS.values():
+        entry.out, entry.inn = [], []
+        g.add(entry)
+    for eq in EQUATIONS:
+        eq.out, eq.inn = [], []
+        g.add(eq)
+
+    _rank_quantities()
+
+    # concepts -> what they talk about
+    for concept in CONCEPTS.values():
+        for latex in concept['symbols']:
+            g.link(MENTIONS, concept, SYMBOLS.get(latex))
+        for name in concept['equations']:
+            g.link(CITES, concept, g.find(name, 'equation'))
+
+    # equations -> the symbols in their signatures
+    for eq in EQUATIONS:
+        for q in quantities(eq):
+            target = _symbol_for(q)
+            if target is not None:
+                g.link(USES, eq, target, 'must' if q in eq.get('must', ())
+                       else 'nice')
+
+    # equations -> equations, wherever they share a telling quantity
+    for i, a in enumerate(EQUATIONS):
+        for b in EQUATIONS[i + 1:]:
+            common = shared_quantities(a, b)
+            if common:
+                g.link(SHARES, a, b, common[0])
+
+    # and the relations that had to be stated
+    for src, kind, dst, note in LINKS:
+        g.link(kind, g.find(src, 'equation'), g.find(dst, 'equation'), note)
+
+    return g
+
+
+def _symbol_for(feature):
+    r"""The symbol entry a feature name refers to: 'hbar' -> \hbar, 'E' -> E."""
+    if feature in SYMBOLS:                       # a bare Latin letter
+        return SYMBOLS[feature]
+    return SYMBOLS.get('\\' + feature)           # a Greek or named command
+
+
+GRAPH = _build_graph()
+
+
+def rebuild():
+    """Re-derive the graph after entries have been added at runtime."""
+    global GRAPH
+    GRAPH = _build_graph()
+    return GRAPH
+
+
+# ------------------------------------------------------------- derivations
+#
+# Two equations that share a quantity can be joined into one.  If both state
+# something about E, then whatever each says E equals must be equal to each
+# other -- transitivity, which is the only inference this module makes, and the
+# reason a composed statement is a conjecture worth checking rather than a
+# guess.
+#
+#     E = m c^2   and   E = h \nu      share E
+#     ->  m c^2 = h \nu
+#
+# Written out, the join keeps its provenance.  The underbrace under each side
+# names the equation it came from; the overbrace over the whole statement names
+# the quantity that was eliminated to make it.  Neither is decoration: they are
+# what lets the reader -- and rosettalean.py -- recover the derivation from the
+# formula.
+
+class Step:
+    """One equation in a chain, and the pivot that got us here."""
+
+    __slots__ = ('equation', 'pivot', 'expr', 'note')
+
+    def __init__(self, equation, pivot=None, expr=None, note=''):
+        self.equation = equation
+        self.pivot = pivot            # the quantity shared with the step before
+        self.expr = expr              # what this equation says the pivot equals
+        self.note = note
+
+    def __repr__(self):
+        return '<Step %s via %s>' % (self.equation.label, self.pivot)
+
+
+class Derivation:
+    """A chain of equations joined on shared quantities.
+
+    The chain is the object the rest of the pipeline works on: it renders to a
+    single annotated LaTeX statement, and rosettalean.py turns that same chain
+    into a Lean conjecture.  Building it is deliberately separate from checking
+    it -- a chain can be assembled that is not true, and finding that out is
+    the job of the kernel, not of this file.
+    """
+
+    def __init__(self, steps=(), pivot=None):
+        self.steps = list(steps)
+        self.pivot = pivot
+
+    @property
+    def equations(self):
+        return [s.equation for s in self.steps]
+
+    def latex(self, braces=True, relation='='):
+        """The chain as one statement.
+
+        With braces, every side carries the name of the equation it came from
+        and the whole carries the eliminated quantity -- so the statement says
+        where it came from as well as what it claims.
+        """
+        if len(self.steps) < 2:
+            return self.steps[0].equation['latex'] if self.steps else ''
+        parts = []
+        for step in self.steps:
+            body = step.expr or step.equation['latex']
+            if braces:
+                parts.append(r'\underbrace{%s}_{\text{%s}}'
+                             % (body, _tex_escape(step.equation.label)))
+            else:
+                parts.append(body)
+        joined = (' %s ' % relation).join(parts)
+        if braces and self.pivot:
+            joined = r'\overbrace{%s}^{\text{%s}}' % (
+                joined, _tex_escape('both equal %s' % _pretty(self.pivot)))
+        return joined
+
+    def statement(self):
+        """The bare claim, with no provenance -- what has to be true."""
+        return self.latex(braces=False)
+
+    def prose(self):
+        """Why the chain holds, one sentence per join."""
+        lines = []
+        for i, step in enumerate(self.steps):
+            if i == 0:
+                lines.append('%s gives %s for %s.'
+                             % (step.equation.label, step.expr,
+                                _pretty(self.pivot)))
+            else:
+                lines.append('%s gives %s for the same quantity.'
+                             % (step.equation.label, step.expr))
+                if step.note:
+                    lines.append('(%s)' % step.note)
+        lines.append('Both expressions denote %s, so they are equal.'
+                     % _pretty(self.pivot))
+        return ' '.join(lines)
+
+    def symbols(self):
+        """Every free quantity appearing anywhere in the chain."""
+        out = []
+        for step in self.steps:
+            for q in quantities(step.equation):
+                if q not in out:
+                    out.append(q)
+        return out
+
+    def __len__(self):
+        return len(self.steps)
+
+    def __repr__(self):
+        return '<Derivation %s on %s>' % (
+            ' = '.join(s.equation.label for s in self.steps), self.pivot)
+
+
+def _tex_escape(text):
+    """A label going inside \\text{} -- the characters that would break it."""
+    for bad, good in (('\\', r'\textbackslash{}'), ('_', r'\_'),
+                      ('^', r'\^{}'), ('{', r'\{'), ('}', r'\}'),
+                      ('&', r'\&'), ('%', r'\%'), ('#', r'\#'), ('$', r'\$')):
+        text = text.replace(bad, good)
+    return text
+
+
+def _pretty(quantity):
+    """A feature name as it would be read aloud: 'hbar' -> 'h-bar'.
+
+    Overloaded letters are documented with every reading they have -- E is
+    "Energy / electric field" -- but a label on a brace has room for one, and
+    the first is the one the entry leads with.
+    """
+    entry = _symbol_for(quantity) if quantity else None
+    if entry is None:
+        return quantity or '?'
+    return entry['name'].split('/')[0].strip()
+
+
+def solve_for(eq, quantity):
+    r"""What an equation says a quantity equals, if it says so directly.
+
+    Only the easy case is handled, and on purpose: if the quantity stands alone
+    on one side of the relation, the other side is the answer.  Anything else
+    would need real algebra, and a chain built on a rearrangement this module
+    guessed at is exactly the kind of claim that should not be handed to a
+    theorem prover with a straight face.
+    """
+    parts = eq.sides()
+    if parts is None:
+        return None
+    left, relation, right = parts
+    if relation != '=':
+        return None
+    for near, far in ((left, right), (right, left)):
+        if _is_bare(near, quantity):
+            return far
+    return None
+
+
+def _is_bare(side, quantity):
+    """Is this side of the equation just the quantity, alone?"""
+    side = side.strip()
+    entry = _symbol_for(quantity)
+    spellings = {quantity}
+    if entry is not None:
+        spellings.add(entry['latex'])
+    return side in spellings
+
+
+def _as_equation(what, graph=None):
+    """An Equation, from one or from the name of one."""
+    if isinstance(what, Equation):
+        return what
+    found = (graph or GRAPH).find(what, 'equation')
+    if found is None:
+        raise KeyError('no equation called %r' % (what,))
+    return found
+
+
+def join(a, b, pivot=None, graph=None):
+    """Join two equations on a quantity they share.  None if they cannot be.
+
+    The join only happens when both equations state the pivot directly, which
+    is what makes the result follow by transitivity alone.
+    """
+    graph = graph or GRAPH
+    a, b = _as_equation(a, graph), _as_equation(b, graph)
+    options = [pivot] if pivot else shared_quantities(a, b)
+    for quantity in options:
+        left = solve_for(a, quantity)
+        right = solve_for(b, quantity)
+        if left is None or right is None:
+            continue
+        edge = graph.edge_between(a, b)
+        # a derived SHARES edge notes only the pivot letter; the sentences
+        # worth printing are the hand-written ones in LINKS
+        note = edge.note if edge is not None and edge.kind != SHARES else ''
+        return Derivation([Step(a, quantity, left),
+                           Step(b, quantity, right, note)], pivot=quantity)
+    return None
+
+
+def chain(*equations, **kw):
+    """Join a whole run of equations that all speak about one quantity."""
+    graph = kw.get('graph') or GRAPH
+    nodes = [_as_equation(e, graph) for e in equations]
+    pivot = kw.get('pivot')
+    if pivot is None:
+        common = None
+        for node in nodes:
+            here = set(quantities(node))
+            common = here if common is None else (common & here)
+        common = sorted(common - COMMON) if common else []
+        if not common:
+            raise ValueError('these equations share no quantity to join on')
+        pivot = sorted(common, key=lambda q: _rarity.get(q, 0))[0]
+    steps = []
+    for node in nodes:
+        expr = solve_for(node, pivot)
+        if expr is None:
+            raise ValueError('%s does not state %s directly, so it cannot be '
+                             'joined without algebra' % (node.label, pivot))
+        steps.append(Step(node, pivot, expr))
+    return Derivation(steps, pivot=pivot)
+
+
+def joins_for(eq, graph=None):
+    """Every equation this one can actually be joined to, and on what."""
+    graph = graph or GRAPH
+    out = []
+    for other in graph.of_kind('equation'):
+        if other is eq:
+            continue
+        derivation = join(eq, other, graph=graph)
+        if derivation is not None:
+            out.append((other, derivation.pivot))
+    return out
+
+
+def all_joins(graph=None):
+    """Every joinable pair in the library -- what the graph makes available."""
+    graph = graph or GRAPH
+    equations = graph.of_kind('equation')
+    out = []
+    for i, a in enumerate(equations):
+        for b in equations[i + 1:]:
+            derivation = join(a, b, graph=graph)
+            if derivation is not None:
+                out.append(derivation)
+    return out
+
 
 # ---------------------------------------------------------------- browsing
 #
@@ -1379,6 +2070,49 @@ def _check_equations(fail):
                  % (where, ', '.join(sorted(overlap))))
 
 
+def _check_graph(fail):
+    g = GRAPH
+    for node in g.nodes.values():
+        if node.key != '%s:%s' % (node.kind, node[node.key_field]):
+            fail('node %r has a key that does not match its fields' % node.label)
+    for src, kind, dst, _note in LINKS:
+        if g.find(src, 'equation') is None:
+            fail('LINKS names %r, which is not an equation' % src)
+        if g.find(dst, 'equation') is None:
+            fail('LINKS names %r, which is not an equation' % dst)
+    for edge in g.edges:
+        if edge.src.key not in g.nodes or edge.dst.key not in g.nodes:
+            fail('edge %r joins a node that is not in the graph' % edge)
+    # every equation that states a quantity directly should be reachable from
+    # the others it shares that quantity with -- otherwise the shares edges and
+    # the join logic disagree, and one of them is wrong
+    for derivation in all_joins():
+        a, b = derivation.equations
+        if g.edge_between(a, b) is None:
+            fail('%s and %s can be joined but are not linked'
+                 % (a.label, b.label))
+        if len(derivation) != 2:
+            fail('a pairwise join produced %d steps' % len(derivation))
+
+
+def _check_derivations(fail):
+    for derivation in all_joins():
+        tex = derivation.latex()
+        if tex.count(r'\underbrace') != len(derivation):
+            fail('%r does not brace every step' % derivation)
+        if r'\overbrace' not in tex:
+            fail('%r does not record the quantity it was joined on' % derivation)
+        for step in derivation.steps:
+            if step.expr not in tex:
+                fail('%r lost the expression from %s'
+                     % (derivation, step.equation.label))
+        bare = derivation.statement()
+        if r'\underbrace' in bare or r'\overbrace' in bare:
+            fail('%r leaves provenance in its bare statement' % derivation)
+        if split_relation(bare) is None:
+            fail('%r does not read back as a relation' % derivation)
+
+
 def selftest():
     """Validate every entry.  Returns the number of problems found."""
     problems = []
@@ -1390,14 +2124,18 @@ def selftest():
     _check_tables(fail)
     _check_concepts(fail)
     _check_equations(fail)
+    _check_graph(fail)
+    _check_derivations(fail)
 
     for msg in problems:
         print('FAIL  ' + msg)
     if problems:
         print('\n%d problem(s) in the knowledge base.' % len(problems))
     else:
-        print('rosettaphys: %d symbols, %d concepts, %d equations -- all well formed.'
-              % (len(SYMBOLS), len(CONCEPTS), len(EQUATIONS)))
+        print('rosettaphys: %d symbols, %d concepts, %d equations, '
+              '%d edges, %d joins -- all well formed.'
+              % (len(SYMBOLS), len(CONCEPTS), len(EQUATIONS),
+                 len(GRAPH.edges), len(all_joins())))
     return len(problems)
 
 
@@ -1406,6 +2144,16 @@ def _report():
     print()
     for key, value in census().items():
         print('  %-20s %d' % (key, value))
+    print()
+    print('  graph: %d nodes, %d edges' % (len(GRAPH.nodes), len(GRAPH.edges)))
+    for kind, count in sorted(GRAPH.census().items()):
+        print('  %-20s %d' % ('  ' + kind, count))
+    print()
+    print('  joins available:')
+    for derivation in all_joins():
+        print('    %-46s %s' % (
+            ' = '.join(s.equation.label for s in derivation.steps),
+            derivation.statement()))
     print()
     print('  symbol categories:  ' + ', '.join(categories()))
     print('  concept categories: ' + ', '.join(concept_categories()))

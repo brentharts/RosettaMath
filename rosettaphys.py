@@ -39,6 +39,7 @@ c and hbar being inferred as function arguments during translation.
     python3 rosettaphys.py --selftest  check every entry is well formed
 """
 
+import math
 import re
 
 WIKI = 'https://en.wikipedia.org/wiki/'
@@ -1077,8 +1078,23 @@ is not.
 The Penrose tilings are the famous aperiodic set, and their obstruction is
 arithmetic rather than computational: fat and thin rhombs occur in the ratio of
 the golden ratio, and a periodic tiling would force that ratio to be rational.
+
+How few tiles can an aperiodic set have? Penrose got it to two in the 1970s and
+there it stayed for fifty years. In 2023 Smith, Myers, Kaplan and
+Goodman-Strauss found a single tile that tiles the plane and never
+periodically, settling a question that had been open since Wang asked it: the
+hat, and then the spectre, which needs no reflections.
+
+The arithmetic came out different, and that is worth noticing. The one-tile
+system is governed by a substitution on nine metatile species whose matrix has
+characteristic polynomial lambda^5 (lambda-1) (lambda+1) (lambda^2-8lambda+1),
+so its inflation factor is 4 + sqrt15 rather than anything built from sqrt5.
+The argument is the same shape as Penrose's and the quadratic field is not, so
+a library that recorded only the golden ratio would have recorded the example
+rather than the reason.
 """, 'Wang_tile', [], ['Golden ratio', 'Penrose tile ratio',
-                       'Inflation quadratic'])
+                       'Inflation quadratic', 'Spectre inflation quadratic',
+                       'Spectre inflation factor'])
 
 add_concept('Area as an action', 'Extremal geometry', """
 A soap film spanning a wire loop has no memory, no dynamics and nothing to
@@ -1630,6 +1646,93 @@ EQUATIONS = [
                    'tilings meet the rest of this group: an inflation rule is '
                    'a statement about how area is budgeted, which is also what '
                    'a minimal surface and a string worldsheet are about.'),
+
+    # -- the spectre monotile --------------------------------------------
+    #
+    # The Penrose entries above are a two-tile system and the constant that
+    # governs them is the golden ratio.  These are the one-tile system found in
+    # 2023, and the constant is different: the substitution matrix of the nine
+    # metatile species has characteristic polynomial
+    #
+    #     lambda^5 (lambda - 1) (lambda + 1) (lambda^2 - 8 lambda + 1)
+    #
+    # so the Perron root is a root of the quadratic rather than anything to do
+    # with sqrt5.  Every number below was checked against the substitution
+    # matrix in github.com/brentharts/spectre rather than taken from a paper:
+    # the eigenvalue exactly, the nine frequencies exactly in Q(sqrt15), and
+    # the area formula against the tile geometry.
+
+    equation(name='Spectre inflation quadratic', field='Tilings',
+             latex=r'\mu^2 = 8 \mu - 1', slug='Einstein_problem',
+             must=['mu', 'S:sup2'], nice=[],
+             blurb='The defining relation of the spectre inflation factor, and '
+                   'the exact analogue of x^2 = x + 1 for the Penrose tilings '
+                   'four entries above. It is the non-trivial factor of the '
+                   'substitution matrix\'s characteristic polynomial; the rest '
+                   'of that polynomial is a power of lambda and the two roots '
+                   'of unity. Same shape of argument as the golden ratio, '
+                   'different quadratic field.'),
+    equation(name='Spectre inflation factor', field='Tilings',
+             latex=r'\mu = 4 + \sqrt{15}', slug='Einstein_problem',
+             must=['mu', 'S:sqrt'], nice=[],
+             blurb='The larger root, about 7.873, and the factor by which one '
+                   'round of substitution multiplies the number of tiles. It '
+                   'is irrational, which is the whole obstruction: a periodic '
+                   'tiling has a rational ratio of tile counts and this number '
+                   'is not one.'),
+    equation(name='Spectre reciprocal pair', field='Tilings',
+             latex=r'g \mu = 1', slug='Einstein_problem',
+             must=['g', 'mu'], nice=[],
+             blurb='The two roots of the inflation quadratic multiply to one, '
+                   'because the constant term is one. So the smaller root is '
+                   'exactly the reciprocal of the larger, and the frequency of '
+                   'the commonest metatile species is exactly one over the '
+                   'inflation factor. That coincidence is not a coincidence: '
+                   'it is the constant term of the quadratic, read twice.'),
+    equation(name='Spectre triplet frequency', field='Tilings',
+             latex=r'g = 4 - \sqrt{15}', slug='Aperiodic_tiling',
+             must=['g', 'S:sqrt'], nice=[],
+             blurb='The limiting fraction of the tiling occupied by each of '
+                   'the three metatile species that every supertile contains '
+                   'exactly one of. Three species share this value, and they '
+                   'share it for a reason: the corresponding rows of the '
+                   'substitution matrix are all ones, which is a conservation '
+                   'law rather than an accident.'),
+    equation(name='Spectre frequency ratio', field='Tilings',
+             latex=r'v_\Theta = \frac{v_\Gamma}{\mu}',
+             slug='Substitution_tiling',
+             must=['v', 'mu', 'S:frac'], nice=['S:sub'],
+             blurb='One species appears exactly one inflation step behind '
+                   'another, so its frequency is the other\'s divided by the '
+                   'inflation factor. The counts bear this out literally: the '
+                   'sequence for the rarer species is the sequence for the '
+                   'commoner one shifted by a generation.'),
+    equation(name='Spectre count recurrence', field='Tilings',
+             latex=r"N'' = 8 N' - N", slug='Substitution_tiling',
+             must=['N'], nice=[],
+             blurb='Tile counts obey a second-order linear recurrence whose '
+                   'characteristic polynomial is the inflation quadratic -- '
+                   'the numbers run 1, 8, 63, 496, 3905, 30744. Two generations '
+                   'of history are enough to determine the next, which is what '
+                   'makes the count an integer sequence rather than a rounded '
+                   'power, and the ratio of consecutive terms tends to the '
+                   'inflation factor.'),
+    equation(name='Spectre tile area', field='Tilings',
+             latex=r'A = 2 \sqrt{3} a^2 + 3 a b + \sqrt{3} b^2',
+             slug='Einstein_problem',
+             must=['A', 'a', 'b', 'S:sqrt', 'S:sup2'], nice=[],
+             blurb='The area of the fourteen-sided tile in terms of its two '
+                   'edge lengths. The expression is not symmetric in a and b, '
+                   'and that asymmetry is the whole reason the reflected tile '
+                   'is a different shape rather than the same one turned over.'),
+    equation(name='Hat tile area', field='Tilings',
+             latex=r'A_H = 8 \sqrt{3}', slug='Einstein_problem',
+             must=['A', 'S:sqrt'], nice=['S:sub'],
+             blurb='The hat is the tile with a = 1 and b = root three. Its '
+                   'sibling the turtle, with the lengths swapped, has area ten '
+                   'root three, and the spectre with both edges equal has '
+                   'three plus three root three -- three different areas from '
+                   'one formula, which is what makes the family a family.'),
 
     # -- extremal geometry -----------------------------------------------
 
@@ -2833,6 +2936,17 @@ add_quantity('tile count', '1',
              'How many tiles of one kind appear in a patch. Only ratios of '
              'these are meaningful, since the patch can always be made bigger.',
              'Penrose_tiling')
+add_quantity('tile frequency', '1',
+             'The limiting fraction of a tiling made of one species of tile. '
+             'Unlike a tile count it converges, and for a substitution tiling '
+             'it is a component of the Perron eigenvector of the substitution '
+             'matrix -- which is why these come out as algebraic numbers '
+             'rather than as measurements.', 'Substitution_tiling')
+add_quantity('tile area', 'L^2',
+             'The area of a single tile, as opposed to a patch of them. Kept '
+             'apart from patch area for the reason given there: a tile has a '
+             'fixed size and a patch does not, so equating one to the other '
+             'would be a statement about nothing.', 'Aperiodic_tiling')
 add_quantity('genus', '1',
              'The number of handles on a closed orientable surface: nought for '
              'a sphere, one for a torus. In string perturbation theory it is '
@@ -3005,6 +3119,20 @@ READINGS = {
         'N_f': 'tile count', 'phi': 'golden ratio', 'N_t': 'tile count'},
     'Inflation of area': {
         'A_prime': 'patch area', 'phi': 'golden ratio', 'A': 'patch area'},
+    'Spectre inflation quadratic': {'mu': 'inflation factor'},
+    'Spectre inflation factor': {'mu': 'inflation factor'},
+    'Spectre reciprocal pair': {
+        'g': 'tile frequency', 'mu': 'inflation factor'},
+    'Spectre triplet frequency': {'g': 'tile frequency'},
+    'Spectre frequency ratio': {
+        'v_Theta': 'tile frequency', 'v_Gamma': 'tile frequency',
+        'mu': 'inflation factor'},
+    'Spectre count recurrence': {
+        'N_prime_prime': 'tile count', 'N_prime': 'tile count',
+        'N': 'tile count'},
+    'Spectre tile area': {
+        'A': 'tile area', 'a': 'length', 'b': 'length'},
+    'Hat tile area': {'A_H': 'tile area'},
     'Euler characteristic of a closed surface': {
         'chi': 'euler characteristic', 'g': 'genus'},
     'Riemann-Hurwitz (unbranched)': {
@@ -3404,6 +3532,27 @@ LINKS = [
     ('Inflation of area', DEFINES, 'Golden ratio',
      'inflation scales lengths by phi, so it scales areas by phi squared -- '
      'the same constant, one dimension up'),
+    ('Spectre inflation factor', SPECIALISES, 'Spectre inflation quadratic',
+     'the surd is the larger root of the quadratic; the quadratic is what the '
+     'number is for'),
+    ('Spectre triplet frequency', SPECIALISES, 'Spectre inflation quadratic',
+     'and this is the smaller root of the same quadratic, which is why the '
+     'two are reciprocal without anyone arranging it'),
+    ('Spectre reciprocal pair', DEFINES, 'Spectre inflation quadratic',
+     'the constant term of the quadratic is one, so the product of its roots '
+     'is one -- the reciprocal relation is read straight off the polynomial'),
+    ('Spectre count recurrence', DEFINES, 'Spectre inflation quadratic',
+     'the recurrence has the inflation quadratic as its characteristic '
+     'polynomial, which is why counts grow like powers of the larger root '
+     'while staying whole numbers'),
+    ('Spectre inflation quadratic', FIELD, 'Inflation quadratic',
+     'the same statement for the one-tile system that the golden ratio makes '
+     'for the two-tile one: an inflation factor is a quadratic irrational '
+     'either way, and the irrationality is the whole obstruction to a period'),
+    ('Hat tile area', SPECIALISES, 'Spectre tile area',
+     'the hat is the member of the family with a = 1 and b = root three; '
+     'swapping the two lengths gives the turtle and a different area, which '
+     'is the asymmetry the formula records'),
     ('Riemann-Hurwitz (unbranched)', SPECIALISES,
      'Euler characteristic of a closed surface',
      'a cover has n times the Euler characteristic of what it covers, so by '
@@ -4354,6 +4503,113 @@ def census():
     }
 
 
+# ------------------------------------------------------- arithmetic checks
+#
+# Almost nothing in this library can be checked for truth.  An equation with
+# free variables is a claim about the world, and the most a module of this kind
+# can ask is whether it is well formed -- which is the whole argument of the
+# Lean bridge, and the reason its output is called a conjecture.
+#
+# A few entries are different.  When an equation pins a name to arithmetic over
+# numbers alone -- mu = 4 + sqrt15, phi = (1 + sqrt5)/2 -- there is nothing left
+# to be true about the world, and any other entry written entirely in those
+# names becomes a statement this module can simply evaluate.  That is a small
+# corner, but it is the corner where a mistyped surd hides: 4 + sqrt14 parses,
+# typechecks, renders and joins exactly as well as the right answer.
+
+class NotDetermined(Exception):
+    """This term contains something the arithmetic cannot put a number to."""
+
+
+_ARITHMETIC = {
+    'add': lambda v: v[0] + v[1], 'sub': lambda v: v[0] - v[1],
+    'mul': lambda v: v[0] * v[1], 'div': lambda v: v[0] / v[1],
+    'pow': lambda v: v[0] ** v[1], 'neg': lambda v: -v[0],
+}
+
+
+def evaluate(term, known=()):
+    """A Term as a float, given values for the names it uses.
+
+    Raises rather than guessing.  A name with no value, a function other than
+    a square root, or anything opaque means the term is not determined, and a
+    caller that wanted a number should be told so rather than handed one.
+    """
+    if isinstance(term, Num):
+        return float(term.text)
+    if isinstance(term, Sym):
+        if term.name not in known:
+            raise NotDetermined(term.name)
+        return known[term.name]
+    if isinstance(term, Call):
+        if term.func != 'sqrt':
+            raise NotDetermined(term.func)
+        return math.sqrt(evaluate(term.arg, known))
+    if isinstance(term, Op):
+        return _ARITHMETIC[term.op]([evaluate(a, known) for a in term.args])
+    raise NotDetermined(type(term).__name__)
+
+
+def _both_sides(eq):
+    """(left, right) as Terms for an equation the algebra accepts, or None."""
+    if algebraic(eq['latex']) is not None:
+        return None
+    parts = split_relation(eq['latex'])
+    if not parts or parts[1] != '=':
+        return None
+    try:
+        return read_term(parts[0]), read_term(parts[2])
+    except Unreadable:
+        return None
+
+
+def declared_constants():
+    """Names the library pins to a number, and the number.
+
+    An entry qualifies when one side is a bare name and the other is closed
+    arithmetic: mu = 4 + sqrt15 qualifies, mu = 4 + sqrt(n) does not.
+    """
+    out = {}
+    for eq in EQUATIONS:
+        sides = _both_sides(eq)
+        if sides is None:
+            continue
+        left, right = sides
+        if not isinstance(left, Sym) or right.symbols():
+            continue
+        try:
+            out[left.name] = evaluate(right)
+        except NotDetermined:
+            continue
+    return out
+
+
+def numeric_checks():
+    """Entries that are fully determined by declared_constants().
+
+    Yields (equation, left, right) with both sides already evaluated.  A
+    definition like mu = 4 + sqrt15 is skipped: it is what supplied the value,
+    so checking it against itself proves nothing.
+    """
+    known = declared_constants()
+    out = []
+    for eq in EQUATIONS:
+        sides = _both_sides(eq)
+        if sides is None:
+            continue
+        left, right = sides
+        if isinstance(left, Sym) and not right.symbols():
+            continue                      # this is a definition, not a check
+        names = set(left.symbols()) | set(right.symbols())
+        if not names or not names <= set(known):
+            continue
+        try:
+            out.append((eq, evaluate(left, known), evaluate(right, known)))
+        except NotDetermined:
+            continue
+    return out
+
+
 # ---------------------------------------------------------------- selftest
 #
 # The knowledge base is meant to be added to, so the tests here are the kind
@@ -4669,6 +4925,18 @@ def _check_short(fail):
         fail('the display does not brace every row')
 
 
+def _check_numeric(fail):
+    """The corner of the library where truth is decidable, decided."""
+    checks = numeric_checks()
+    if not checks:
+        fail('nothing is numerically determined, so a mistyped surd would '
+             'not be caught')
+    for eq, left, right in checks:
+        if not math.isclose(left, right, rel_tol=1e-12, abs_tol=1e-12):
+            fail('%s does not hold on the declared constants: %.12g vs %.12g'
+                 % (eq.label, left, right))
+
+
 def selftest():
     """Validate every entry.  Returns the number of problems found."""
     problems = []
@@ -4685,6 +4953,7 @@ def selftest():
     _check_algebra(fail)
     _check_readings(fail)
     _check_short(fail)
+    _check_numeric(fail)
 
     for msg in problems:
         print('FAIL  ' + msg)

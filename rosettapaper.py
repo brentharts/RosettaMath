@@ -490,6 +490,11 @@ def geometry_section():
     table = '\n'.join(rows)
 
     total = sum(len(P.equations_in(f)) for f in fields)
+    refused_here = sum(1 for f in fields for e in P.equations_in(f)
+                       if P.algebraic(e['latex']) is not None)
+    rest = [e for e in P.EQUATIONS if e['field'] not in fields]
+    refused_rest = sum(1 for e in rest
+                       if P.algebraic(e['latex']) is not None)
     pure = [q for q in P.QUANTITIES.values() if q['dimension'] == '1']
     minimal = P.join('Mean curvature', 'Minimal surface condition')
     slope = P.family('alpha_prime')
@@ -524,9 +529,10 @@ Field & Entries & Refused by the algebra & Readings declared \\
 \end{tabular}
 \caption{The new group. ``Refused'' counts entries the algebra of
 Section~\ref{sec:algebra} declines to rearrange---integrals, sums and the
-dimension operator---which it does at a higher rate here than in the library at
-large, because geometry states more of its content as integrals than mechanics
-does.}
+dimension operator. It does so for %d\%% of this group against %d\%% of the
+rest of the library: the refusals cluster in the handful of statements that are
+genuinely integrals (Gauss-Bonnet, Plateau, Nambu-Goto), while the tilings are
+plain algebra over a quadratic field and are refused nothing at all.}
 \end{table}
 
 \subsection{What happens when the dimensions stop helping}
@@ -697,10 +703,34 @@ Penrose rhombs occur in an irrational ratio, so no tiling of them repeats---as
 an equation it can join. It cannot hold the theorem. Knowing which of the three
 is being offered is the difference between a knowledge base and a claim to have
 automated mathematics.
+
+The same group supplies the opposite extreme, which is worth putting beside it.
+The monotile entries pin names to closed arithmetic---the inflation factor is
+$4+\sqrt{15}$, the commonest metatile frequency is $4-\sqrt{15}$---and once a
+name has a number, any other entry written entirely in such names has nothing
+left to be true about. It can simply be evaluated. The library declares %s
+this way, which makes %s decidable, and they are
+checked on every run:
+
+\begin{align*}
+\mu^2 &= 8\mu - 1 \\
+g\mu &= 1
+\end{align*}
+
+\noindent
+%s out of %d is not a result about physics. It is a result about
+where the boundary sits. Everything else here is a conjecture
+because it quantifies over variables and the world decides; these are not,
+because they quantify over nothing. That is also the only place in the library
+where a mistyped surd can be caught automatically---$4+\sqrt{14}$ parses,
+typechecks, renders and joins exactly as well as the right answer, and is
+caught here and nowhere else.
 """ % (words(total, 'entry', 'entries'),
        words(len(fields), 'new field'),
        ', '.join(esc(f).lower() for f in fields),
        table,
+       round(100.0 * refused_here / total),
+       round(100.0 * refused_rest / len(rest)),
        number(len(pure)).capitalize(),
        words(len(P.QUANTITIES), 'physical quantity', 'physical quantities'),
        minimal.latex(), minimal.prose(math='$%s$'),
@@ -713,7 +743,11 @@ automated mathematics.
        words(sum(len(x) for x in P.quantity_join_census()), 'statement'),
        len(P.quantity_join_census()[0]),
        len(P.quantity_join_census()[1]),
-       len(P.quantity_join_census()[2]))
+       len(P.quantity_join_census()[2]),
+       words(len(P.declared_constants()), 'constant'),
+       words(len(P.numeric_checks()), 'entry', 'entries'),
+       words(len(P.numeric_checks()), 'statement').capitalize(),
+       len(P.EQUATIONS))
 
 
 def lean_section():

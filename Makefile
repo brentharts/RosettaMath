@@ -182,12 +182,17 @@ check-deps:
 ui:
 	$(PYTHON) rosettaui.py
 
-# rosettamath.py self tests both bootstrap stages; rosettaui.py checks the
-# parser, the classifier and the knowledge base.
+# rosettamath.py self tests both bootstrap stages; rosettaphys.py validates
+# every knowledge base entry; rosettaui.py checks the parser and the classifier.
 test:
 	$(PYTHON) rosettamath.py
+	$(PYTHON) rosettaphys.py --selftest
 	$(PYTHON) rosettaui.py --selftest
 	$(PYTHON) lean4.py --selftest
+
+# What the knowledge base currently covers.
+census:
+	$(PYTHON) rosettaphys.py
 
 # The micro-kernel on its own: proofs raise on failure, so this gates CI.
 proofs:
@@ -217,7 +222,7 @@ clean:
 	rm -rf __pycache__ /tmp/rosettaui-cache
 	rm -f /tmp/neomath.aux /tmp/neomath.log /tmp/neomath.out /tmp/neomath.tex
 
-.PHONY: default help install install-all check-deps ui test proofs \
+.PHONY: default help install install-all check-deps ui test census proofs \
 	render-test pdf paper leanproof crustos_eq clean \
 	install_apple install-apple install_apple-all \
 	install_windows install-windows

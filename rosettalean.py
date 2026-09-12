@@ -171,289 +171,122 @@ def identifier(text):
     return name
 
 
-class Unreadable(Exception):
-    """This corner of the notation has no reading as a term, and saying so
-    beats inventing one.  Every message names what was met, because the point
-    of the message is to say which equation needs a case adding."""
-
-
 # ------------------------------------------------------------ term reader
 #
-# rosettaui's parser already turned the LaTeX into a tree with the shape the
-# notation implies -- a frac is stacked, a script is raised.  Reading that tree
-# is therefore mostly a matter of saying what each shape means arithmetically,
-# which is the translation the whole project is about, done once more in a
-# smaller place.
+# rosettaphys already read the LaTeX into its algebra, so there is nothing left
+# to parse here: this walks a Term and says what each node means to the kernel.
+#
+# That is a real simplification over what this file used to do, which was walk
+# rosettaui's *shape* tree.  A shape tree records that \underbrace{x}_{label}
+# is a thing with a subscript, and the reader had to know that this particular
+# subscript was a caption rather than an index -- a distinction the algebra
+# already makes, in one place, for every reader.
+
+class Unreadable(Exception):
+    """This corner of the notation has no reading as a kernel term.
+
+    Every message names what was met, because the point of the message is to
+    say which equation needs a case adding.
+    """
+
+
+BINOPS = {'add': 'Real.add', 'sub': 'Real.sub',
+          'mul': 'Real.mul', 'div': 'Real.div'}
+
+CALLS = {'log': 'Real.log', 'ln': 'Real.log', 'exp': 'Real.exp',
+         'sqrt': 'Real.sqrt', 'sin': 'Real.sin', 'cos': 'Real.cos',
+         'tan': 'Real.tan', 'abs': 'Real.abs'}
+
 
 class TermReader:
-    """A rosettaui parse tree -> a kernel term over Real."""
+    """A rosettaphys Term -> a kernel term over Real."""
 
-    def __init__(self, strict=True):
+    def __init__(self):
         self.free = {}            # identifier -> the Var standing for it
-        self.labels = []          # (label, latex) from every brace met
-        self.strict = strict
+        self.labels = []          # provenance recovered from the braces
+        self.spellings = {}       # identifier -> the LaTeX it came from
 
     # -- entry points ----------------------------------------------------
 
     def read(self, latex):
         """A LaTeX fragment as a kernel term."""
-        return self.node(U.parse_latex(latex))
+        return self.term(P.read_term(latex))
 
     def relation(self, latex):
         """A LaTeX statement as (left, relation, right) kernel terms."""
-        parts = P.split_relation(_unbrace_top(latex))
-        if parts is None:
-            raise Unreadable('%r states no relation, so it is not a claim'
-                             % latex)
-        left, rel, right = parts
-        return self.read(left), rel, self.read(right)
+        rel = P.read_relation(latex)
+        self.labels.extend(l for l in rel.labels if l)
+        return self.term(rel.left), rel.op, self.term(rel.right)
 
-    # -- the tree --------------------------------------------------------
+    # -- the algebra -----------------------------------------------------
 
-    def node(self, n):
-        if n is None:
-            raise Unreadable('an empty expression')
-        handler = getattr(self, 'k_' + n.kind, None)
-        if handler is None:
-            raise Unreadable('no reading for a %r node' % n.kind)
-        return handler(n)
+    def term(self, t):
+        if isinstance(t, P.Sym):
+            return self.symbol(t)
+        if isinstance(t, P.Num):
+            return self.number(t)
+        if isinstance(t, P.Call):
+            return self.call(t)
+        if isinstance(t, P.Op):
+            return self.op(t)
+        if isinstance(t, P.Opaque):
+            raise Unreadable('%s has no algebraic reading, so it has no '
+                             'reading as a term either' % t.tex)
+        raise Unreadable('no reading for %r' % (t,))
 
-    def k_row(self, n):
-        return self.sequence(n.children)
-
-    def k_num(self, n):
-        return _un('Real.lit', L.numeral(int(n.text)))
-
-    def k_text(self, n):
-        return self.symbol(n.text)
-
-    def k_sym(self, n):
-        return self.symbol(n.text or n.latex)
-
-    def k_brace(self, n):
-        r"""\underbrace{body}_{label} -- the body is the term, the label is
-        provenance, and both are kept."""
-        return self.node(n.body)
-
-    def k_accent(self, n):
-        # a hat or a vector decorates a quantity without changing its type
-        inner = self.node(n.body)
-        return inner
-
-    def k_frac(self, n):
-        return _bin('Real.div', self.node(n.num), self.node(n.den))
-
-    def k_sqrt(self, n):
-        if n.sub is not None:
-            raise Unreadable('an nth root')
-        return _un('Real.sqrt', self.node(n.body))
-
-    def k_script(self, n):
-        r"""base^sup and base_sub.
-
-        A superscript is a power.  A subscript is not an operation at all --
-        m_1 is a different quantity from m_2, not m acted on by 1 -- so it is
-        folded into the name, which is the only reading that keeps the two
-        masses distinct.
-
-        A brace arrives in this shape too, because \underbrace{x}_{label}
-        parses as a base carrying a subscript.  There the script is a caption,
-        not an index, and reading it as part of the name would turn the whole
-        annotated side of an equation into a single variable called after the
-        equation it came from -- which typechecks, and means nothing.
-        """
-        if n.base is not None and n.base.kind == 'brace':
-            self.labels.append((_flatten(n.sub) or _flatten(n.sup),
-                                n.base.accent))
-            return self.node(n.base.body)
-        if n.sub is not None and n.sup is None:
-            return self.symbol(_flatten(n.base) + '_' + _flatten(n.sub))
-        base = self.node(n.base) if n.sub is None else \
-            self.symbol(_flatten(n.base) + '_' + _flatten(n.sub))
-        exponent = n.sup
-        digits = _flatten(exponent)
-        if digits.isdigit():
-            return _bin('Real.pow', base, L.numeral(int(digits)))
-        return _bin('Real.rpow', base, self.node(exponent))
-
-    def k_matrix(self, n):
-        raise Unreadable('a matrix')
-
-    # -- sequences -------------------------------------------------------
-
-    def sequence(self, items):
-        """A row of nodes, read with the usual precedence.
-
-        Juxtaposition is multiplication here, not application -- which is the
-        one place this reader must disagree with lean4.py's type reader, and
-        the reason the two are separate parsers rather than one with a flag.
-        """
-        terms = self.split_sum(items)
-        return terms
-
-    def split_sum(self, items):
-        """Lowest precedence first: + and - split the row into products."""
-        parts, ops, current = [], [], []
-        for i, item in enumerate(items):
-            sign = _operator(item)
-            if sign in ('+', '-') and current and not _is_operator(items[i - 1]):
-                parts.append(current)
-                ops.append(sign)
-                current = []
-                continue
-            current.append(item)
-        parts.append(current)
-        out = self.product(parts[0])
-        for op, part in zip(ops, parts[1:]):
-            out = _bin('Real.add' if op == '+' else 'sub', out, self.product(part))
-        return out
-
-    def product(self, items):
-        """A run of factors, multiplied.  A leading minus negates the run."""
-        items = list(items)
-        if not items:
-            raise Unreadable('an empty factor')
-        negate = False
-        while items and _operator(items[0]) in ('+', '-'):
-            if _operator(items[0]) == '-':
-                negate = not negate
-            items.pop(0)
-        factors = []
-        for item in items:
-            op = _operator(item)
-            if op in (r'\cdot', r'\times', '*'):
-                continue                       # an explicit product mark
-            if op == '/':
-                raise Unreadable('an inline / -- write it as a \\frac')
-            if op is not None:
-                raise Unreadable('the operator %r inside a product' % op)
-            factors.append(self.node(item))
-        if not factors:
-            raise Unreadable('an empty factor')
-        out = factors[0]
-        for factor in factors[1:]:
-            out = _bin('Real.mul', out, factor)
-        return _un('Real.neg', out) if negate else out
-
-    # -- leaves ----------------------------------------------------------
-
-    def symbol(self, text):
-        """A glyph as a free variable, remembered so it can be quantified."""
-        text = (text or '').strip()
-        if not text:
-            raise Unreadable('an empty symbol')
-        for command, func in (('\\log', 'log'), ('\\ln', 'log'),
-                              ('\\exp', 'exp'), ('\\sin', 'sin'),
-                              ('\\cos', 'cos'), ('\\tan', 'tan')):
-            if text == command:
-                raise Unreadable('a bare %s with nothing to apply it to' % text)
-        name = identifier(text)
+    def symbol(self, t):
+        """A quantity as a free variable, remembered so it can be quantified."""
+        name = identifier(t.name)
         if name not in self.free:
             self.free[name] = Var(name)
+            self.spellings[name] = t.tex
         return self.free[name]
 
+    def number(self, t):
+        """A literal.  Whole numbers only: Real.lit takes a Nat."""
+        try:
+            value = int(t.text)
+        except ValueError:
+            raise Unreadable('the non-integer literal %s -- Real.lit takes a '
+                             'Nat, and a decimal would need a rational'
+                             % t.text)
+        if value < 0:
+            raise Unreadable('a negative literal')
+        return _un('Real.lit', L.numeral(value))
 
-# Functions written prefix in the notation: \log W is log applied to W, and the
-# row reader has to know that before it starts multiplying things together.
-PREFIX = {'\\log': 'Real.log', '\\ln': 'Real.log', '\\exp': 'Real.exp',
-          '\\sin': 'Real.sin', '\\cos': 'Real.cos', '\\tan': 'Real.tan',
-          '\\sqrt': 'Real.sqrt'}
+    def call(self, t):
+        name = CALLS.get(t.func)
+        if name is None:
+            raise Unreadable('no reading for the function %s' % t.func)
+        return _un(name, self.term(t.arg))
 
+    def op(self, t):
+        if t.op == 'neg':
+            return _un('Real.neg', self.term(t.args[0]))
+        if t.op == 'pow':
+            return self.power(t)
+        name = BINOPS.get(t.op)
+        if name is None:
+            raise Unreadable('no reading for the operator %s' % t.op)
+        return _bin(name, self.term(t.args[0]), self.term(t.args[1]))
 
-def _operator(node):
-    """The operator a node is, or None if it is a term."""
-    if node is None or node.kind != 'sym':
-        return None
-    text = (node.text or node.latex or '').strip()
-    if text in ('+', '-', '\u2212', '*', '/', r'\cdot', r'\times'):
-        return '-' if text == '\u2212' else text
-    return None
+    def power(self, t):
+        r"""x^n with a whole n is Real.pow; anything else is Real.rpow.
 
-
-def _is_operator(node):
-    return _operator(node) is not None
-
-
-def _flatten(node):
-    """The plain text of a small node -- a subscript or an exponent."""
-    if node is None:
-        return ''
-    if node.kind in ('sym', 'num', 'text'):
-        return node.text or node.latex
-    if node.kind == 'row':
-        return ''.join(_flatten(c) for c in node.children)
-    return ''
-
-
-def _unbrace_top(latex):
-    r"""Strip an \overbrace wrapping the whole statement.
-
-    The overbrace records which quantity was eliminated; it is provenance
-    about the statement rather than part of it, and leaving it in place would
-    hide the top level = one brace deep where split_relation cannot see it.
-    """
-    text = latex.strip()
-    if not text.startswith(r'\overbrace{'):
-        return text
-    depth, i = 0, len(r'\overbrace')
-    start = i + 1
-    while i < len(text):
-        if text[i] == '{':
-            depth += 1
-        elif text[i] == '}':
-            depth -= 1
-            if depth == 0:
-                return text[start:i]
-        i += 1
-    return text
-
-
-# --------------------------------------------------------- prefix folding
-#
-# The reader above multiplies a row together, which is wrong for \log W.  The
-# fix is a pass over the row before it is read, turning a function command and
-# the factor after it into one node.
-
-def _fold_prefix(items):
-    """Rewrite [\\log, W] as a single application node."""
-    out = []
-    i = 0
-    while i < len(items):
-        item = items[i]
-        text = (item.latex or item.text or '') if item.kind == 'sym' else ''
-        if text in PREFIX and i + 1 < len(items):
-            out.append(_Applied(PREFIX[text], items[i + 1]))
-            i += 2
-            continue
-        out.append(item)
-        i += 1
-    return out
-
-
-class _Applied:
-    """A function and its argument, standing in for two row items."""
-
-    kind = 'applied'
-
-    def __init__(self, func, arg):
-        self.func = func
-        self.arg = arg
-        self.latex = self.text = ''
-
-
-def _k_applied(self, n):
-    return _un(n.func, self.node(n.arg))
-
-
-TermReader.k_applied = _k_applied
-_original_product = TermReader.product
-
-
-def _product_with_prefix(self, items):
-    return _original_product(self, _fold_prefix(list(items)))
-
-
-TermReader.product = _product_with_prefix
+        Keeping the two apart is not pedantry.  c^2 has a Nat exponent and
+        means c times c; a^b with b real is a different operation that needs
+        a positive base to be defined at all, and giving them one name would
+        lose the side condition at the point where it still fits in a type.
+        """
+        base, exponent = t.args
+        if isinstance(exponent, P.Num):
+            try:
+                whole = int(exponent.text)
+            except ValueError:
+                whole = None
+            if whole is not None and whole >= 0:
+                return _bin('Real.pow', self.term(base), L.numeral(whole))
+        return _bin('Real.rpow', self.term(base), self.term(exponent))
 
 
 # ------------------------------------------------------------ conjectures
@@ -781,13 +614,21 @@ def selftest():
           sorted(_read_into(r'\hbar h').free) == ['h', 'hbar'])
 
     print('braces')
+    r = TermReader()
+    left, rel, right = r.relation(r'\overbrace{a = b}^{\text{x}}')
     check('an overbrace round the whole statement is stripped',
-          P.split_relation(_unbrace_top(
-              r'\overbrace{a = b}^{\text{x}}')) is not None)
+          rel == '=' and L.readable(left) == 'a')
     r = TermReader()
     check('an underbrace reads as the term inside it',
           L.readable(r.read(r'\underbrace{m c}_{\text{label}}'))
           == 'Real.mul(m)(c)')
+    r = TermReader()
+    r.relation(P.join('Mass-energy equivalence', 'Planck relation').latex())
+    check('and its label is kept as provenance',
+          r.labels == ['Mass-energy equivalence', 'Planck relation'])
+    check('an operator refuses to be read as a term',
+          _refuses(r'\nabla^2 \psi'))
+    check('and so does a tensor component', _refuses(r'G_{\mu\nu}'))
 
     print('conjectures')
     d = P.join('Mass-energy equivalence', 'Planck relation')
@@ -834,6 +675,15 @@ def selftest():
     else:
         print('rosettalean: %d conjectures, all well typed.' % len(readable))
     return len(failures)
+
+
+def _refuses(latex):
+    """Did the reader decline this, as it should?"""
+    try:
+        TermReader().read(latex)
+    except (Unreadable, P.Unreadable):
+        return True
+    return False
 
 
 def _read_into(latex):

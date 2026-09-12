@@ -39,6 +39,8 @@ c and hbar being inferred as function arguments during translation.
     python3 rosettaphys.py --selftest  check every entry is well formed
 """
 
+import re
+
 WIKI = 'https://en.wikipedia.org/wiki/'
 
 
@@ -178,6 +180,7 @@ FIELD = 'field'               # equation -> equation, same field of physics
 SPECIALISES = 'specialises'   # equation -> the more general one it comes from
 LIMIT_OF = 'limit-of'         # equation -> what it becomes in some limit
 DEFINES = 'defines'           # equation -> the quantity it introduces
+DENOTES = 'denotes'           # equation -> what one of its letters means
 
 
 def split_relation(latex):
@@ -1397,6 +1400,138 @@ EQUATIONS = [
                'that ratio is less than one in magnitude. It is the workhorse '
                'behind perturbation expansions and the resolvent of an '
                'operator.'),
+    equation(name='Kinetic energy', field='Classical mechanics',
+             latex=r'E_k = \frac{1}{2} m v^2', slug='Kinetic_energy',
+             must=['E', 'm', 'v', 'S:frac'], nice=['S:sup2'],
+             blurb='The energy a body has by moving. The half and the square '
+                   'are not decoration: the square is what makes kinetic '
+                   'energy add as work does, and the half is what falls out of '
+                   'integrating momentum with respect to velocity.'),
+    equation(name='Momentum', field='Classical mechanics',
+             latex=r'p = m v', slug='Momentum',
+             must=['p', 'm', 'v'], nice=[],
+             blurb='Mass times velocity -- the quantity that is conserved when '
+                   'nothing external pushes, which is why it, rather than '
+                   'velocity, is what appears in the laws.'),
+    equation(name='Work done by a force', field='Classical mechanics',
+             latex=r'W = F d', slug='Work_(physics)',
+             must=['W', 'F', 'd'], nice=[],
+             blurb='Force times the distance moved along it. This is the '
+                   'bridge between the force laws and the energy laws: it is '
+                   'how a push becomes a change in energy.'),
+    equation(name='Gravitational potential energy', field='Classical mechanics',
+             latex=r'U = m g h', slug='Gravitational_energy',
+             must=['U', 'm', 'g', 'h'], nice=[],
+             blurb='The energy stored by lifting something in a uniform field. '
+                   'The uniform g is an approximation to the inverse-square '
+                   'law that is excellent near a surface and useless far from '
+                   'one.'),
+    equation(name='Surface gravity', field='Classical mechanics',
+             latex=r'g = \frac{G M}{r^2}', slug='Surface_gravity',
+             must=['g', 'G', 'M', 'r', 'S:frac'], nice=['S:sup2'],
+             blurb='What the inverse-square law becomes when one of the two '
+                   'masses is a planet: the acceleration it imposes, '
+                   'independent of what is falling. That independence is the '
+                   'equivalence principle in its oldest form.'),
+    equation(name='Hooke\'s law', field='Classical mechanics',
+             latex=r'F = -k x', slug='Hooke%27s_law',
+             must=['F', 'k', 'x'], nice=[],
+             blurb='A restoring force proportional to displacement. Almost '
+                   'nothing obeys it exactly, and almost everything obeys it '
+                   'near equilibrium, because it is the first term of any '
+                   'potential expanded about a minimum.'),
+    equation(name='Angular frequency', field='Waves',
+             latex=r'\omega = 2 \pi f', slug='Angular_frequency',
+             must=['omega', 'pi', 'f'], nice=[],
+             blurb='Frequency in radians per second rather than cycles per '
+                   'second. The factor of two pi is the single commonest '
+                   'source of a lost constant when moving between a formula '
+                   'and its implementation.'),
+    equation(name='Wave speed', field='Waves',
+             latex=r'v = f \lambda', slug='Wavelength',
+             must=['v', 'f', 'lambda'], nice=[],
+             blurb='Frequency times wavelength. It holds for any wave at all, '
+                   'which is why it links the optical, acoustic and quantum '
+                   'descriptions of the same travelling disturbance.'),
+    equation(name='Ohm\'s law', field='Electromagnetism',
+             latex=r'V = I R', slug='Ohm%27s_law',
+             must=['V', 'I', 'R'], nice=[],
+             blurb='Voltage equals current times resistance. It is a property '
+                   'of certain materials rather than a law of nature, which is '
+                   'why semiconductors ignore it.'),
+    equation(name='Electrical power', field='Electromagnetism',
+             latex=r'P = V I', slug='Electric_power',
+             must=['P', 'V', 'I'], nice=[],
+             blurb='Voltage times current. Combined with Ohm\'s law it gives '
+                   'the two forms every electronics text uses next, P = I^2 R '
+                   'and P = V^2 / R.'),
+    equation(name='Capacitor charge', field='Electromagnetism',
+             latex=r'Q = C V', slug='Capacitance',
+             must=['Q', 'C', 'V'], nice=[],
+             blurb='Charge stored is capacitance times voltage. The definition '
+                   'of capacitance, really, dressed as a result.'),
+    equation(name='Density', field='Fluid dynamics',
+             latex=r'\rho = \frac{m}{V}', slug='Density',
+             must=['rho', 'm', 'V', 'S:frac'], nice=[],
+             blurb='Mass per unit volume. Worth stating explicitly because rho '
+                   'is among the most overloaded letters in physics, and this '
+                   'is the reading the others are named after.'),
+    equation(name='Hydrostatic pressure', field='Fluid dynamics',
+             latex=r'P = \rho g h', slug='Hydrostatic_equilibrium',
+             must=['P', 'rho', 'g', 'h'], nice=[],
+             blurb='The pressure at a depth is the weight of the column above '
+                   'it. It does not depend on the shape of the container, '
+                   'which surprised people for a long time.'),
+    equation(name='Thermal energy', field='Thermodynamics',
+             latex=r'E = k_B T', slug='Thermal_energy',
+             must=['E', 'k', 'T'], nice=['B', 'S:sub'],
+             blurb='The energy scale a temperature corresponds to, per degree '
+                   'of freedom. This is what the Boltzmann constant is for: it '
+                   'is a unit conversion between kelvin and joules, and in '
+                   'natural units it is simply one.'),
+    equation(name='Heat capacity', field='Thermodynamics',
+             latex=r'Q = m c_p \Delta T', slug='Heat_capacity',
+             must=['Q', 'm', 'T'], nice=['Delta', 'S:sub'],
+             blurb='How much heat a temperature change costs. The specific '
+                   'heat c_p is where the material comes in, and it is one '
+                   'more meaning for an already overloaded c.'),
+    equation(name='Compton wavelength', field='Quantum mechanics',
+             latex=r'\lambda_C = \frac{h}{m c}', slug='Compton_wavelength',
+             must=['lambda', 'h', 'm', 'c', 'S:frac'], nice=['S:sub'],
+             blurb='The wavelength of a photon whose energy equals a '
+                   'particle\'s rest energy -- the scale at which quantum '
+                   'mechanics and relativity have to be used together, and '
+                   'below which the idea of a single particle stops working.'),
+    equation(name='Planck length', field='Cosmology',
+             latex=r'\ell_P = \sqrt{\frac{\hbar G}{c^3}}',
+             slug='Planck_length',
+             must=['hbar', 'G', 'c', 'S:sqrt', 'S:frac'], nice=['S:sup'],
+             blurb='The only length that can be built from hbar, G and c '
+                   'alone. That it exists at all is the argument that quantum '
+                   'gravity has a scale; what happens there is not something '
+                   'the formula knows.'),
+    equation(name='Escape velocity', field='Classical mechanics',
+             latex=r'v_e = \sqrt{\frac{2 G M}{r}}', slug='Escape_velocity',
+             must=['v', 'G', 'M', 'r', 'S:sqrt', 'S:frac'], nice=['S:sub'],
+             blurb='The speed at which kinetic energy exactly cancels '
+                   'gravitational binding. Set it equal to c and the '
+                   'Schwarzschild radius drops out, which is a coincidence of '
+                   'the Newtonian derivation rather than a proof of it.'),
+    equation(name='Hubble\'s law', field='Cosmology',
+             latex=r'v = H_0 D', slug='Hubble%27s_law',
+             must=['v', 'H', 'D'], nice=['S:sub'],
+             blurb='Recession speed grows with distance. The constant of '
+                   'proportionality is an inverse time, and that time is '
+                   'roughly the age of the universe -- which is the whole '
+                   'reason the law mattered.'),
+    equation(name='Coulomb potential energy', field='Electromagnetism',
+             latex=r'U = \frac{1}{4 \pi \epsilon_0} \frac{q_1 q_2}{r}',
+             slug='Electric_potential_energy',
+             must=['U', 'epsilon', 'r', 'S:frac', 'pi'], nice=['q'],
+             blurb='The work needed to bring two charges together from far '
+                   'apart. One power of r rather than two: the force is the '
+                   'derivative of this, and differentiating is where the '
+                   'second power comes from.'),
 ]
 
 EQUATION_FAMILIES = [
@@ -1425,6 +1560,1044 @@ CONSTANTS = {
     'epsilon_0': 'epsilon_0', 'mu_0': 'mu_0', 'N_A': 'N_A', 'pi': 'pi',
     'm_e': 'm_e', 'm_p': 'm_p', 'm_n': 'm_n',
 }
+
+
+
+# ---------------------------------------------------------------- algebra
+#
+# A small expression type, and a reader that builds it from the algebraic
+# subset of LaTeX.
+#
+# This is the project's third LaTeX reader, which deserves a word.  rosettaui
+# parses for *shape*, because it has to draw a fraction stacked and an exponent
+# raised; lean4 parses the language of *types*, where juxtaposition is
+# application; and this parses for *algebra*, where juxtaposition is
+# multiplication and the only thing that matters is which operation is applied
+# to what.  The three subsets disagree about what a space between two letters
+# means, so one parser with a mode flag would have to be told which dialect it
+# was reading anyway.  Keeping them apart also keeps rosettaphys importing
+# nothing -- rosettaui imports this module, so this module cannot import it.
+
+
+class Term:
+    """One node of an expression.  Immutable; rearranging builds new ones."""
+
+    __slots__ = ()
+
+    def symbols(self):
+        """Every symbol name occurring anywhere, in order of first appearance."""
+        out = []
+        _collect(self, out)
+        return out
+
+    def count(self, name):
+        """How many times a symbol occurs.  Isolating needs this to be one."""
+        return sum(1 for s in _walk(self) if isinstance(s, Sym)
+                   and s.name == name)
+
+    def contains(self, name):
+        return self.count(name) > 0
+
+    def latex(self):
+        return render(self)
+
+    def __str__(self):
+        return render(self)
+
+
+class Sym(Term):
+    """A quantity: a letter, possibly with a subscript folded into the name."""
+
+    __slots__ = ('name', 'tex')
+
+    def __init__(self, name, tex=None):
+        object.__setattr__(self, 'name', name)
+        object.__setattr__(self, 'tex', tex if tex is not None else name)
+
+    def __repr__(self):
+        return 'Sym(%r)' % self.name
+
+    def __eq__(self, other):
+        return isinstance(other, Sym) and other.name == self.name
+
+    def __hash__(self):
+        return hash(('sym', self.name))
+
+
+class Num(Term):
+    """A numeric literal, kept as written rather than evaluated."""
+
+    __slots__ = ('text',)
+
+    def __init__(self, text):
+        object.__setattr__(self, 'text', str(text))
+
+    @property
+    def value(self):
+        try:
+            return int(self.text)
+        except ValueError:
+            return float(self.text)
+
+    def __repr__(self):
+        return 'Num(%s)' % self.text
+
+    def __eq__(self, other):
+        return isinstance(other, Num) and other.text == self.text
+
+    def __hash__(self):
+        return hash(('num', self.text))
+
+
+class Op(Term):
+    """An operator applied to its operands: add, sub, mul, div, pow, neg."""
+
+    __slots__ = ('op', 'args')
+
+    def __init__(self, op, *args):
+        object.__setattr__(self, 'op', op)
+        object.__setattr__(self, 'args', tuple(args))
+
+    def __repr__(self):
+        return 'Op(%s, %s)' % (self.op, ', '.join(map(repr, self.args)))
+
+    def __eq__(self, other):
+        return (isinstance(other, Op) and other.op == self.op
+                and other.args == self.args)
+
+    def __hash__(self):
+        return hash(('op', self.op, self.args))
+
+
+class Call(Term):
+    """A named function applied to one argument: log, sqrt, exp, sin."""
+
+    __slots__ = ('func', 'arg')
+
+    def __init__(self, func, arg):
+        object.__setattr__(self, 'func', func)
+        object.__setattr__(self, 'arg', arg)
+
+    def __repr__(self):
+        return 'Call(%s, %r)' % (self.func, self.arg)
+
+    def __eq__(self, other):
+        return (isinstance(other, Call) and other.func == self.func
+                and other.arg == self.arg)
+
+    def __hash__(self):
+        return hash(('call', self.func, self.arg))
+
+
+class Opaque(Term):
+    r"""A fragment with no algebraic reading, carried along verbatim.
+
+    \nabla \cdot E has no meaning in an algebra of products and sums, but an
+    equation containing it still has two sides and still belongs in the graph.
+    Refusing to read it at all would throw away the equation; pretending it is
+    a product of nabla and E would be worse, because then something downstream
+    would try to divide by nabla.  So it is kept as a lump: printable,
+    comparable, and explicitly not rearrangeable.
+    """
+
+    __slots__ = ('tex',)
+
+    def __init__(self, tex):
+        object.__setattr__(self, 'tex', tex.strip())
+
+    def __repr__(self):
+        return 'Opaque(%r)' % self.tex
+
+    def __eq__(self, other):
+        return isinstance(other, Opaque) and other.tex == self.tex
+
+    def __hash__(self):
+        return hash(('opaque', self.tex))
+
+
+def _walk(term):
+    yield term
+    if isinstance(term, Op):
+        for arg in term.args:
+            for sub in _walk(arg):
+                yield sub
+    elif isinstance(term, Call):
+        for sub in _walk(term.arg):
+            yield sub
+
+
+def _collect(term, out):
+    for node in _walk(term):
+        if isinstance(node, Sym) and node.name not in out:
+            out.append(node.name)
+
+
+# shorthands, so the rearranger reads like the algebra it is doing
+def add(a, b):
+    return Op('add', a, b)
+
+
+def sub(a, b):
+    return Op('sub', a, b)
+
+
+def mul(a, b):
+    return Op('mul', a, b)
+
+
+def div(a, b):
+    return Op('div', a, b)
+
+
+def power(a, b):
+    return Op('pow', a, b)
+
+
+def neg(a):
+    return Op('neg', a)
+
+
+# ----------------------------------------------------------------- reading
+
+_COMMAND_SYMBOLS = {
+    r'\hbar': 'hbar', r'\ell': 'ell', r'\infty': 'infty', r'\partial': 'partial',
+    r'\nabla': 'nabla', r'\Box': 'Box',
+}
+
+BRACE_COMMANDS = (r'\underbrace', r'\overbrace')
+
+FUNCTIONS = {r'\log': 'log', r'\ln': 'ln', r'\exp': 'exp', r'\sin': 'sin',
+             r'\cos': 'cos', r'\tan': 'tan', r'\sinh': 'sinh',
+             r'\cosh': 'cosh', r'\tanh': 'tanh', r'\det': 'det'}
+
+PRODUCT_MARKS = (r'\cdot', r'\times', r'\ast', '*')
+
+# Commands that carry no algebraic content and can be dropped on sight.
+_NOISE = (r'\left', r'\right', r'\!', r'\,', r'\;', r'\:', r'\quad',
+          r'\qquad', r'\displaystyle', r'\limits', '&')
+
+# Notation that is not scalar algebra, and what it is instead.
+#
+# This table is the most important thing in the module, because without it the
+# reader is far too willing.  Nothing stops it reading \nabla^2 \psi as nabla
+# squared times psi, and once it has, solving for psi means dividing by it --
+# which produces a confident, well formed, meaningless rearrangement.  The
+# first version of this reader did exactly that, and the results typechecked.
+#
+# So an equation containing any of these is refused for rearrangement.  It
+# still belongs in the graph, still has a signature, still gets drawn: it is
+# only the algebra that declines to touch it.
+NON_ALGEBRAIC = {
+    r'\Delta': 'a change in a quantity, not a factor',
+    r'\delta': 'a small change in a quantity, not a factor',
+    r'\nabla': 'a gradient, divergence or curl',
+    r'\partial': 'a partial derivative',
+    r'\Box': "the d'Alembert operator",
+    r'\sum': 'a summation',
+    r'\prod': 'a product over an index',
+    r'\int': 'an integral',
+    r'\oint': 'a contour integral',
+    r'\pm': 'an ambiguous sign',
+    r'\mp': 'an ambiguous sign',
+    r'\mid': 'a conditional bar',
+    r'\parallel': 'a divergence bar',
+    r'\hat': 'an operator hat',
+    r'\vec': 'a vector arrow',
+    r'\dot': 'a derivative dot',
+    r'\ddot': 'a second derivative dot',
+    r'\bar': 'an overbar',
+    r'\times': 'a cross product',
+    r'\otimes': 'a tensor product',
+    r'\langle': 'a bra-ket',
+    r'\rangle': 'a bra-ket',
+}
+
+
+class Unreadable(Exception):
+    """This fragment has no algebraic reading.
+
+    Raised rather than guessed at, because every downstream user of a Term --
+    the rearranger, the Lean bridge -- is entitled to assume that what it was
+    handed means what it says.
+    """
+
+
+def lex(latex):
+    r"""LaTeX into tokens: commands whole, everything else one character."""
+    out = []
+    i = 0
+    while i < len(latex):
+        ch = latex[i]
+        if ch.isspace():
+            i += 1
+            continue
+        if ch == '\\':
+            j = i + 1
+            while j < len(latex) and latex[j].isalpha():
+                j += 1
+            out.append(latex[i:j] if j > i + 1 else latex[i:i + 2])
+            i = max(j, i + 2)
+            continue
+        if ch.isdigit():
+            j = i
+            while j < len(latex) and (latex[j].isdigit() or
+                                      (latex[j] == '.' and j + 1 < len(latex)
+                                       and latex[j + 1].isdigit())):
+                j += 1
+            out.append(latex[i:j])
+            i = j
+            continue
+        out.append(ch)
+        i += 1
+    return [t for t in out if t not in _NOISE]
+
+
+class TermParser:
+    """Tokens -> Term, for the algebraic subset."""
+
+    def __init__(self, tokens, strict=True):
+        self.toks = list(tokens)
+        self.i = 0
+        self.strict = strict
+        self.labels = []              # (command, text) from every brace met
+
+    # -- plumbing --------------------------------------------------------
+
+    def peek(self, k=0):
+        j = self.i + k
+        return self.toks[j] if j < len(self.toks) else None
+
+    def next(self):
+        t = self.peek()
+        if t is not None:
+            self.i += 1
+        return t
+
+    def expect(self, what):
+        t = self.next()
+        if t != what:
+            raise Unreadable('expected %r, found %r' % (what, t))
+        return t
+
+    def group(self):
+        """A {...} group, or the single token standing in for one."""
+        if self.peek() == '{':
+            self.next()
+            inner = self.sum(stop=('}',))
+            self.expect('}')
+            return inner
+        return self.atom()
+
+    def raw_group(self):
+        """A {...} group as text -- for a subscript, which is part of a name."""
+        if self.peek() != '{':
+            t = self.next()
+            return t if t is not None else ''
+        self.next()
+        depth, out = 1, []
+        while True:
+            t = self.next()
+            if t is None:
+                raise Unreadable('unclosed {')
+            if t == '{':
+                depth += 1
+            elif t == '}':
+                depth -= 1
+                if depth == 0:
+                    return ''.join(out)
+            out.append(t)
+
+    # -- grammar ---------------------------------------------------------
+
+    def parse(self):
+        term = self.sum()
+        if self.peek() is not None:
+            raise Unreadable('trailing %r' % self.peek())
+        return term
+
+    def sum(self, stop=()):
+        out = self.product(stop)
+        while self.peek() in ('+', '-') and self.peek() not in stop:
+            op = self.next()
+            right = self.product(stop)
+            out = Op('add' if op == '+' else 'sub', out, right)
+        return out
+
+    def product(self, stop=()):
+        """A run of factors.  Juxtaposition multiplies; that is the dialect."""
+        if self.peek() == '-':
+            self.next()
+            return Op('neg', self.product(stop))
+        if self.peek() == '+':
+            self.next()
+        factors = []
+        while True:
+            t = self.peek()
+            if t is None or t in stop or t in ('+', '-', '}', ')', ']'):
+                break
+            if t in PRODUCT_MARKS:
+                # \nabla \cdot E is a divergence, not a product of two things,
+                # and the dot is the only warning the notation gives
+                if factors and _is_operator_symbol(factors[-1]):
+                    raise Unreadable('%s applied with \\cdot is an operator, '
+                                     'not a factor' % factors[-1])
+                self.next()
+                continue
+            if t in RELATIONS or t == '=':
+                break
+            factors.append(self.power(stop))
+        if not factors:
+            raise Unreadable('an empty product')
+        out = factors[0]
+        for factor in factors[1:]:
+            out = Op('mul', out, factor)
+        return out
+
+    def power(self, stop=()):
+        base = self.atom()
+        while self.peek() == '^':
+            self.next()
+            base = Op('pow', base, self.group())
+        if self.peek() == '_':                    # a trailing index on a group
+            raise Unreadable('a subscript in a position that is not a name')
+        return base
+
+    def atom(self):
+        t = self.next()
+        if t is None:
+            raise Unreadable('the expression ended early')
+        if t == '(':
+            inner = self.sum(stop=(')',))
+            self.expect(')')
+            return inner
+        if t == '{':
+            inner = self.sum(stop=('}',))
+            self.expect('}')
+            return inner
+        if t in BRACE_COMMANDS:
+            # \underbrace{x}_{label}: the body is the expression and the label
+            # is provenance.  Both are kept -- the label is what tells the Lean
+            # bridge which equation a side of a composed statement came from,
+            # and dropping it here would mean parsing the LaTeX twice to get
+            # it back.
+            body = self.group()
+            if self.peek() in ('_', '^'):
+                self.next()
+                self.labels.append((t, self.raw_group()))
+            return body
+        if t in (r'\text', r'\mathrm', r'\mathbf', r'\mathit',
+                 r'\mathcal', r'\operatorname'):
+            return Sym(_clean_index(self.raw_group()) or 'x', t)
+        if t == r'\frac' or t == r'\dfrac' or t == r'\tfrac':
+            return Op('div', self.group(), self.group())
+        if t == r'\sqrt':
+            if self.peek() == '[':
+                raise Unreadable('an nth root')
+            return Call('sqrt', self.group())
+        if t in FUNCTIONS:
+            return Call(FUNCTIONS[t], self.power())
+        if t[0].isdigit():
+            return Num(t)
+        return self.name(t)
+
+    def name(self, token):
+        """A letter or command, plus any subscript, as one quantity."""
+        if token in _COMMAND_SYMBOLS:
+            base, tex = _COMMAND_SYMBOLS[token], token
+        elif token.startswith('\\') and len(token) > 1:
+            # the name loses the backslash so that it matches the feature
+            # vocabulary the signatures are written in -- 'pi', not '\\pi' --
+            # while tex keeps it, because that is how it has to print
+            base, tex = token[1:], token
+        elif token.isalpha():
+            base = tex = token
+        else:
+            raise Unreadable('no reading for %r' % token)
+        if self.peek() == '_':
+            self.next()
+            index = self.raw_group()
+            # m_1 and m_2 are two masses, not m indexed by a number: the
+            # subscript belongs to the name, which is the only reading that
+            # keeps them apart when it comes time to solve for one
+            base = '%s_%s' % (base, _clean_index(index))
+            tex = '%s_{%s}' % (tex, index)
+        return Sym(base, tex)
+
+
+def _clean_index(text):
+    out = ''.join(ch for ch in text if ch.isalnum() or ch == '_')
+    return out or 'i'
+
+
+def _is_operator_symbol(term):
+    return isinstance(term, Sym) and term.name in ('nabla', 'partial', 'Box')
+
+
+def algebraic(latex):
+    """Why this fragment is not scalar algebra, or None if it is.
+
+    Checked on the token stream rather than during parsing, so the answer is
+    the same whether or not the rest of the fragment happens to parse.
+    """
+    for token in lex(latex):
+        if token in BRACE_COMMANDS:
+            continue
+        if token in NON_ALGEBRAIC:
+            return NON_ALGEBRAIC[token]
+    if _TENSOR_INDEX.search(latex):
+        return 'an indexed tensor component'
+    return None
+
+
+# An index made of Greek letters -- G_{\mu\nu} -- is a tensor component, and
+# nothing in this algebra can divide by one.  The test is deliberately narrow:
+# a \text{...} label under a brace is also a command inside a subscript, and
+# refusing those would refuse every composed statement this module builds.
+_GREEK_INDEX = ('alpha', 'beta', 'gamma', 'delta', 'epsilon', 'zeta', 'eta',
+                'theta', 'iota', 'kappa', 'lambda', 'mu', 'nu', 'xi', 'pi',
+                'rho', 'sigma', 'tau', 'upsilon', 'phi', 'chi', 'psi', 'omega')
+_TENSOR_INDEX = re.compile(
+    r'[_^]\s*\{[^{}]*\\(?:%s)\b' % '|'.join(_GREEK_INDEX))
+
+
+def read_term(latex, strict=True):
+    """A LaTeX fragment as a Term, or Opaque when it has no algebraic reading.
+
+    With strict off, an unreadable fragment becomes Opaque rather than raising,
+    which is what the graph wants: an equation full of divergences still has
+    two sides worth relating, even though neither can be rearranged.
+    """
+    why = algebraic(latex)
+    if why is None:
+        parser = TermParser(lex(latex))
+        try:
+            term = parser.parse()
+        except Unreadable as exc:
+            why = str(exc)
+        else:
+            read_term.labels = parser.labels
+            return term
+    read_term.labels = []
+    if strict:
+        raise Unreadable(why)
+    return Opaque(latex)
+
+
+
+def strip_brace(latex):
+    r"""Peel an \overbrace or \underbrace wrapping a whole fragment.
+
+    Returns (inner, label).  A brace around an entire statement is a caption
+    on the statement rather than part of it, and leaving it in place hides the
+    top level relation one group deep where split_relation cannot see it.
+    """
+    text = latex.strip()
+    for command in BRACE_COMMANDS:
+        if not text.startswith(command + '{'):
+            continue
+        depth, i = 0, len(command)
+        start = i + 1
+        while i < len(text):
+            if text[i] == '{':
+                depth += 1
+            elif text[i] == '}':
+                depth -= 1
+                if depth == 0:
+                    break
+            i += 1
+        else:
+            return text, ''
+        inner, rest = text[start:i], text[i + 1:].strip()
+        label = ''
+        if rest[:1] in ('_', '^'):
+            label = rest[1:].strip()
+            if label.startswith('{') and label.endswith('}'):
+                label = label[1:-1]
+        return inner, label
+    return text, ''
+
+
+class Relation:
+    """Two Terms and the relation between them, with any brace labels kept."""
+
+    __slots__ = ('left', 'op', 'right', 'caption', 'labels')
+
+    def __init__(self, left, op, right, caption='', labels=()):
+        self.left = left
+        self.op = op
+        self.right = right
+        self.caption = caption            # the overbrace over the whole thing
+        self.labels = list(labels)        # one per side, in order
+
+    def symbols(self):
+        out = list(self.left.symbols())
+        for name in self.right.symbols():
+            if name not in out:
+                out.append(name)
+        return out
+
+    def latex(self):
+        return '%s %s %s' % (render(self.left), self.op, render(self.right))
+
+    def __repr__(self):
+        return '<Relation %s>' % self.latex()
+
+
+def read_relation(latex, strict=True):
+    """A LaTeX statement as a Relation.
+
+    Handles the composed form this module produces -- an overbrace round the
+    whole claim, an underbrace under each side -- as well as a plain equation
+    straight out of the library.
+    """
+    body, caption = strip_brace(latex)
+    parts = split_relation(body)
+    if parts is None:
+        raise Unreadable('%r states no relation' % latex)
+    left_tex, op, right_tex = parts
+    labels = []
+    terms = []
+    for side in (left_tex, right_tex):
+        inner, label = strip_brace(side)
+        labels.append(_label_text(label))
+        terms.append(read_term(inner, strict))
+    return Relation(terms[0], op, terms[1], _label_text(caption), labels)
+
+
+def _label_text(label):
+    r"""The words inside a \text{...} label, without the command."""
+    text = label.strip()
+    for command in (r'\text', r'\mathrm', r'\mathbf'):
+        if text.startswith(command + '{') and text.endswith('}'):
+            text = text[len(command) + 1:-1]
+    return text.replace(r'\_', '_').strip()
+
+
+# ---------------------------------------------------------------- printing
+
+_PREC = {'add': 1, 'sub': 1, 'mul': 2, 'div': 2, 'neg': 3, 'pow': 4}
+
+
+def render(term, prec=0):
+    """A Term back as LaTeX, bracketed exactly where it has to be."""
+    if isinstance(term, Sym):
+        return term.tex
+    if isinstance(term, Num):
+        return term.text
+    if isinstance(term, Opaque):
+        return term.tex
+    if isinstance(term, Call):
+        if term.func == 'sqrt':
+            return r'\sqrt{%s}' % render(term.arg)
+        return r'\%s %s' % (term.func, render(term.arg, 3))
+    if not isinstance(term, Op):
+        raise Unreadable('cannot render %r' % (term,))
+    op, args = term.op, term.args
+    if op == 'div':
+        # a fraction brackets itself against a neighbouring factor, but not
+        # against a superscript: \frac{a}{b}^{2} reads as if the exponent
+        # belonged to b alone, which is a different number
+        text = r'\frac{%s}{%s}' % (render(args[0]), render(args[1]))
+        return _bracket(text, _PREC['div'], prec)
+    if op == 'neg':
+        return _bracket('-%s' % render(args[0], 3), 3, prec)
+    if op == 'pow':
+        return _bracket('%s^{%s}' % (render(args[0], 5), render(args[1])),
+                        4, prec)
+    mine = _PREC[op]
+    joiner = {'add': ' + ', 'sub': ' - ', 'mul': ' '}[op]
+    left = render(args[0], mine)
+    # + and * associate, so a bracket on the right would only be noise; - does
+    # not, and a - (b - c) is a different number from (a - b) - c
+    right = render(args[1], mine if op in ('add', 'mul') else mine + 1)
+    return _bracket(left + joiner + right, mine, prec)
+
+
+def _bracket(text, mine, ctx):
+    return r'\left( %s \right)' % text if mine < ctx else text
+
+
+# ------------------------------------------------------------ rearranging
+#
+# Isolating a quantity is the one piece of real algebra this project does, so
+# it is worth being exact about what it will and will not do.
+#
+# It peels operations off the side the quantity is on, applying the inverse to
+# the other side, and it stops the moment it meets something it cannot invert
+# uniquely.  The quantity must occur exactly once: x + x = 1 needs collecting
+# like terms, which is a different and much larger job, and guessing at it
+# would produce confident nonsense.
+#
+# Even powers are refused outright.  x^2 = 4 does not give x = 2; it gives
+# x = \pm 2, and a chain built on the wrong branch is a false statement that
+# type checks.  Refusing is the only answer that stays honest.
+
+
+class CannotIsolate(Exception):
+    """Why a quantity could not be moved to one side, in words."""
+
+
+def isolate(left, right, name):
+    """Rearrange left = right into name = something.  Raises if it cannot."""
+    if isinstance(left, Opaque) or isinstance(right, Opaque):
+        raise CannotIsolate('the equation has a part with no algebraic reading')
+    here, there = left, right
+    if not here.contains(name):
+        here, there = right, left
+    occurrences = here.count(name) + there.count(name)
+    if occurrences == 0:
+        raise CannotIsolate('%s does not appear in the equation' % name)
+    if occurrences > 1:
+        raise CannotIsolate('%s appears %d times, so isolating it would need '
+                            'terms collected first' % (name, occurrences))
+    for _ in range(64):
+        if isinstance(here, Sym) and here.name == name:
+            return there
+        here, there = _peel(here, there, name)
+    raise CannotIsolate('gave up rearranging for %s' % name)
+
+
+def _peel(here, there, name):
+    """Strip one operation off `here`, applying its inverse to `there`."""
+    if isinstance(here, Call):
+        inverse = {'sqrt': lambda t: Op('pow', t, Num(2)),
+                   'log': lambda t: Call('exp', t),
+                   'ln': lambda t: Call('exp', t),
+                   'exp': lambda t: Call('ln', t)}.get(here.func)
+        if inverse is None:
+            raise CannotIsolate('%s has no inverse here' % here.func)
+        return here.arg, inverse(there)
+    if not isinstance(here, Op):
+        raise CannotIsolate('cannot take %r apart' % (here,))
+    op, args = here.op, here.args
+    if op == 'neg':
+        return args[0], Op('neg', there)
+    if op == 'pow':
+        base, exponent = args
+        if base.contains(name):
+            if isinstance(exponent, Num) and exponent.value % 2 == 0:
+                raise CannotIsolate(
+                    'an even power: %s would have two roots, and picking one '
+                    'is a choice the equation does not record' % render(here))
+            if isinstance(exponent, Num) and exponent.value == 1:
+                return base, there
+            return base, Op('pow', there, Op('div', Num(1), exponent))
+        raise CannotIsolate('%s appears in an exponent' % name)
+    left, right = args
+    first = left.contains(name)
+    other = right if first else left
+    inner = left if first else right
+    if op == 'add':
+        return inner, Op('sub', there, other)
+    if op == 'sub':
+        if first:
+            return inner, Op('add', there, other)
+        return inner, Op('sub', other, there)      # a - x = c  ->  x = a - c
+    if op == 'mul':
+        return inner, Op('div', there, other)
+    if op == 'div':
+        if first:
+            return inner, Op('mul', there, other)  # x / b = c  ->  x = c b
+        return inner, Op('div', other, there)      # a / x = c  ->  x = a / c
+    raise CannotIsolate('no inverse for %r' % op)
+
+
+# ------------------------------------------------------------- quantities
+#
+# The hardest bug in this module was a join that read
+#
+#     exp(S / k_B) = F d
+#
+# and meant nothing at all.  Boltzmann's W is a count of microstates; the W in
+# W = F d is an energy.  The letters match, so the graph joined them, and the
+# result was a false statement that parsed, typechecked and rendered beautifully.
+#
+# The fix is the thing the 'Overloaded notation' article in this file has been
+# saying all along: a glyph is not a quantity.  An equation has to say what its
+# letters denote, and two equations may only be joined on a letter they agree
+# about.  So each entry carries a `reads` table, the graph grows a third kind of
+# node for the quantities themselves, and a pivot with no agreed reading is no
+# longer a pivot.
+#
+# This is also what makes the graph worth walking.  Before, equations were
+# linked because they shared a character; now they are linked because they are
+# about the same physical thing, which is a claim worth making.
+
+QUANTITIES = {}
+
+
+def add_quantity(name, dimension, blurb, slug, kind='quantity'):
+    QUANTITIES[name] = Quantity(
+        name=name, dimension=dimension, blurb=blurb, wiki=WIKI + slug,
+        role=kind)
+    return QUANTITIES[name]
+
+
+class Quantity(Node):
+    """A physical thing a symbol can denote, independent of how it is written.
+
+    Dimensions are written in the usual M/L/T/I/K/N basis, as a string, because
+    this module does not do dimensional analysis -- it records the dimension so
+    that something later can, and so that a reader can see at a glance that two
+    quantities joined on a pivot really are commensurable.
+    """
+
+    kind = 'quantity'
+    key_field = 'name'
+
+    @property
+    def is_constant(self):
+        return self['role'] == 'constant'
+
+
+# -- the quantities the library talks about ---------------------------------
+add_quantity('energy', 'M L^2 T^-2',
+             'The capacity to do work, in joules. Kinetic, potential, thermal '
+             'and rest energy are all this one quantity, which is why they can '
+             'be added and why conversion between them is the subject of most '
+             'of mechanics.', 'Energy')
+add_quantity('force', 'M L T^-2',
+             'A push, in newtons -- the rate at which momentum is delivered.',
+             'Force')
+add_quantity('mass', 'M',
+             'Resistance to acceleration, and the source of gravity. That '
+             'those are the same number is the equivalence principle, not a '
+             'definition.', 'Mass')
+add_quantity('length', 'L',
+             'A distance or a size, in metres.', 'Length')
+add_quantity('area', 'L^2', 'A surface, in square metres.', 'Area')
+add_quantity('volume', 'L^3', 'A region of space, in cubic metres.', 'Volume')
+add_quantity('time', 'T', 'A duration or an instant, in seconds.', 'Time')
+add_quantity('speed', 'L T^-1',
+             'Distance covered per unit time. Velocity is the same quantity '
+             'with a direction attached.', 'Speed')
+add_quantity('acceleration', 'L T^-2',
+             'The rate at which velocity changes.', 'Acceleration')
+add_quantity('momentum', 'M L T^-1',
+             'Mass times velocity: the conserved quantity that makes '
+             'collisions solvable.', 'Momentum')
+add_quantity('pressure', 'M L^-1 T^-2',
+             'Force per unit area, in pascals.', 'Pressure')
+add_quantity('density', 'M L^-3',
+             'Mass per unit volume. One of at least four things rho is used '
+             'for, and the one it is named after.', 'Density')
+add_quantity('temperature', 'K',
+             'A measure of the energy per degree of freedom, in kelvin.',
+             'Temperature')
+add_quantity('entropy', 'M L^2 T^-2 K^-1',
+             'A count of the microstates consistent with what is known, in '
+             'units that make it add to energy over temperature.', 'Entropy')
+add_quantity('microstate count', '1',
+             'A pure number: how many arrangements a system could be in. It is '
+             'what sits inside Boltzmann\'s logarithm, and it is emphatically '
+             'not an energy, however much its letter looks like one.',
+             'Microstate_(statistical_mechanics)')
+add_quantity('frequency', 'T^-1',
+             'Cycles per second, in hertz.', 'Frequency')
+add_quantity('angular frequency', 'T^-1',
+             'Radians per second. Dimensionally identical to frequency and '
+             'numerically different by two pi, which is exactly the sort of '
+             'distinction dimensional analysis cannot catch.',
+             'Angular_frequency')
+add_quantity('wavelength', 'L',
+             'The distance between repeats of a wave.', 'Wavelength')
+add_quantity('charge', 'I T', 'Electric charge, in coulombs.',
+             'Electric_charge')
+add_quantity('voltage', 'M L^2 T^-3 I^-1',
+             'Potential difference, in volts: energy per unit charge.',
+             'Voltage')
+add_quantity('current', 'I', 'Charge flow per unit time, in amperes.',
+             'Electric_current')
+add_quantity('resistance', 'M L^2 T^-3 I^-2',
+             'Opposition to current, in ohms.', 'Electrical_resistance')
+add_quantity('capacitance', 'M^-1 L^-2 T^4 I^2',
+             'Charge stored per volt, in farads.', 'Capacitance')
+add_quantity('power', 'M L^2 T^-3',
+             'Energy per unit time, in watts.', 'Power_(physics)')
+add_quantity('amount', 'N', 'A count of particles, in moles.',
+             'Amount_of_substance')
+add_quantity('number density', 'L^-3',
+             'Particles per unit volume.', 'Number_density')
+add_quantity('spring constant', 'M T^-2',
+             'Stiffness: force per unit displacement.', 'Hooke%27s_law')
+add_quantity('gravitational field', 'L T^-2',
+             'The acceleration a gravitational source imposes, independent of '
+             'what is falling. Dimensionally an acceleration, and kept apart '
+             'from one because g and a appear in the same equations meaning '
+             'different things.', 'Gravitational_field')
+add_quantity('flux', 'M T^-3',
+             'Energy crossing unit area per unit time.', 'Radiant_flux')
+add_quantity('hubble parameter', 'T^-1',
+             'The expansion rate of the universe, an inverse time.',
+             'Hubble%27s_law')
+
+# -- constants, which are quantities that do not vary -----------------------
+add_quantity('speed of light', 'L T^-1',
+             'Exactly 299792458 m/s, and a conversion factor between space and '
+             'time rather than a speed anything travels at.', 'Speed_of_light',
+             kind='constant')
+add_quantity('planck constant', 'M L^2 T^-1',
+             'The quantum of action. Note that h and hbar differ by two pi and '
+             'are not interchangeable, which is the commonest way to be out by '
+             'a factor of six in quantum mechanics.', 'Planck_constant',
+             kind='constant')
+add_quantity('reduced planck constant', 'M L^2 T^-1',
+             'h over two pi, which is what appears whenever the angle is in '
+             'radians -- so, nearly always.', 'Planck_constant',
+             kind='constant')
+add_quantity('gravitational constant', 'M^-1 L^3 T^-2',
+             'Newton\'s G, the weakest and least precisely known of the '
+             'constants.', 'Gravitational_constant', kind='constant')
+add_quantity('boltzmann constant', 'M L^2 T^-2 K^-1',
+             'The conversion between temperature and energy per degree of '
+             'freedom.', 'Boltzmann_constant', kind='constant')
+add_quantity('gas constant', 'M L^2 T^-2 K^-1 N^-1',
+             'The Boltzmann constant per mole rather than per particle.',
+             'Gas_constant', kind='constant')
+add_quantity('permittivity', 'M^-1 L^-3 T^4 I^2',
+             'The permittivity of free space, which sets the strength of the '
+             'electrostatic force.', 'Vacuum_permittivity', kind='constant')
+add_quantity('elementary charge', 'I T',
+             'The charge on a proton. Shares its letter with Euler\'s number, '
+             'which is the single most dangerous collision in physics '
+             'notation.', 'Elementary_charge', kind='constant')
+add_quantity('stefan-boltzmann constant', 'M T^-3 K^-4',
+             'The constant in the fourth-power radiation law.',
+             'Stefan%E2%80%93Boltzmann_constant', kind='constant')
+add_quantity('pi', '1', 'The ratio of a circumference to a diameter.', 'Pi',
+             kind='constant')
+add_quantity('dimensionless', '1',
+             'A pure number: a ratio, a count, an index, or an argument to a '
+             'logarithm.', 'Dimensionless_quantity')
+
+# ---------------------------------------------------------------- readings
+#
+# What each equation's letters denote.  Keyed by equation name, then by the
+# symbol name as the algebra spells it (no backslash, subscript folded in).
+#
+# An equation missing from this table cannot be joined to anything: a pivot
+# needs both sides to agree about what the letter means, and silence is not
+# agreement.  That is a deliberate default -- the alternative, assuming the
+# common reading, is what produced exp(S/k_B) = F d.
+
+READINGS = {
+    'Mass-energy equivalence': {
+        'E': 'energy', 'm': 'mass', 'c': 'speed of light'},
+    "Newton's second law": {
+        'F': 'force', 'm': 'mass', 'a': 'acceleration'},
+    "Newton's law of gravitation": {
+        'F': 'force', 'G': 'gravitational constant', 'm_1': 'mass',
+        'm_2': 'mass', 'r': 'length'},
+    "Coulomb's law": {
+        'F': 'force', 'pi': 'pi', 'epsilon_0': 'permittivity',
+        'q_1': 'charge', 'q_2': 'charge', 'r': 'length'},
+    'Coulomb potential energy': {
+        'U': 'energy', 'pi': 'pi', 'epsilon_0': 'permittivity',
+        'q_1': 'charge', 'q_2': 'charge', 'r': 'length'},
+    'Kinetic energy': {
+        'E_k': 'energy', 'm': 'mass', 'v': 'speed'},
+    'Momentum': {'p': 'momentum', 'm': 'mass', 'v': 'speed'},
+    'Work done by a force': {
+        'W': 'energy', 'F': 'force', 'd': 'length'},
+    'Gravitational potential energy': {
+        'U': 'energy', 'm': 'mass', 'g': 'gravitational field', 'h': 'length'},
+    'Surface gravity': {
+        'g': 'gravitational field', 'G': 'gravitational constant',
+        'M': 'mass', 'r': 'length'},
+    "Hooke's law": {
+        'F': 'force', 'k': 'spring constant', 'x': 'length'},
+    'Escape velocity': {
+        'v_e': 'speed', 'G': 'gravitational constant', 'M': 'mass',
+        'r': 'length'},
+    'Angular frequency': {
+        'omega': 'angular frequency', 'pi': 'pi', 'f': 'frequency'},
+    'Wave speed': {
+        'v': 'speed', 'f': 'frequency', 'lambda': 'wavelength'},
+    'Planck relation': {
+        'E': 'energy', 'h': 'planck constant', 'nu': 'frequency'},
+    'de Broglie relation': {
+        'lambda': 'wavelength', 'h': 'planck constant', 'p': 'momentum'},
+    'Compton wavelength': {
+        'lambda_C': 'wavelength', 'h': 'planck constant', 'm': 'mass',
+        'c': 'speed of light'},
+    'Boltzmann entropy': {
+        'S': 'entropy', 'k_B': 'boltzmann constant', 'W': 'microstate count'},
+    'Bekenstein-Hawking entropy': {
+        'S': 'entropy', 'k_B': 'boltzmann constant', 'c': 'speed of light',
+        'A': 'area', 'G': 'gravitational constant',
+        'hbar': 'reduced planck constant'},
+    'Thermal energy': {
+        'E': 'energy', 'k_B': 'boltzmann constant', 'T': 'temperature'},
+    'Ideal gas law': {
+        'P': 'pressure', 'V': 'volume', 'n': 'amount', 'R': 'gas constant',
+        'T': 'temperature'},
+    'Heat capacity': {
+        'Q': 'energy', 'm': 'mass', 'c_p': 'dimensionless', 'T': 'temperature'},
+    'Stefan-Boltzmann law': {
+        'j': 'flux', 'sigma': 'stefan-boltzmann constant', 'T': 'temperature'},
+    'Density': {'rho': 'density', 'm': 'mass', 'V': 'volume'},
+    'Hydrostatic pressure': {
+        'P': 'pressure', 'rho': 'density', 'g': 'gravitational field',
+        'h': 'length'},
+    "Ohm's law": {'V': 'voltage', 'I': 'current', 'R': 'resistance'},
+    'Electrical power': {'P': 'power', 'V': 'voltage', 'I': 'current'},
+    'Capacitor charge': {'Q': 'charge', 'C': 'capacitance', 'V': 'voltage'},
+    'Schwarzschild radius': {
+        'r_s': 'length', 'G': 'gravitational constant', 'M': 'mass',
+        'c': 'speed of light'},
+    'Planck length': {
+        'ell_P': 'length', 'hbar': 'reduced planck constant',
+        'G': 'gravitational constant', 'c': 'speed of light'},
+    "Hubble's law": {
+        'v': 'speed', 'H_0': 'hubble parameter', 'D': 'length'},
+    'Debye length': {
+        'lambda_D': 'length', 'epsilon_0': 'permittivity',
+        'k_B': 'boltzmann constant', 'T': 'temperature',
+        'n': 'number density', 'e': 'elementary charge'},
+    'Plasma frequency': {
+        'omega_p': 'angular frequency', 'n': 'number density',
+        'e': 'elementary charge', 'epsilon_0': 'permittivity',
+        'm_e': 'mass'},
+    'Pythagorean theorem': {
+        'a': 'length', 'b': 'length', 'c': 'length'},
+}
+
+
+def reading(eq, quantity):
+    """What `eq` takes a symbol to denote, or None if it does not say."""
+    eq = _as_equation(eq)
+    table = READINGS.get(eq['name'], {})
+    return table.get(_term_name(quantity))
+
+
+def agree(a, b, quantity):
+    """Do two equations read the same glyph the same way?
+
+    Both must say so.  An equation that has not declared its readings is not
+    agreeing with anything, and the join is refused -- which is the whole
+    point of the table.
+    """
+    left = reading(a, quantity)
+    right = reading(b, quantity)
+    return left is not None and left == right
+
+
+def disagreements(graph=None):
+    """Every pivot two equations share by spelling but not by meaning.
+
+    This is the interesting output of the whole exercise: a list of the places
+    where physics reuses a letter, generated rather than remembered.
+    """
+    graph = graph or GRAPH
+    equations = graph.of_kind('equation')
+    out = []
+    for i, a in enumerate(equations):
+        for b in equations[i + 1:]:
+            for q in shared_quantities(a, b, interesting=False):
+                left, right = reading(a, q), reading(b, q)
+                if left and right and left != right:
+                    out.append((a, b, q, left, right))
+    return out
 
 
 # ------------------------------------------------------------------- graph
@@ -1626,6 +2799,49 @@ LINKS = [
      'conservation -- which is why the displacement current had to be there'),
     ('Lorentz factor', DEFINES, 'Mass-energy equivalence',
      'gamma is what the rest energy gets multiplied by once the body moves'),
+    ('Surface gravity', SPECIALISES, "Newton's law of gravitation",
+     'dividing out the falling mass leaves an acceleration that does not '
+     'depend on what is falling, which is the equivalence principle in its '
+     'oldest form'),
+    ('Gravitational potential energy', LIMIT_OF, 'Surface gravity',
+     'm g h is the work done against a gravity treated as constant, which it '
+     'is to excellent accuracy over any height small against the radius'),
+    ('Compton wavelength', DEFINES, 'Planck relation',
+     'the wavelength at which a photon carries exactly a particle\'s rest '
+     'energy, which is where relativity and quantum mechanics stop being '
+     'separable'),
+    ('Momentum', SPECIALISES, "Newton's second law",
+     'force is the rate of change of momentum, and m a is that rate when the '
+     'mass is what stays constant'),
+    ('Work done by a force', DEFINES, 'Kinetic energy',
+     'integrating force over distance is what produces the half and the '
+     'square -- the energy laws are the force laws, integrated'),
+    ("Hooke's law", SPECIALISES, 'Work done by a force',
+     'a restoring force linear in displacement stores energy quadratic in it'),
+    ('Escape velocity', SPECIALISES, 'Schwarzschild radius',
+     'setting the escape velocity to c gives the Schwarzschild radius exactly '
+     '-- a coincidence of the Newtonian derivation rather than a proof of the '
+     'relativistic one'),
+    ('Planck length', DEFINES, 'Bekenstein-Hawking entropy',
+     'the horizon area measured in Planck areas is the microstate count, '
+     'which is what makes the entropy a number rather than a scale'),
+    ('Thermal energy', DEFINES, 'Ideal gas law',
+     'the gas law is thermal energy counted per mole rather than per '
+     'particle, which is the whole difference between R and k_B'),
+    ('Electrical power', SPECIALISES, "Ohm's law",
+     'substituting one into the other gives the two forms every electronics '
+     'text reaches for next, P = I^2 R and P = V^2 / R'),
+    ('Hydrostatic pressure', SPECIALISES, 'Density',
+     'the pressure at a depth is the weight of the column above it, so the '
+     'density is doing the same job it does in its own definition'),
+    ('Angular frequency', DEFINES, 'Planck relation',
+     'writing the Planck relation with omega rather than nu is what turns h '
+     'into hbar; the two pi has to go somewhere'),
+    ('Wave speed', DEFINES, 'de Broglie relation',
+     'a wavelength is only meaningful for something that travels, and this is '
+     'the relation that says how fast'),
+    ("Hubble's law", FIELD, 'Friedmann equation',
+     'the Friedmann equation is what H obeys; Hubble\'s law is what H means'),
 ]
 
 
@@ -1650,6 +2866,16 @@ def _build_graph():
             g.link(MENTIONS, concept, SYMBOLS.get(latex))
         for name in concept['equations']:
             g.link(CITES, concept, g.find(name, 'equation'))
+
+    for entry in QUANTITIES.values():
+        entry.out, entry.inn = [], []
+        g.add(entry)
+
+    # equations -> the physical quantities their letters denote.  This is the
+    # edge that makes the graph about physics rather than about spelling.
+    for eq in EQUATIONS:
+        for symbol, name in sorted(READINGS.get(eq['name'], {}).items()):
+            g.link(DENOTES, eq, QUANTITIES.get(name), symbol)
 
     # equations -> the symbols in their signatures
     for eq in EQUATIONS:
@@ -1710,13 +2936,18 @@ def rebuild():
 class Step:
     """One equation in a chain, and the pivot that got us here."""
 
-    __slots__ = ('equation', 'pivot', 'expr', 'note')
+    __slots__ = ('equation', 'pivot', 'expr', 'note', 'direct')
 
-    def __init__(self, equation, pivot=None, expr=None, note=''):
+    def __init__(self, equation, pivot=None, expr=None, note='', direct=True):
         self.equation = equation
         self.pivot = pivot            # the quantity shared with the step before
         self.expr = expr              # what this equation says the pivot equals
         self.note = note
+        # False when the equation had to be rearranged to say it.  Worth
+        # recording separately from the expression, because a quoted equation
+        # and a rearranged one are believable to different degrees and the
+        # reader deserves to be told which they are looking at.
+        self.direct = direct
 
     def __repr__(self):
         return '<Step %s via %s>' % (self.equation.label, self.pivot)
@@ -1782,7 +3013,17 @@ class Derivation:
                     lines.append('(%s)' % step.note)
         lines.append('Both expressions denote %s, so they are equal.'
                      % _pretty(self.pivot))
+        rearranged = [s.equation.label for s in self.steps if not s.direct]
+        if rearranged:
+            lines.append('(%s had to be rearranged to say so; the join is only '
+                         'as good as that rearrangement.)'
+                         % ' and '.join(rearranged))
         return ' '.join(lines)
+
+    @property
+    def rearranged(self):
+        """The steps that needed algebra rather than quotation."""
+        return [s for s in self.steps if not s.direct]
 
     def symbols(self):
         """Every free quantity appearing anywhere in the chain."""
@@ -1823,35 +3064,149 @@ def _pretty(quantity):
     return entry['name'].split('/')[0].strip()
 
 
-def solve_for(eq, quantity):
-    r"""What an equation says a quantity equals, if it says so directly.
+# ---------------------------------------------------------------- tidying
+#
+# Rearranging piles up structure that is correct and unreadable: solving
+# F = G m_1 m_2 / r^2 for G gives F over (m_1 m_2 over r^2), a fraction of a
+# fraction that no physicist would write.
+#
+# Only rewrites that hold for every value go in here.  Cancelling the b in
+# a b / b is *not* one of them -- it needs b non-zero, and the equation does
+# not say so -- and leaving it out is the same decision as refusing even roots:
+# the output stays something the reader can check rather than something they
+# have to trust.
 
-    Only the easy case is handled, and on purpose: if the quantity stands alone
-    on one side of the relation, the other side is the answer.  Anything else
-    would need real algebra, and a chain built on a rearrangement this module
-    guessed at is exactly the kind of claim that should not be handed to a
-    theorem prover with a straight face.
+def simplify(term, depth=0):
+    """Tidy a Term using rewrites that are unconditionally valid."""
+    if depth > 32 or not isinstance(term, (Op, Call)):
+        return term
+    if isinstance(term, Call):
+        inner = simplify(term.arg, depth + 1)
+        # exp(log x) and log(exp x) are x only where x is positive, so they
+        # are left alone; sqrt(x^2) is |x|, likewise
+        return Call(term.func, inner)
+    op = term.op
+    args = tuple(simplify(a, depth + 1) for a in term.args)
+    if op == 'neg':
+        inner = args[0]
+        if isinstance(inner, Op) and inner.op == 'neg':
+            return inner.args[0]
+        return Op('neg', inner)
+    if op == 'mul':
+        a, b = args
+        if a == Num('1'):
+            return b
+        if b == Num('1'):
+            return a
+        if isinstance(b, Num) and not isinstance(a, Num):
+            a, b = b, a          # 'M 2' is written '2 M'; reals commute
+        if (isinstance(b, Op) and b.op == 'mul'
+                and isinstance(b.args[0], Num) and not isinstance(a, Num)):
+            a, b = b.args[0], Op('mul', a, b.args[1])      # 'rho 8 pi' -> '8 rho pi'
+        # a (p/q) is one fraction, not a product with a fraction in it
+        if isinstance(b, Op) and b.op == 'div':
+            return simplify(Op('div', Op('mul', a, b.args[0]), b.args[1]),
+                            depth + 1)
+        if isinstance(a, Op) and a.op == 'div':
+            return simplify(Op('div', Op('mul', a.args[0], b), a.args[1]),
+                            depth + 1)
+        return Op('mul', a, b)
+    if op == 'div':
+        a, b = args
+        if b == Num('1'):
+            return a
+        if isinstance(b, Op) and b.op == 'div':
+            # a / (p/q) == a q / p, wherever either side is defined at all
+            return simplify(Op('div', Op('mul', a, b.args[1]), b.args[0]),
+                            depth + 1)
+        if isinstance(a, Op) and a.op == 'div':
+            # (p/q) / b == p / (q b)
+            return simplify(Op('div', a.args[0], Op('mul', a.args[1], b)),
+                            depth + 1)
+        return Op('div', a, b)
+    if op == 'pow':
+        base, exponent = args
+        if exponent == Num('1'):
+            return base
+        return Op('pow', base, exponent)
+    return Op(op, *args)
+
+
+# ------------------------------------------------------------ solving
+
+class Solution:
+    """What an equation says a quantity equals, and how hard it was to say.
+
+    `direct` matters to the reader: an equation that already states E is being
+    quoted, while one that had to be rearranged is being used, and a derivation
+    that hides the difference is hiding the only step in it that could be
+    wrong.
     """
+
+    __slots__ = ('term', 'direct', 'source')
+
+    def __init__(self, term, direct, source):
+        self.term = term
+        self.direct = direct
+        self.source = source
+
+    @property
+    def latex(self):
+        return render(self.term)
+
+    def __str__(self):
+        return self.latex
+
+    def __repr__(self):
+        return '<Solution %s%s>' % (self.latex, '' if self.direct
+                                    else ' (rearranged)')
+
+
+def solve(eq, quantity):
+    """A Solution for what `eq` says `quantity` equals, or None.
+
+    The quantity may be named either way round -- 'hbar' or '\\hbar' -- since
+    the signatures speak the first dialect and the LaTeX the second.
+    """
+    eq = _as_equation(eq)
     parts = eq.sides()
     if parts is None:
         return None
-    left, relation, right = parts
+    left_tex, relation, right_tex = parts
     if relation != '=':
         return None
+    name = _term_name(quantity)
+    try:
+        left = read_term(left_tex)
+        right = read_term(right_tex)
+    except Unreadable:
+        return None
     for near, far in ((left, right), (right, left)):
-        if _is_bare(near, quantity):
-            return far
-    return None
+        if isinstance(near, Sym) and near.name == name:
+            return Solution(far, True, eq)
+    try:
+        return Solution(simplify(isolate(left, right, name)), False, eq)
+    except CannotIsolate:
+        return None
 
 
-def _is_bare(side, quantity):
-    """Is this side of the equation just the quantity, alone?"""
-    side = side.strip()
-    entry = _symbol_for(quantity)
-    spellings = {quantity}
-    if entry is not None:
-        spellings.add(entry['latex'])
-    return side in spellings
+def solve_for(eq, quantity):
+    r"""What an equation says a quantity equals, as LaTeX, or None.
+
+    Kept returning a string because that is what the derivations print, but it
+    is now backed by real rearrangement rather than by the quantity happening
+    to stand alone.  What it will not do is still worth knowing: see isolate().
+    """
+    found = solve(eq, quantity)
+    return found.latex if found is not None else None
+
+
+def _term_name(quantity):
+    """A feature name or a LaTeX spelling, as the Term algebra spells it."""
+    text = str(quantity)
+    if text.startswith('\\'):
+        text = text[1:]
+    return _COMMAND_SYMBOLS.get('\\' + text, text)
 
 
 def _as_equation(what, graph=None):
@@ -1874,16 +3229,23 @@ def join(a, b, pivot=None, graph=None):
     a, b = _as_equation(a, graph), _as_equation(b, graph)
     options = [pivot] if pivot else shared_quantities(a, b)
     for quantity in options:
-        left = solve_for(a, quantity)
-        right = solve_for(b, quantity)
+        if not agree(a, b, quantity):
+            continue              # same letter, different quantity, no join
+        left = solve(a, quantity)
+        right = solve(b, quantity)
         if left is None or right is None:
+            continue
+        if left.term == right.term:
+            # the two equations say the same thing about the pivot, so the
+            # join is x = x.  True, and not worth anybody's time
             continue
         edge = graph.edge_between(a, b)
         # a derived SHARES edge notes only the pivot letter; the sentences
         # worth printing are the hand-written ones in LINKS
         note = edge.note if edge is not None and edge.kind != SHARES else ''
-        return Derivation([Step(a, quantity, left),
-                           Step(b, quantity, right, note)], pivot=quantity)
+        return Derivation([Step(a, quantity, left.latex, direct=left.direct),
+                           Step(b, quantity, right.latex, note,
+                                direct=right.direct)], pivot=quantity)
     return None
 
 
@@ -1903,12 +3265,14 @@ def chain(*equations, **kw):
         pivot = sorted(common, key=lambda q: _rarity.get(q, 0))[0]
     steps = []
     for node in nodes:
-        expr = solve_for(node, pivot)
-        if expr is None:
-            raise ValueError('%s does not state %s directly, so it cannot be '
-                             'joined without algebra' % (node.label, pivot))
-        steps.append(Step(node, pivot, expr))
+        found = solve(node, pivot)
+        if found is None:
+            raise ValueError('%s cannot be solved for %s: see isolate() for '
+                             'what the algebra declines to do'
+                             % (node.label, pivot))
+        steps.append(Step(node, pivot, found.latex, direct=found.direct))
     return Derivation(steps, pivot=pivot)
+
 
 
 def joins_for(eq, graph=None):
@@ -2113,6 +3477,100 @@ def _check_derivations(fail):
             fail('%r does not read back as a relation' % derivation)
 
 
+
+def _check_algebra(fail):
+    """The reader, the printer and the rearranger, against each other."""
+    for eq in EQUATIONS:
+        why = algebraic(eq['latex'])
+        if why is not None:
+            continue                      # refused on purpose; nothing to test
+        try:
+            term = read_term(eq['latex'].split('=')[0]) if '=' in eq['latex'] \
+                else read_term(eq['latex'])
+        except Unreadable as exc:
+            fail('%s: algebraic() passed it but the parser did not (%s)'
+                 % (eq.label, exc))
+            continue
+        # rendering and reading back must agree, or the printer is lying
+        try:
+            again = read_term(render(term))
+        except Unreadable as exc:
+            fail('%s: its own output does not read back (%s)' % (eq.label, exc))
+            continue
+        if again != term:
+            fail('%s: round trip changed it -- %s became %s'
+                 % (eq.label, render(term), render(again)))
+
+    # the rearranger must refuse the things it says it refuses
+    cases = [
+        ('x^{2}', 'a', 'y', 'an even power has two roots'),
+        ('x + x', 'x', 'x', 'a repeated symbol needs terms collected'),
+    ]
+    for left, _unused, name, why in cases:
+        try:
+            isolate(read_term(left), read_term('c'), name)
+        except CannotIsolate:
+            continue
+        except Unreadable:
+            continue
+        fail('isolate accepted %r for %s, but %s' % (left, name, why))
+
+    # and what it accepts must actually invert
+    checks = [('P V', 'n R T', 'V'), ('F', 'm a', 'm'), ('S', 'k \\log W', 'W')]
+    for left, right, name in checks:
+        try:
+            got = isolate(read_term(left), read_term(right), name)
+        except CannotIsolate as exc:
+            fail('isolate could not solve %s = %s for %s (%s)'
+                 % (left, right, name, exc))
+            continue
+        if simplify(got).contains(name):
+            fail('solving for %s left it on both sides' % name)
+
+
+def _check_readings(fail):
+    known = set(QUANTITIES)
+    for name, table in READINGS.items():
+        if GRAPH.find(name, 'equation') is None:
+            fail('READINGS names %r, which is not an equation' % name)
+            continue
+        eq = GRAPH.find(name, 'equation')
+        for symbol, quantity in table.items():
+            if quantity not in known:
+                fail('%s reads %s as %r, which is not a quantity'
+                     % (name, symbol, quantity))
+        # a reading for a symbol the equation does not contain is a typo
+        why = algebraic(eq['latex'])
+        if why is not None:
+            continue
+        try:
+            present = set(read_relation(eq['latex']).symbols())
+        except Unreadable:
+            continue
+        for symbol in table:
+            if symbol not in present:
+                fail('%s reads %r, which does not appear in it'
+                     % (name, symbol))
+
+    # every join must be between equations that agree about the pivot
+    for derivation in all_joins():
+        a, b = derivation.equations
+        if not agree(a, b, derivation.pivot):
+            fail('%s joins on %s without an agreed reading'
+                 % (derivation, derivation.pivot))
+        if derivation.steps[0].expr == derivation.steps[1].expr:
+            fail('%s is an identity, not a claim' % derivation)
+
+    # and the collisions we know about must still be caught
+    for a, b, q in [('Boltzmann entropy', 'Work done by a force', 'W'),
+                    ('Planck relation', 'Gravitational potential energy', 'h'),
+                    ('Ideal gas law', "Ohm's law", 'V')]:
+        if agree(a, b, q):
+            fail('%s and %s should not agree about %s' % (a, b, q))
+        if join(a, b, pivot=q) is not None:
+            fail('%s and %s were joined on %s anyway' % (a, b, q))
+
+
 def selftest():
     """Validate every entry.  Returns the number of problems found."""
     problems = []
@@ -2126,6 +3584,8 @@ def selftest():
     _check_equations(fail)
     _check_graph(fail)
     _check_derivations(fail)
+    _check_algebra(fail)
+    _check_readings(fail)
 
     for msg in problems:
         print('FAIL  ' + msg)
@@ -2144,16 +3604,32 @@ def _report():
     print()
     for key, value in census().items():
         print('  %-20s %d' % (key, value))
+    print('  %-20s %d' % ('quantities', len(QUANTITIES)))
+    print('  %-20s %d' % ('readings', sum(len(t) for t in READINGS.values())))
     print()
     print('  graph: %d nodes, %d edges' % (len(GRAPH.nodes), len(GRAPH.edges)))
     for kind, count in sorted(GRAPH.census().items()):
         print('  %-20s %d' % ('  ' + kind, count))
     print()
-    print('  joins available:')
-    for derivation in all_joins():
-        print('    %-46s %s' % (
-            ' = '.join(s.equation.label for s in derivation.steps),
+    joins = all_joins()
+    print('  joins available (%d):' % len(joins))
+    for derivation in joins:
+        mark = ' *' if derivation.rearranged else '  '
+        print('   %s %-42s %s' % (mark,
+            ' = '.join(s.equation.label for s in derivation.steps)[:42],
             derivation.statement()))
+    print('    (* one or both sides had to be rearranged)')
+    clashes = disagreements()
+    print()
+    print('  letters used for two different quantities (%d):' % len(clashes))
+    seen = set()
+    for a, b, q, left, right in clashes:
+        key = (q, tuple(sorted((left, right))))
+        if key in seen:
+            continue
+        seen.add(key)
+        print('    %-8s %-24s vs %-24s (%s / %s)'
+              % (q, left, right, a.label, b.label))
     print()
     print('  symbol categories:  ' + ', '.join(categories()))
     print('  concept categories: ' + ', '.join(concept_categories()))

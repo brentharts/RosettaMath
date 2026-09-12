@@ -199,6 +199,13 @@ census:
 conjectures:
 	$(PYTHON) rosettalean.py
 
+# Letters the library uses for two different physical quantities, found by
+# comparing what each equation declares its symbols denote.
+collisions:
+	@$(PYTHON) -c "import rosettaphys as P; \
+	  [print('%-4s %-26s vs %-26s (%s / %s)' % (q, l, r, a.label, b.label)) \
+	   for a, b, q, l, r in P.disagreements()]" 
+
 # The same, written out as Lean 4 source for a second opinion.
 RosettaPhys.lean:
 	$(PYTHON) rosettalean.py --lean > $@
@@ -233,7 +240,7 @@ clean:
 	rm -f /tmp/neomath.aux /tmp/neomath.log /tmp/neomath.out /tmp/neomath.tex
 
 .PHONY: default help install install-all check-deps ui test census \
-	conjectures proofs \
+	conjectures collisions proofs \
 	render-test pdf paper leanproof crustos_eq clean \
 	install_apple install-apple install_apple-all \
 	install_windows install-windows

@@ -187,12 +187,22 @@ ui:
 test:
 	$(PYTHON) rosettamath.py
 	$(PYTHON) rosettaphys.py --selftest
+	$(PYTHON) rosettalean.py --selftest
 	$(PYTHON) rosettaui.py --selftest
 	$(PYTHON) lean4.py --selftest
 
-# What the knowledge base currently covers.
+# What the knowledge base currently covers, graph and joins included.
 census:
 	$(PYTHON) rosettaphys.py
+
+# Every join the graph offers, as a conjecture the micro-kernel has checked.
+conjectures:
+	$(PYTHON) rosettalean.py
+
+# The same, written out as Lean 4 source for a second opinion.
+RosettaPhys.lean:
+	$(PYTHON) rosettalean.py --lean > $@
+	@echo 'wrote $@ -- `lake env lean $@` to have Lean check it'
 
 # The micro-kernel on its own: proofs raise on failure, so this gates CI.
 proofs:
@@ -222,7 +232,8 @@ clean:
 	rm -rf __pycache__ /tmp/rosettaui-cache
 	rm -f /tmp/neomath.aux /tmp/neomath.log /tmp/neomath.out /tmp/neomath.tex
 
-.PHONY: default help install install-all check-deps ui test census proofs \
+.PHONY: default help install install-all check-deps ui test census \
+	conjectures proofs \
 	render-test pdf paper leanproof crustos_eq clean \
 	install_apple install-apple install_apple-all \
 	install_windows install-windows

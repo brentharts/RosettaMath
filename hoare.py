@@ -63,6 +63,7 @@ guessing, in a place where a guess is an unproved theorem.  `for` over a range
 carries its own bound, which is why it is the fragment that is supported.
 """
 
+import copy
 import ast
 import inspect
 import sys
@@ -1357,9 +1358,10 @@ class ImpToLean:
     def branch(self, stmt):
         """`if` joins the two stores with `ite`, one variable at a time."""
         if self.returns(stmt.body) or self.returns(stmt.orelse):
-            self.fail(stmt, "a `return` inside `if` is not supported yet: "
-                            "the join would have to know which branch ran. "
-                            "Assign to a variable and return it at the end.")
+            self.fail(stmt, "a `return` inside `if` reached the lowering. "
+                            "desugar_returns should have rewritten it into a "
+                            "first-wins assignment before this point, so this "
+                            "is a bug in that pass rather than in the input.")
         test = self.expr(stmt.test)
         if not same_type(self.type_of_expr(stmt.test), BOOL):
             self.fail(stmt, "the condition of an `if` must be decidable (Bool)")
@@ -1402,8 +1404,9 @@ class ImpToLean:
         if stmt.orelse:
             self.fail(stmt, "`for ... else` has no meaning here")
         if self.returns(stmt.body):
-            self.fail(stmt, "a `return` inside a loop is not supported: the "
-                            "fold has no way to stop early")
+            self.fail(stmt, "a `return` inside a loop reached the lowering. "
+                            "desugar_returns should have rewritten it before "
+                            "this point, so this is a bug in that pass.")
         if not isinstance(stmt.target, ast.Name):
             self.fail(stmt, "the loop variable must be a plain name")
         call = stmt.iter
@@ -1487,8 +1490,9 @@ class ImpToLean:
         if stmt.orelse:
             self.fail(stmt, "`while ... else` has no meaning here")
         if self.returns(stmt.body):
-            self.fail(stmt, "a `return` inside a loop is not supported: the "
-                            "fold has no way to stop early")
+            self.fail(stmt, "a `return` inside a loop reached the lowering. "
+                            "desugar_returns should have rewritten it before "
+                            "this point, so this is a bug in that pass.")
         found, body = self.markers(stmt)
         if 'variant' not in found:
             self.fail(stmt, "a `while` loop needs a variant to be admissible: "
@@ -1702,6 +1706,193 @@ class Procedure:
         return f"<procedure {self.name} : {readable(self.obligation)}>"
 
 
+DONE_FLAG = '_returned'
+RESULT_VAR = '_return_value'
+
+
+def _returns_in(stmts):
+    """Every `return` in a block, including nested ones."""
+    out = []
+    for stmt in stmts:
+        if isinstance(stmt, ast.Return):
+            out.append(stmt)
+        elif isinstance(stmt, (ast.If, ast.For, ast.While)):
+            out.extend(_returns_in(stmt.body))
+            out.extend(_returns_in(getattr(stmt, 'orelse', [])))
+    return out
+
+
+def _free_names(node):
+    """Names a fragment reads as values.
+
+    Anything in call position is excluded: `len(names)` reads `names`, while
+    `len` is the prelude's and is bound everywhere.  Counting it would make
+    every `return` look like it depended on a variable the body assigns.
+    """
+    called = {n.func.id for n in ast.walk(node)
+              if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
+    return {n.id for n in ast.walk(node)
+            if isinstance(n, ast.Name)} - called
+
+
+def _rewrite_returns(stmts, final, seen):
+    """Replace every `return` but `final` with a first-wins assignment."""
+    out = []
+    for stmt in stmts:
+        if isinstance(stmt, ast.Return) and stmt is not final:
+            # `_return_value = _return_value if _returned else e` keeps the
+            # first return rather than the last, without needing a branch:
+            # the join an `if` would require is the whole reason early
+            # returns were refused.
+            keep = ast.IfExp(test=ast.Name(id=DONE_FLAG, ctx=ast.Load()),
+                             body=ast.Name(id=RESULT_VAR, ctx=ast.Load()),
+                             orelse=stmt.value)
+            out.append(ast.Assign(
+                targets=[ast.Name(id=RESULT_VAR, ctx=ast.Store())], value=keep))
+            out.append(ast.Assign(
+                targets=[ast.Name(id=DONE_FLAG, ctx=ast.Store())],
+                value=ast.Constant(value=True)))
+            seen.append(stmt)
+            continue
+        if isinstance(stmt, (ast.If, ast.For, ast.While)):
+            stmt.body = _rewrite_returns(stmt.body, final, seen)
+            if getattr(stmt, 'orelse', None):
+                stmt.orelse = _rewrite_returns(stmt.orelse, final, seen)
+        out.append(stmt)
+    return out
+
+
+def _placeholder_for(tree):
+    """A typed value for `_return_value` to hold before one is chosen.
+
+    Never observed: every path that sets the flag overwrites it first, and
+    every path that does not ignores it.  So the only thing required of it is
+    that it typecheck at the declared return type, which is why it is chosen
+    from the annotation rather than from any `return` in the body.
+
+    Taking it from the body instead -- the obvious idea -- does not work: a
+    function whose returns all read variables the body assigns, which is most
+    of them, would have nothing to start from.
+    """
+    annotation = tree.returns
+    name = None
+    if isinstance(annotation, ast.Constant) and isinstance(annotation.value, str):
+        name = annotation.value
+    elif isinstance(annotation, ast.Name):
+        name = annotation.id
+    if name is None:
+        name = 'Nat'                      # read_procedure's own default
+    if name not in TYPE_NAMES:
+        raise ContractError(
+            f"{tree.name}: an early `return` needs a return annotation whose "
+            f"type has a value to stand in until one is chosen, and "
+            f"{name!r} is not one (known: {', '.join(sorted(TYPE_NAMES))})")
+    target = TYPE_NAMES[name]
+    if same_type(target, BOOL):
+        return ast.Constant(value=False), name
+    if same_type(target, NAT):
+        return ast.Constant(value=0), name
+    return ast.List(elts=[], ctx=ast.Load()), name
+
+
+def desugar_returns(tree, params):
+    r"""Rewrite early `return`s into a first-wins accumulator.
+
+    `return` was refused anywhere but the end of a body, because an `if` that
+    returns on one side has no store to join and a loop that returns has no
+    way to stop a fold.  Both objections are about *control*, and this
+    fragment has none to speak of: every expression is pure and every function
+    total, loops are folds with a variant, and nothing raises.  So a statement
+    after an early return may simply run.  Whatever it computes is discarded
+    by the final choice, and the transform costs two variables rather than a
+    new lowering:
+
+        def scheme_of(names, url):          def scheme_of(names, url):
+            idx = find(url, 58)                 _returned = False
+            if idx == 0:                        _return_value = len(names)
+                return len(names)               idx = find(url, 58)
+            i = 0                               if idx == 0:
+            while i < len(names):                   _return_value = ...
+                if eqs(names[i], head):             _returned = True
+                    return i                    ...
+                i = i + 1
+            return len(names)
+
+    The loop condition is deliberately left alone.  Adding `and not
+    _returned` would make the loop stop early, and then the pass on which the
+    flag was set would not decrease the variant, so a loop that plainly
+    terminates would fail its own termination obligation.  Running the fold
+    out to its bound costs nothing a fold does not already cost, and keeps
+    the variant honest.
+
+    `_return_value` needs a value before the first early return, because the
+    choice above reads it.  It is initialised from the first `return` whose
+    expression can be evaluated at entry -- one mentioning only parameters and
+    literals.  That value is never observed: it is replaced on every path that
+    sets the flag, and ignored on every path that does not.  When no return
+    qualifies, this raises rather than guessing, since the alternative is an
+    initialiser that reads a variable the body has not written yet.
+    """
+    body = tree.body
+    returns = _returns_in(body)
+    final = body[-1] if body and isinstance(body[-1], ast.Return) else None
+    early = [r for r in returns if r is not final]
+    if not early:
+        return tree                       # untouched: the existing shape
+
+    if final is None:
+        raise ContractError(
+            f"{tree.name}: a body with an early `return` must still end in "
+            f"one, so there is a value on the path that falls through")
+
+    for name in (DONE_FLAG, RESULT_VAR):
+        if name in _free_names(tree):
+            raise ContractError(
+                f"{tree.name}: '{name}' is reserved for lowering early "
+                f"returns; please rename it")
+
+    seed = _placeholder_for(tree)
+
+    seen = []
+    rewritten = _rewrite_returns(list(body), final, seen)
+    # `return e` at the end becomes the same first-wins choice.
+    final_choice = ast.Return(value=ast.IfExp(
+        test=ast.Name(id=DONE_FLAG, ctx=ast.Load()),
+        body=ast.Name(id=RESULT_VAR, ctx=ast.Load()),
+        orelse=final.value))
+    rewritten[-1] = final_choice
+
+    placeholder, type_name = seed
+    prologue = [
+        ast.Assign(targets=[ast.Name(id=DONE_FLAG, ctx=ast.Store())],
+                   value=ast.Constant(value=False)),
+        # Annotated, because an empty list carries no element type of its own
+        # -- the same reason schemes.py writes `out: 'Array' = []`.
+        ast.AnnAssign(target=ast.Name(id=RESULT_VAR, ctx=ast.Store()),
+                      annotation=ast.Constant(value=type_name),
+                      value=copy.deepcopy(placeholder), simple=1),
+    ]
+
+    # The prologue goes after the docstring and after the leading asserts,
+    # not at the very top: those asserts are the precondition, and
+    # read_procedure lifts them by looking at the front of the body.  An
+    # assignment in front of them would turn the contract into "an assertion
+    # in the middle", which is a different thing and refused.
+    at = 0
+    while at < len(rewritten):
+        stmt = rewritten[at]
+        docstring = (isinstance(stmt, ast.Expr)
+                     and isinstance(stmt.value, ast.Constant)
+                     and isinstance(stmt.value.value, str))
+        if docstring or isinstance(stmt, ast.Assert):
+            at += 1
+            continue
+        break
+    tree.body = rewritten[:at] + prologue + rewritten[at:]
+    ast.fix_missing_locations(tree)
+    return tree
+
+
 def read_procedure(func, env=None, signatures=None, ensures=(),
                    define_as=None, preserves=None):
     r"""Compile a Python function into a term, a contract, and an obligation.
@@ -1746,6 +1937,10 @@ def read_procedure(func, env=None, signatures=None, ensures=(),
         params.append((arg.arg, ty))
         reader.store[arg.arg] = Var(arg.arg)
         reader.types[arg.arg] = ty
+
+    # Early returns are rewritten here, before anything is lowered, so the
+    # rest of this function sees the one shape it has always seen.
+    tree = desugar_returns(tree, [name for name, _ in params])
 
     body = [s for s in tree.body
             if not (isinstance(s, ast.Expr) and isinstance(s.value, ast.Constant)
@@ -2750,19 +2945,47 @@ def selftest():
                               kw.get('ensures', ['result == 0']),
                               preserves=kw.get('preserves'))
 
-    refuses("return inside a loop is refused", lambda: read('''
+    # Early returns were refused for years; `desugar_returns` now rewrites
+    # them, so what used to be two refusals are two acceptances.  They are
+    # kept as tests rather than deleted: the point is that the shapes still
+    # compile and still mean what the Python means.
+    ok("return inside a loop is accepted", read('''
         def f(n: 'Nat') -> 'Nat':
             v = 0
             for i in range(n):
-                return i
+                if eqb(i, 3):
+                    return i
             return v
-        '''), "no way to stop early")
-    refuses("return inside a branch is refused", lambda: read('''
+        ''') is not None)
+    ok("return inside a branch is accepted", read('''
         def f(n: 'Nat') -> 'Nat':
             if n < 2:
                 return 1
             return 0
-        '''), "which branch ran")
+        ''') is not None)
+    # First return wins, which is what makes it a `return` and not a `break`
+    # that keeps going.  0 is returned on the spot; the later assignment to v
+    # is evaluated and discarded.
+    first = read_procedure('''
+        def f(n: 'Nat') -> 'Nat':
+            v = 0
+            if n < 2:
+                return 1
+            v = 7
+            return v
+        ''', env, None, ['result == 0'])
+    computes("the first return wins, not the last",
+             app(first.fn_term, numeral(1)), numeral(1))
+    computes("and the fall-through path still returns its own value",
+             app(first.fn_term, numeral(5)), numeral(7))
+    ok("an early return whose every value is body-assigned still works", read('''
+        def f(n: 'Nat') -> 'Nat':
+            v = 0
+            if n < 2:
+                return v
+            v = 9
+            return v
+        ''') is not None)
     refuses("an unbounded iterable is refused", lambda: read('''
         def f(n: 'Nat') -> 'Nat':
             v = 0

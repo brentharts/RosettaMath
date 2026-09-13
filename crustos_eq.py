@@ -112,17 +112,34 @@ def build():
     @remember
     @procedure(env=env, ensures=['result <= len(names)'], verbose=False)
     def scheme_of(names: 'Strs', url: 'Bytes') -> 'Nat':
+        # Statement for statement, this is crustos/schemes.py's scheme_of.
+        # It reads as a paraphrase in two places and neither is a choice:
+        #
+        #   `len(names)` where the kernel writes SCHEME_NONE, because the
+        #   model is over Nat and there is no -1 to return;
+        #
+        #   `idx == len(url)` where the kernel writes `idx <= 0`, because
+        #   `find` here reports an absent separator by returning the length,
+        #   for the same reason.
+        #
+        # The control flow is no longer a paraphrase.  Both returns below are
+        # early -- one out of a branch, one out of a loop -- and both were
+        # refused until desugar_returns; the accumulator this used to be
+        # written as is now the lowering's business rather than the model's.
+        # tests/test_crustos_model.py in the crust tree checks the two
+        # against each other.
         idx = find(url, 58)                  # ord(':')
+        if idx == 0 or idx == len(url):
+            return len(names)                # the kernel's `idx <= 0` guard
         head = take(url, idx)
         i = 0
-        found = len(names)                   # stands in for SCHEME_NONE
         while i < len(names):
             assert invariant(i <= len(names))
             assert variant(len(names) - i)
-            if eqs(names[i], head) and found == len(names):
-                found = i
+            if eqs(names[i], head):
+                return i
             i = i + 1
-        return found
+        return len(names)
 
     @remember
     @procedure(env=env, verbose=False,

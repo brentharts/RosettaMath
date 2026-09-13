@@ -346,9 +346,12 @@ def lean_side(env, facts, run_lean=True):
             write(f'lean-{name.replace("_", "")}-full.lean', text)
 
     facts['lean_ran'] = False
+    # PATH first; then the two places `make install_lean` puts a toolchain, so
+    # a lean installed that way is found even from a shell that never had it
+    # on PATH (an IDE, a cron job, a plain `python3 crustos_eq.py`).
     lean = shutil.which('lean') or next(
-        (p for p in (os.path.expanduser('~/lean-4.20.0-linux/bin/lean'),
-                     '/home/claude/lean-4.20.0-linux/bin/lean')
+        (p for p in (os.path.expanduser('~/.local/lean/bin/lean'),
+                     os.path.expanduser('~/.elan/bin/lean'))
          if os.path.exists(p)), None)
     if run_lean and lean:
         version = subprocess.run([lean, '--version'], capture_output=True,

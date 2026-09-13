@@ -39,6 +39,35 @@ APT_OPTIONAL = \
 	python3-gi \
 	gir1.2-evince-3.0
 
+# ------------------------------------------------------------ Lean 4
+#
+# Optional.  Everything here runs without it -- crustos_eq.py falls back to
+# lean4.py's micro-kernel alone -- but with `lean` present the generated
+# CrustOS.lean is put to the real kernel as well, which is the whole point of
+# the supplement.  `make install_lean` fetches one; two routes, in order.
+#
+#   elan     the upstream version manager.  Normal case.  It resolves
+#            toolchains through release.lean-lang.org, so it needs that host
+#            reachable as well as github.com.
+#   tarball  the official binary release, unpacked into LEAN_PREFIX.  Used
+#            when elan cannot reach its release index (locked-down networks,
+#            proxies, CI images).  Only needs github.com.
+#
+# Neither needs root and neither touches the system prefix.  The generated
+# Lean is Mathlib-free, so a bare toolchain is enough: no lake, no packages.
+ELAN_HOME     ?= $(HOME)/.elan
+LEAN_PREFIX   ?= $(HOME)/.local/lean
+LEAN_VERSION  ?= 4.33.1
+LEAN_URL_BASE ?= https://github.com/leanprover/lean4/releases/download
+ELAN_INIT_URL ?= https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh
+
+# Both routes in front of PATH for every recipe, so `make crustos_eq` finds
+# lean in the same shell that ran `make install_lean`, with no sourcing of
+# ~/.profile in between.  The tarball goes first: a half-installed elan
+# leaves a `lean` shim that runs but has no toolchain behind it, and a real
+# binary should win over that.  Neither directory existing is harmless.
+export PATH := $(LEAN_PREFIX)/bin:$(ELAN_HOME)/bin:$(PATH)
+
 default:
 	$(PYTHON) rosettaui.py
 
@@ -53,6 +82,7 @@ help:
 	@echo 'make install        install everything needed (Ubuntu/Debian)'
 	@echo 'make install-all    the above, plus the optional extras'
 	@echo 'make install_apple  install everything needed (macOS, via Homebrew)'
+	@echo 'make install_lean   install a Lean 4 toolchain (optional; Linux/macOS)'
 	@echo 'make check-deps     report what is present and what is missing'
 	@echo 'make ui             launch the interactive explorer'
 	@echo 'make test           run every self test'
@@ -140,6 +170,100 @@ install_windows:
 
 install-windows: install_windows
 
+# ------------------------------------------------------------------ Lean 4
+#
+# Unlike `install` and `install_apple` this one target covers both platforms:
+# the only thing it needs from the package manager is curl and zstd, and the
+# toolchain itself is the same kind of tarball on either.
+
+install_lean: install_lean_deps
+	@if command -v lean >/dev/null 2>&1 && lean --version >/dev/null 2>&1; then \
+		echo "lean already present: $$(lean --version)"; \
+		exit 0; \
+	fi; \
+	echo '==> installing elan into $(ELAN_HOME)'; \
+	if curl -fsSL "$(ELAN_INIT_URL)" | sh -s -- -y --no-modify-path \
+			--default-toolchain leanprover/lean4:v$(LEAN_VERSION) \
+			>/dev/null 2>&1 \
+		&& "$(ELAN_HOME)/bin/lean" --version >/dev/null 2>&1; then \
+		echo '==> elan installed a toolchain'; \
+	else \
+		echo '==> elan could not fetch a toolchain; using the binary release'; \
+		$(MAKE) --no-print-directory install_lean_tarball; \
+	fi
+	@echo
+	@echo "lean: $$(lean --version)"
+	@echo
+	@echo '"make crustos_eq" will now put CrustOS.lean to the real kernel as'
+	@echo 'well as the micro-kernel.  To get lean in your own shell:'
+	@$(MAKE) --no-print-directory lean_env
+	@echo
+
+install-lean: install_lean
+
+# The binary release, unpacked by hand.  No root, no package manager, no
+# release index -- just github.com.
+install_lean_tarball:
+	@set -e; \
+	os=$$(uname -s); arch=$$(uname -m); \
+	case "$$os" in \
+		Linux) case "$$arch" in \
+			x86_64|amd64)  asset=linux ;; \
+			aarch64|arm64) asset=linux_aarch64 ;; \
+			*) echo "unsupported Linux arch: $$arch"; exit 1 ;; \
+			esac ;; \
+		Darwin) case "$$arch" in \
+			x86_64) asset=darwin ;; \
+			arm64)  asset=darwin_aarch64 ;; \
+			*) echo "unsupported macOS arch: $$arch"; exit 1 ;; \
+			esac ;; \
+		*) echo "unsupported OS: $$os (Linux and Darwin only)"; exit 1 ;; \
+	esac; \
+	url="$(LEAN_URL_BASE)/v$(LEAN_VERSION)/lean-$(LEAN_VERSION)-$$asset.tar.zst"; \
+	command -v curl >/dev/null 2>&1 || { echo 'need curl'; exit 1; }; \
+	command -v unzstd >/dev/null 2>&1 || { echo 'need zstd (unzstd)'; exit 1; }; \
+	tmp=$$(mktemp -d); trap 'rm -rf "'"$$tmp"'"' EXIT; \
+	echo "==> fetching $$url"; \
+	curl -fL --retry 3 -o "$$tmp/lean.tar.zst" "$$url"; \
+	echo '==> unpacking into $(LEAN_PREFIX)'; \
+	rm -rf "$(LEAN_PREFIX)"; mkdir -p "$(LEAN_PREFIX)"; \
+	unzstd -c "$$tmp/lean.tar.zst" \
+		| tar -x -C "$(LEAN_PREFIX)" --strip-components=1; \
+	"$(LEAN_PREFIX)/bin/lean" --version >/dev/null
+
+# curl and zstd, by whichever package manager is present.  Nothing else: the
+# Lean side of this repo has no Python or TeX dependencies of its own.
+install_lean_deps:
+	@need=''; \
+	for p in curl unzstd; do \
+		command -v $$p >/dev/null 2>&1 || need="$$need $$p"; \
+	done; \
+	if [ -n "$$need" ]; then \
+		if command -v apt-get >/dev/null 2>&1; then \
+			echo '==> apt-get install curl zstd'; \
+			sudo apt-get update -qq && \
+			sudo apt-get install -y --no-install-recommends curl zstd; \
+		elif command -v brew >/dev/null 2>&1; then \
+			echo '==> brew install curl zstd'; \
+			brew install curl zstd; \
+		else \
+			echo "missing:$$need -- install them and re-run"; exit 1; \
+		fi; \
+	fi
+
+# The line to paste into ~/.bashrc or ~/.zshrc.
+lean_env:
+	@if [ -x "$(LEAN_PREFIX)/bin/lean" ]; then \
+		echo '  export PATH="$(LEAN_PREFIX)/bin:$$PATH"'; \
+	else \
+		echo '  export PATH="$(ELAN_HOME)/bin:$$PATH"'; \
+	fi
+
+uninstall_lean:
+	rm -rf "$(LEAN_PREFIX)"
+	@echo 'removed $(LEAN_PREFIX).  elan, if it was used instead, lives in'
+	@echo '$(ELAN_HOME) and is removed with: elan self uninstall'
+
 # Reports rather than fails, so it stays useful on a partly configured machine.
 #
 # The extra PATH entry is where MacTeX symlinks its binaries.  It is added to
@@ -174,6 +298,13 @@ check-deps:
 		&& echo '  imagemagick     ok' || echo '  imagemagick     missing  (imagemagick)'
 	@command -v gs >/dev/null \
 		&& echo '  ghostscript     ok' || echo '  ghostscript     missing  (ghostscript)'
+	@# Optional: without it crustos_eq.py checks Equation (1) with lean4.py's
+	@# micro-kernel alone, and skips the second opinion from Lean itself.
+	@if command -v lean >/dev/null 2>&1 && lean --version >/dev/null 2>&1; then \
+		echo "  lean 4          ok       ($$(lean --version | sed 's/Lean (version //;s/,.*//'))"; \
+	else \
+		echo '  lean 4          missing  (make install_lean)'; \
+	fi
 	@# Linux only, and optional: it drives the side-by-side PDF viewer.
 	@$(PYTHON) -c "import gi; gi.require_version('EvinceDocument','3.0')" \
 		>/dev/null 2>&1 \
@@ -211,7 +342,9 @@ collisions:
 # The same, written out as Lean 4 source for a second opinion.
 RosettaPhys.lean:
 	$(PYTHON) rosettalean.py --lean > $@
-	@echo 'wrote $@ -- `lake env lean $@` to have Lean check it'
+	@echo 'wrote $@ -- `lean $@` to have Lean check it.  The file is'
+	@echo 'Mathlib-free, so a bare toolchain is enough: no lake, no packages.'
+	@echo 'The `sorry` warnings are the point -- see the header.'
 
 # The fourth paper.  Every number, table and equation in it is generated from
 # rosettaphys.py at build time, so the paper cannot disagree with the code.
@@ -256,4 +389,6 @@ clean:
 	conjectures collisions physpaper proofs \
 	render-test pdf paper leanproof crustos_eq clean \
 	install_apple install-apple install_apple-all \
-	install_windows install-windows
+	install_windows install-windows \
+	install_lean install-lean install_lean_tarball install_lean_deps \
+	lean_env uninstall_lean

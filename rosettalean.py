@@ -458,6 +458,11 @@ def _preamble():
 
 namespace RosettaPhys
 
+-- Real is an axiom, so every definition over it is noncomputable and Lean's
+-- code generator rejects the lot by name.  Nothing here is meant to run, so
+-- the section says so once rather than annotating forty declarations.
+noncomputable section
+
 axiom Real : Type"""]
     for name in BINARY:
         lines.append('axiom %s : Real -> Real -> Real' % name)
@@ -495,7 +500,7 @@ axiom Real : Type"""]
 
 LEAN_PREAMBLE = _preamble()
 
-LEAN_CLOSING = '\nend RosettaPhys\n'
+LEAN_CLOSING = '\nend\n\nend RosettaPhys\n'
 
 
 def lean_source(conj, env=None):

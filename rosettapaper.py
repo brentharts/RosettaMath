@@ -123,18 +123,11 @@ and %s is made to declare what each of its letters denotes, and is
 then allowed to connect itself. Equations become graph nodes; edges follow
 shared \emph{quantities} rather than shared characters; and two equations
 stating the same quantity are joined by transitivity into one annotated formula.
-The library yields %s so composed and %s that three or more independent equations all
-determine---the gravitational constant among them, fixed %s ways by Newton,
-Schwarzschild, Hawking, the Planck length, the escape velocity and the surface
-gravity, none written with the others in mind. Each statement is checked to be
-a well-formed proposition over an axiomatic \code{Real} by a Calculus of
+Each statement is checked to be a well-formed proposition over an axiomatic \code{Real} by a Calculus of
 Constructions micro-kernel, then emitted as Lean~4.
 \end{abstract}
 """ % (words(len(P.EQUATIONS), 'equation'), words(len(P.SYMBOLS), 'symbol'),
        words(len(P.QUANTITIES), 'physical quantity', 'physical quantities'),
-       words(len(P.all_joins()), 'pairwise statement'),
-       words(len(P.families()), 'quantity', 'quantities'),
-       number(len(P.family('G'))),
     )
 
 
@@ -147,7 +140,7 @@ def introduction():
 
 \begin{figure}[htbp]
 \centering
-\resizebox{\textwidth}{!}{$\displaystyle %s $}
+\resizebox{0.8\textwidth}{!}{$\displaystyle %s $}
 \caption{ \tiny The library, conjoined. %s from %s, each
 \texttt{\textbackslash underbrace}d with the equation it came from and
 \texttt{\textbackslash overbrace}d with the quantity it determines. Generated
@@ -259,6 +252,7 @@ fact about physics, not notation---and %s are stated explicitly.
 
 \begin{table}[h]
 \centering
+\tiny
 \begin{tabular}{llp{7.6cm}}
 \toprule
 Relation & Count & What it records \\
@@ -327,6 +321,7 @@ readings. %s of %d are refused on these grounds.
 
 \begin{table}[h]
 \centering
+\tiny
 \begin{tabular}{lll}
 \toprule
 Refused because it contains & Count & For example \\
@@ -399,7 +394,7 @@ physics reused a character. There are %s.
 
 \begin{table}[h]
 \centering
-\small
+\tiny
 \begin{tabular}{llll}
 \toprule
 Letter & One reading & The other & First seen in \\
@@ -856,6 +851,10 @@ Most of the library can be checked against a textbook. %s cannot: their values
 were computed, and an entry that says only which Wikipedia article explains the
 idea does not say where its number came from. Those entries carry a
 \code{source} naming the matrix or function it was computed from.
+\newline
+\url{https://github.com/brentharts/spectre} 
+\newline
+\url{https://github.com/brentharts/CICY}
 
 The field exists because of a near-miss. Two of the substitutions below give
 different inflation factors for the aperiodic monotile---$\phi^4$ for the hat
@@ -866,6 +865,7 @@ tilings group made exactly that mistake.
 
 \begin{longtable}{p{4.4cm}p{10cm}}
 \toprule
+\tiny
 Entry & Computed from \\
 \midrule
 \endhead
@@ -895,6 +895,7 @@ BIBLIOGRAPHY = r"""
 
 \bibitem{hartshorn2026rosetta} Hartshorn, B.~S. (2026). RosettaMath: Reading,
 Running and Proving Mathematics from \LaTeX{}. SSRN.
+\newline
 \url{https://dx.doi.org/10.2139/ssrn.7435598}
 
 \bibitem{hartshorn2026lean} Hartshorn, B.~S. (2026). LEAN Proofs Small Enough

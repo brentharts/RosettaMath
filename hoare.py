@@ -1795,6 +1795,178 @@ def _placeholder_for(tree):
     return ast.List(elts=[], ctx=ast.Load()), name
 
 
+SEQ_VAR = '_seq'
+POS_VAR = '_pos'
+
+
+def _is_range_call(node):
+    return (isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+            and node.func.id == 'range')
+
+
+def _marker(stmt, which):
+    """The expression inside `assert invariant(e)` / `assert variant(e)`."""
+    if (isinstance(stmt, ast.Assert) and isinstance(stmt.test, ast.Call)
+            and isinstance(stmt.test.func, ast.Name)
+            and stmt.test.func.id == which and len(stmt.test.args) == 1):
+        return stmt.test.args[0]
+    return None
+
+
+def _name(id_, ctx=ast.Load):
+    return ast.Name(id=id_, ctx=ctx())
+
+
+def _call(fn, *args):
+    return ast.Call(func=_name(fn), args=list(args), keywords=[])
+
+
+def _assert_marker(which, expr):
+    return ast.Assert(test=_call(which, expr), msg=None)
+
+
+def desugar_for(body, where, depth=0):
+    r"""Rewrite `for x in xs` over a list into the `while` it always was.
+
+    `for i in range(n)` lowers to `Nat.rec` and stays as it is.  Iterating a
+    list is different only in that the bound is the list's length and the
+    element is read out on each pass, so it becomes:
+
+        for url in parts:                 _seq = parts
+            body                          _pos = 0
+                                          url = _seq[0]
+                                          while _pos < len(_seq):
+                                              assert variant(len(_seq) - _pos)
+                                              assert invariant(_pos <= len(_seq)
+                                                               and <yours>)
+                                              url = _seq[_pos]
+                                              body
+                                              _pos = _pos + 1
+
+    and the whole apparatus that `while` already has -- the variant, the
+    invariant, `loop_obligations`, `invariant_at_exit` -- applies unchanged.
+    That is the point of doing this as a rewrite: the proofs about `while`
+    loops are the proofs about `for` loops, with nothing new to trust.
+
+    The variant is supplied, since a list is finite and the text does not
+    need to say so.  The invariant's first conjunct is supplied too, because
+    `_pos <= len(_seq)` is what makes `_pos == len(_seq)` available at exit,
+    and every postcondition about the result argues from that.  An `assert
+    invariant(...)` of your own at the top of the body is conjoined after it,
+    and may mention `_pos` -- a counter of your own that walks in step with
+    the list, as `i` does in `accepted`, is related to the loop's progress by
+    saying `i == _pos`, and there is no other way to say it.
+
+    `url = _seq[0]` before the loop is a typed placeholder, never observed:
+    the first pass overwrites it before the body reads it.  It is there
+    because the lowering asks every variable a loop assigns to have a value
+    going in, so that the fold has a starting state.
+
+    Nesting one list loop inside another is refused rather than supported
+    with renaming, since the names are what an invariant refers to.
+    """
+    out = []
+    for stmt in body:
+        if isinstance(stmt, ast.For) and not _is_range_call(stmt.iter):
+            if depth:
+                raise ContractError(
+                    f"{where}: a `for` over a list inside another is not "
+                    f"supported: both would want to be `{POS_VAR}`, and the "
+                    f"invariant would not know which it was talking about")
+            if stmt.orelse:
+                raise ContractError(f"{where}: `for ... else` has no meaning "
+                                    f"here")
+            if not isinstance(stmt.target, ast.Name):
+                raise ContractError(f"{where}: the loop variable must be a "
+                                    f"plain name")
+            elem = stmt.target.id
+            inner = list(stmt.body)
+            user_inv = None
+            if inner and _marker(inner[0], 'invariant') is not None:
+                user_inv = _marker(inner[0], 'invariant')
+                inner = inner[1:]
+            if inner and _marker(inner[0], 'variant') is not None:
+                raise ContractError(
+                    f"{where}: a `for` over a list needs no variant; the "
+                    f"length of the list is the bound and it is supplied")
+            inner = desugar_for(inner, where, depth + 1)
+
+            bound = _call('len', _name(SEQ_VAR))
+            in_range = ast.Compare(left=_name(POS_VAR), ops=[ast.LtE()],
+                                   comparators=[bound])
+            inv = in_range if user_inv is None else ast.BoolOp(
+                op=ast.And(), values=[in_range, user_inv])
+            read = ast.Assign(
+                targets=[_name(elem, ast.Store)],
+                value=ast.Subscript(value=_name(SEQ_VAR), slice=_name(POS_VAR),
+                                    ctx=ast.Load()))
+            advance = ast.Assign(
+                targets=[_name(POS_VAR, ast.Store)],
+                value=ast.BinOp(left=_name(POS_VAR), op=ast.Add(),
+                                right=ast.Constant(value=1)))
+            loop = ast.While(
+                test=ast.Compare(left=_name(POS_VAR), ops=[ast.Lt()],
+                                 comparators=[copy.deepcopy(bound)]),
+                body=[_assert_marker('variant',
+                                     ast.BinOp(left=copy.deepcopy(bound),
+                                               op=ast.Sub(),
+                                               right=_name(POS_VAR))),
+                      _assert_marker('invariant', inv),
+                      read] + inner + [advance],
+                orelse=[])
+            out.extend([
+                ast.Assign(targets=[_name(SEQ_VAR, ast.Store)],
+                           value=stmt.iter),
+                ast.Assign(targets=[_name(POS_VAR, ast.Store)],
+                           value=ast.Constant(value=0)),
+                ast.Assign(targets=[_name(elem, ast.Store)],
+                           value=ast.Subscript(value=_name(SEQ_VAR),
+                                               slice=ast.Constant(value=0),
+                                               ctx=ast.Load())),
+                loop,
+            ])
+            continue
+        if isinstance(stmt, (ast.If, ast.For, ast.While)):
+            stmt.body = desugar_for(stmt.body, where, depth)
+            if getattr(stmt, 'orelse', None):
+                stmt.orelse = desugar_for(stmt.orelse, where, depth)
+        out.append(stmt)
+    return out
+
+
+def desugar_append(body, where):
+    r"""`xs.append(x)` is `xs = snoc(xs, x)`.
+
+    A store-passing lowering has no mutation, so a method that mutates has to
+    become an assignment.  This is the only one there is: Python's `append`
+    pushes one element, which is `snoc`, and not the prelude's `append`,
+    which is concatenation and takes two lists.  Written here as a rewrite
+    so the model may say what the kernel says.
+    """
+    out = []
+    for stmt in body:
+        if (isinstance(stmt, ast.Expr) and isinstance(stmt.value, ast.Call)
+                and isinstance(stmt.value.func, ast.Attribute)
+                and stmt.value.func.attr == 'append'):
+            call = stmt.value
+            if not isinstance(call.func.value, ast.Name):
+                raise ContractError(f"{where}: `.append` on something other "
+                                    f"than a plain variable has no lowering")
+            if len(call.args) != 1 or call.keywords:
+                raise ContractError(f"{where}: `.append` takes one argument")
+            target = call.func.value.id
+            out.append(ast.copy_location(ast.Assign(
+                targets=[_name(target, ast.Store)],
+                value=_call('snoc', _name(target), call.args[0])), stmt))
+            continue
+        if isinstance(stmt, (ast.If, ast.For, ast.While)):
+            stmt.body = desugar_append(stmt.body, where)
+            if getattr(stmt, 'orelse', None):
+                stmt.orelse = desugar_append(stmt.orelse, where)
+        out.append(stmt)
+    return out
+
+
 def desugar_returns(tree, params):
     r"""Rewrite early `return`s into a first-wins accumulator.
 
@@ -1938,8 +2110,22 @@ def read_procedure(func, env=None, signatures=None, ensures=(),
         reader.store[arg.arg] = Var(arg.arg)
         reader.types[arg.arg] = ty
 
-    # Early returns are rewritten here, before anything is lowered, so the
-    # rest of this function sees the one shape it has always seen.
+    # Rewrites, before anything is lowered, so the rest of this function sees
+    # the shapes it has always seen.  Order matters only in that a `for`
+    # over a list becomes a `while` first, so a `return` inside it is then
+    # a return inside a while, which the next pass already handles.
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Name):
+            continue
+        if node.id == SEQ_VAR or (node.id == POS_VAR
+                                  and isinstance(node.ctx, ast.Store)):
+            raise ContractError(
+                f"{tree.name}: '{node.id}' is reserved for lowering a `for` "
+                f"over a list -- {POS_VAR} may be read in an invariant, "
+                f"nothing else; please rename it")
+    tree.body = desugar_append(tree.body, tree.name)
+    tree.body = desugar_for(tree.body, tree.name)
+    ast.fix_missing_locations(tree)
     tree = desugar_returns(tree, [name for name, _ in params])
 
     body = [s for s in tree.body
@@ -2374,6 +2560,70 @@ def by_bool(env, goal, scrutinee, when_true, when_false):
                                 f"split on; name the condition explicitly")
     motive = Lambda('_x', BOOL, replace_subterm(goal, scrutinee, Var('_x')))
     return app('Bool.ind', motive, when_true, when_false, scrutinee)
+
+
+def _first_open_ite(term):
+    """The condition of the first `ite` not already decided by a literal."""
+    head, args = L.spine(term)
+    if (isinstance(head, Var) and head.name == 'ite' and len(args) >= 2
+            and args[1] not in (Var('true'), Var('false'))):
+        return args[1]
+    if isinstance(term, App):
+        return _first_open_ite(term.func) or _first_open_ite(term.arg)
+    if isinstance(term, Binder):
+        return _first_open_ite(term.var_type) or _first_open_ite(term.body)
+    return None
+
+
+def by_every_bool(env, goal, unfolding=(), limit=16, verbose=False):
+    r"""Prove a goal by splitting on every `ite` it contains, then computing.
+
+    A function that is a chain of guards -- `if x == 0: return 6`, and so on
+    -- lowers to a tower of `ite`s over conditions on its parameters, and a
+    claim about its result is settled by nothing but which way each one
+    went.  `by_bool` splits one; this splits until none is left and then asks
+    `discharge`, which is `refl` once the claim is closed.  The limit is a
+    ceiling on how many times it will split before deciding the goal is not
+    the finite kind this was for.
+
+    `unfolding` names the definitions to open -- the procedure itself, since
+    its `ite`s are behind its name -- and only those: normalising would turn
+    every `ite` into the recursor it stands for and leave nothing to split.
+
+    Each branch goal is the original with `true` or `false` written in for
+    one condition, everywhere it occurs, so the recursion is on the number of
+    undecided conditions.  Nothing is assumed about them: `x == 0` and
+    `x == 1` are split independently, and their four combinations are four
+    cases, two of them vacuous and all of them checked.
+    """
+    binders, claim = peel(goal)
+    claim = unfold(claim, env, set(unfolding))
+
+    def close(term):
+        for name, ty, _ in reversed(binders):
+            term = Pi(name, ty, L.abstract(term, name))
+        return term
+
+    def prove_claim(claim, depth):
+        scrutinee = _first_open_ite(claim)
+        if scrutinee is None:
+            whole = discharge(close(claim), env, verbose=verbose)
+            return app(whole, *[Var(n) for n, _, _ in binders])
+        if depth >= limit:
+            raise TheoremError(f"more than {limit} conditions to split on; "
+                               f"this is not the finite kind of claim "
+                               f"by_every_bool is for")
+        when_true = prove_claim(
+            replace_subterm(claim, scrutinee, Var('true')), depth + 1)
+        when_false = prove_claim(
+            replace_subterm(claim, scrutinee, Var('false')), depth + 1)
+        motive = Lambda('_x', BOOL, replace_subterm(claim, scrutinee, Var('_x')))
+        return app('Bool.ind', motive, when_true, when_false, scrutinee)
+
+    proof = prove_claim(claim, 0)
+    for name, ty, _ in reversed(binders):
+        proof = Lambda(name, ty, L.abstract(proof, name))
+    return prove(goal, proof, env, verbose=verbose)
 
 
 def by_cases(env, record_name, goal, verbose=False, what='this', using=None,
@@ -2986,13 +3236,95 @@ def selftest():
             v = 9
             return v
         ''') is not None)
-    refuses("an unbounded iterable is refused", lambda: read('''
+    # -- for over a list, and .append -------------------------------------
+    refuses("iterating something that is not a list is refused", lambda: read('''
         def f(n: 'Nat') -> 'Nat':
             v = 0
             for i in n:
                 v = v + 1
             return v
-        '''), "range(n)")
+        '''), "be indexed")
+    total = read_procedure('''
+        def total(xs: 'Array') -> 'Nat':
+            acc = 0
+            for x in xs:
+                acc = acc + x
+            return acc
+        ''', env, None, ['result == 0'])
+    ok("a for over a list is a fold over it",
+       normalize(app(total.fn_term, array([2, 3, 4])), env) == numeral(9))
+    ok("and over the empty list it is the start",
+       normalize(app(total.fn_term, array([])), env) == numeral(0))
+    ok("the loop has the obligations a while has",
+       {n for n, _ in total.loop_obligations} == {
+           'progress', 'invariant holds on entry',
+           'invariant is preserved', 'variant decreases'})
+    pushed = read_procedure('''
+        def evens(xs: 'Array') -> 'Array':
+            out: 'Array' = []
+            for x in xs:
+                if eqb(x, 2):
+                    out.append(x)
+            return out
+        ''', env, None, ['len(result) <= len(xs)'])
+    ok(".append is snoc, in the order the elements came",
+       normalize(app(pushed.fn_term, array([2, 1, 2])), env)
+       == normalize(array([2, 2]), env))
+    refuses("a variant on a list loop is refused: it is supplied", lambda: read('''
+        def f(xs: 'Array') -> 'Nat':
+            v = 0
+            for x in xs:
+                assert variant(len(xs))
+                v = v + 1
+            return v
+        '''), "needs no variant")
+    refuses("nested list loops are refused", lambda: read('''
+        def f(xs: 'Array', ys: 'Array') -> 'Nat':
+            v = 0
+            for x in xs:
+                for y in ys:
+                    v = v + 1
+            return v
+        '''), "inside another")
+    refuses("assigning the loop position is refused", lambda: read('''
+        def f(xs: 'Array') -> 'Nat':
+            _pos = 0
+            return _pos
+        '''), "reserved")
+    # -- by_every_bool: a tower of guards, settled by cases -----------------
+    guards = read_procedure('''
+        def regs(cls: 'Nat') -> 'Nat':
+            if eqb(cls, 0):
+                return 6
+            if eqb(cls, 1):
+                return 10
+            return 23
+        ''', env, None, ['result <= 23'])
+    ok("a bound on a chain of guards is proved for every input",
+       by_every_bool(env, guards.obligation, unfolding={'regs'}) is not None)
+    refuses("and a bound that one branch breaks is refused", lambda: by_every_bool(
+        env, read_procedure('''
+        def regs2(cls: 'Nat') -> 'Nat':
+            if eqb(cls, 0):
+                return 6
+            if eqb(cls, 1):
+                return 10
+            return 23
+        ''', env, None, ['result <= 10']).obligation, unfolding={'regs2'}),
+        "does not compute to true")
+    refuses("a goal with no ite and no computation is not this kind of claim",
+            lambda: by_every_bool(env, read_procedure('''
+        def ident(n: 'Nat') -> 'Nat':
+            return n
+        ''', env, None, ['result <= 5']).obligation, unfolding={'ident'}),
+            "arbitrary")
+
+    refuses(".append on a prelude list function is not confused with it",
+            lambda: read('''
+        def f(xs: 'Array') -> 'Array':
+            append(xs).append(1)
+            return xs
+        '''), "plain variable")
     refuses("an unannotated parameter is refused", lambda: read('''
         def f(n) -> 'Nat':
             return n

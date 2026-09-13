@@ -145,14 +145,25 @@ def build():
     @procedure(env=env, verbose=False,
                ensures=['len(result) <= len(split(urls, 44))'])
     def accepted(names: 'Strs', urls: 'Bytes') -> 'Array':
-        parts = split(urls, 44)
+        # Statement for statement, crustos/schemes.py's accepted: a `for`
+        # over the split and an `.append`, neither of which had a lowering
+        # until desugar_for and desugar_append.  Two paraphrases remain and
+        # both are the Nat encoding again: `< len(names)` where the kernel
+        # writes `!= SCHEME_NONE`, and `split(urls, 44)` for
+        # `urls.split(",")`.
+        #
+        # The invariant is the one thing here the kernel does not say.  It
+        # relates `i` -- the kernel's own counter, walked in step with the
+        # list -- to the loop's position, which is what lets the bound on
+        # `out` be carried out of the loop.  `_pos <= len(_seq)` is conjoined
+        # in front of it by the lowering, so at exit `i <= _pos <= len` and
+        # the postcondition is two applications of leb_trans.
         out: 'Array' = []
         i = 0
-        while i < len(parts):
-            assert invariant(len(out) <= i and i <= len(parts))
-            assert variant(len(parts) - i)
-            if scheme_of(names, parts[i]) < len(names):
-                out = snoc(out, i)
+        for url in split(urls, 44):
+            assert invariant(len(out) <= i and i <= _pos)
+            if scheme_of(names, url) < len(names):
+                out.append(i)
             i = i + 1
         return out
 
@@ -163,42 +174,67 @@ def build():
     batch_len = app('len', BYTES, app('split', Var('urls'), L.numeral(44)))
     plus = lambda t: App(Var('succ'), t)
     count = lambda t: app('len', NAT, t)
+    leb = lambda a, b: app('leb', a, b)
+    # what the loop carries, in first-write order: the element, then the
+    # kernel's two variables, then the position the lowering added
+    carried = ['url', 'out', 'i', '_pos']
 
     def keeps_it(f, h, claim):
+        # The invariant before and after a pass is  andb A (andb B C)  with
+        #   A = _pos <= len(split ...)   supplied by the lowering
+        #   B = len(out) <= i            the kernel's bound
+        #   C = i <= _pos                the two counters in step
+        # `f` reports the innermost split (i, _pos); `out` is bound by the
+        # outer one under its own name.
+        out = Var('out')
+        A = leb(f['_pos'], batch_len)
+        B = leb(count(out), f['i'])
+        C = leb(f['i'], f['_pos'])
+        rest = app('andb_right', A, app('andb', B, C), h[0])
+        so_far = app('andb_left', B, C, rest)
+        stays = app('andb_right', B, C, rest)
         conjunction = unfold(L.spine(claim)[1][-1], env,
                              {'accepted.inv1', 'accepted.pass1'})
-        first, second = L.spine(conjunction)[1]
-        so_far = app('andb_left', app('leb', count(f['out']), f['i']),
-                     app('leb', f['i'], batch_len), h[0])
-        return app('andb_both', first, second,
-                   by_bool(env, App(Var('Holds'), first), None,
-                           app('snoc_le', NAT, f['out'], f['i'], f['i'],
-                               so_far),
-                           app('leb_trans', count(f['out']), f['i'],
-                               plus(f['i']), so_far,
-                               app('leb_succ', f['i']))),
-                   h[1])
+        after_A, after_BC = L.spine(conjunction)[1]
+        after_B, after_C = L.spine(after_BC)[1]
+        keep_B = by_bool(env, App(Var('Holds'), after_B), None,
+                         app('snoc_le', NAT, out, f['i'], f['i'], so_far),
+                         app('leb_trans', count(out), f['i'], plus(f['i']),
+                             so_far, app('leb_succ', f['i'])))
+        # after_A is  succ _pos <= len,  which is the loop condition h[1]
+        # by definition of ltb; after_C is  succ i <= succ _pos,  which is
+        # C by definition of leb.  Neither needs a lemma.
+        return app('andb_both', after_A, after_BC, h[1],
+                   app('andb_both', after_B, after_C, keep_B, stays))
 
     acc_kept = by_cases(env, None, acc_goals['invariant is preserved'],
-                        what='preservation', names=['out', 'i'],
-                        using=keeps_it)
+                        what='preservation', names=carried, using=keeps_it)
     acc_down = by_cases(env, None, acc_goals['variant decreases'],
-                        what='the variant', names=['out', 'i'],
+                        what='the variant', names=carried,
                         using=lambda f, h, g: app('sub_lt', batch_len,
-                                                  f['i'], h[1]))
+                                                  f['_pos'], h[1]))
     acc_done = progress_by_loop(env, proc, acc_entry, acc_kept, acc_down,
                                 verbose=False)
     at_exit = invariant_at_exit(env, proc, acc_entry, acc_kept)
+    # the final state is (url, (out, (i, _pos)))
     ending = proc.shapes[0]['result']
-    final_out = app('fst', BYTES, NAT, ending)
-    final_i = app('snd', BYTES, NAT, ending)
+    pair = app('Prod', NAT, NAT)
+    triple = app('Prod', BYTES, pair)
+    tail = app('snd', BYTES, triple, ending)
+    final_out = app('fst', BYTES, pair, tail)
+    final_i = app('fst', NAT, NAT, app('snd', BYTES, pair, tail))
+    final_pos = app('snd', NAT, NAT, app('snd', BYTES, pair, tail))
     held = app(at_exit, Var('names'), Var('urls'))
-    left = app('leb', count(final_out), final_i)
-    right = app('leb', final_i, batch_len)
+    A = leb(final_pos, batch_len)
+    B = leb(count(final_out), final_i)
+    C = leb(final_i, final_pos)
+    BC = app('andb', B, C)
     post = Lambda('names', STRS, Lambda('urls', BYTES, app(
         'leb_trans', count(final_out), final_i, batch_len,
-        app('andb_left', left, right, held),
-        app('andb_right', left, right, held))))
+        app('andb_left', B, C, app('andb_right', A, BC, held)),
+        app('leb_trans', final_i, final_pos, batch_len,
+            app('andb_right', B, C, app('andb_right', A, BC, held)),
+            app('andb_left', A, BC, held)))))
     acc_pf = prove(proc.obligation, post, env, verbose=False)
 
     # -- name every proof, so each is a declaration both kernels can see ----

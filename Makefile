@@ -201,6 +201,16 @@ install_lean: install_lean_deps
 
 install-lean: install_lean
 
+# LeanOS sketch: every number from the run, the PDF from pdflatex.  Lean is
+# optional here as everywhere; without it the verdict macros are absent and
+# the document says so by failing to build, which is the right failure.
+leanos_paper:
+	$(PYTHON) leanos_paper.py
+	pdflatex -interaction=nonstopmode -halt-on-error leanos.tex >/dev/null
+	pdflatex -interaction=nonstopmode leanos.tex >/dev/null
+	@echo leanos.pdf
+
+
 # The binary release, unpacked by hand.  No root, no package manager, no
 # release index -- just github.com.
 install_lean_tarball:

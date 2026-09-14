@@ -1,0 +1,490 @@
+\documentclass[11pt]{article}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{amsmath,amssymb,listings}
+\usepackage{booktabs}
+\usepackage{xurl}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+
+\usepackage{orcidlink}
+
+\lstset{
+    language=Python,
+    basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{blue!60!black}\bfseries,
+    stringstyle=\color{green!45!black},
+    commentstyle=\color{gray}\itshape,
+    breaklines=true,
+    frame=single,
+    framerule=0.3pt,
+    xleftmargin=1em,
+}
+\input{gen/leanos_facts.tex}
+
+\title{LeanOS: a kernel written to be proved by LEAN4\\
+\large from a proof-checked loader to a proof-checked memory map}
+\author{Brent S. Hartshorn \orcidlink{0009-0004-2853-655X}
+        \small (\url{brenthartshorn@proton.me}) 
+\\
+\small
+\url{https://github.com/brentharts/RosettaMath}
+\quad
+\url{https://github.com/brentharts/crust}
+}
+\date{September 14, 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+LeanOS, an operating system micro-kernel written to be proved by LEAN4,
+built so far: an ELF validator that decides before it dereferences, with a loader
+that now refuses what it used to run; the region list LeanOS is founded on,
+whose founding sentence~--- no address is reachable by two owners~--- is now
+a theorem; threads as records over that list; a per-thread bump allocator;
+a loader that makes the ELF theorem and the memory theorem one check; and
+the switcher's decisions in C, lifted from the compiled binary and proved
+from the lift.  Every LEAN theorem is checked by \texttt{lean4.py} and again by
+Lean~4 with no axioms.  We record what the theorems
+do not say, and the additions to the proof kernel that were needed to say
+this much.
+\end{abstract}
+
+\section{Introduction}
+
+Three things in this tree are checked by a proof kernel.  A SIMD contract is
+certified at compile time by \texttt{lean4.py}, a Calculus of Constructions
+kernel written in Python and named after Lean~4 rather than being it.  A
+Python \emph{model} of the kernel is proved by \texttt{hoare.py} and
+exported to Lean~\leanVersion{}, which checks it independently.  And
+\texttt{ilproof.py} lifts a compiled function's IL back into the fragment
+\texttt{hoare.py} reads, so that a theorem can be about code the compiler
+actually saw rather than a transcription of it.
+
+The lift is where the two kernels meet, and its tally is the reason for
+this document.  Of the \liftTotal{} functions in \texttt{crustos/kernel.c},
+the lift reaches \liftReached{}.  Of the \liftRefused{} it refuses,
+\liftMemory{} are refused for one reason: \texttt{ReadAt}, \texttt{AddrOf}
+or \texttt{SetAt}~--- a memory access through a pointer the lift has no
+way to name.  The refusals are not spread across the kernel's features.
+They are one wall.
+
+The reading of that wall which LeanOS is built on: \emph{a pointer the
+lift cannot name is a region the kernel never wrote down.}  If every region
+the kernel touches were an entry in a list laid out at build time~--- base,
+size, owner~--- then a load from one would be a field read on a record the
+lift can already express, not a \texttt{ReadAt} it must refuse.  The
+\liftMemory{} refusals are the count of pointers such a list would have
+replaced.
+
+\section{The loader, first}
+
+The loader was chosen as the first thing to write in the new style because
+its correct behaviour is a property of \emph{headers}, and headers are a
+list of records.  Deciding things about lists is what rpython is for in
+this tree, and it is what the proof side can already reason about.
+
+\subsection{The validator}
+
+\texttt{crustos/elfcheck.py} is four rpython functions.  It receives the
+\texttt{PT\_LOAD}s as two parallel lists in file order, with the entry
+point and the register class from the \texttt{CRUSTOS} note, and it answers
+one or zero.  It never reads memory it did not receive as a list.
+
+\lstinputlisting[firstline=34,lastline=62]{\crustDir/crustos/elfcheck.py}
+
+Three conventions make the model and the code the same function.  A
+result is 1 or 0, never a negative sentinel, because the model is over
+\texttt{Nat}.  A loop counts up, so its variant is \texttt{len - i}.  And
+\texttt{reg\_class\_ok}'s guard is written \texttt{<=} rather than
+\texttt{>}, so that the guard \emph{is} the theorem: an accepted class is
+\texttt{<= 3} because that is what was tested, and the kernel settles it by
+splitting the guard rather than by a totality lemma about \texttt{leb} that
+the prelude does not have.
+
+\subsection{What is proved, and by which kernel}
+
+RosettaMath's \texttt{elfcheck\_eq.py} is the same four functions in the
+dialect \texttt{read\_procedure} compiles.  Its \elfTheorems{} theorems are
+proved by \texttt{lean4.py} in \elfBuildSeconds{}s, exported as
+\elfLeanLines{} lines of Lean, and \elfLeanVerdict{} by Lean~4 in
+\elfLeanSeconds{}s with \elfLeanNoAxioms{} of \elfTheorems{} reported free
+of axioms:
+\begin{align*}
+\texttt{reg\_class\_sized} &: \forall\,\mathit{cls},\ \texttt{reg\_class\_ok}\ \mathit{cls} = 1 \to \mathit{cls} \le 3\\
+\texttt{accept\_sized} &: \forall\,v\,m\,e\,\mathit{cls},\ \texttt{accept\_image}\ v\,m\,e\,\mathit{cls} = 1 \to \mathit{cls} \le 3\\
+\texttt{loads\_ordered\_bounded} &: \forall\,v\,m,\ \texttt{loads\_ordered}\ v\,m \le 1\\
+\texttt{entry\_in\_load\_bounded} &: \forall\,v\,m\,e,\ \texttt{entry\_in\_load}\ v\,m\,e \le 1
+\end{align*}
+The second composes with \texttt{elf\_regs\_bounded}, the one theorem
+already lifted from \texttt{kernel.c} through the real front end and
+accepted by Lean: an image the loader accepts has a class the scheduler
+sizes, and that sizing is \texttt{<= 23}.  It is the first theorem in the
+tree that spans two functions of the shipped kernel.
+
+\subsection{The loader before and after}
+
+\texttt{elf\_load\_path} now builds the two lists after its first pass
+over the program headers, with the same \texttt{memsz != 0} filter the
+mapping loop uses, and returns \texttt{-6} if \texttt{accept\_image} says
+no, before anything is allocated.  Table~\ref{tab:loader} is a
+ShivyCX-built ELF and four copies of it with patched headers, through the
+loader as it was and as it is.
+
+\begin{table}[h]\centering
+\begin{tabular}{lcc}
+\toprule
+& before & after\\
+\midrule
+well-formed & \texttt{rc=0} & \texttt{rc=0}\\
+second load begins inside the first & \texttt{rc=0} & \texttt{rc=-6}\\
+loads in descending order & \texttt{rc=0} & \texttt{rc=-6}\\
+entry in no load, 1\,MB past the image & \texttt{rc=0} & \texttt{rc=-6}\\
+entry exactly at the end of the last load & \texttt{rc=0} & \texttt{rc=-6}\\
+entry at \texttt{end - 1} & \texttt{rc=0} & \texttt{rc=0}\\
+\bottomrule
+\end{tabular}
+\caption{\texttt{elf\_load\_path} on real files.  Before the validator,
+\texttt{elf\_run\_guest\_fn} would have jumped to the entry in row four.}
+\label{tab:loader}
+\end{table}
+
+\subsection{How the validator is checked}
+
+Five ways, and the first four are the discipline
+\texttt{test\_crustos\_model.py} already applies to the scheme layer.
+\emph{Behaviour}: the rpython run as Python and the compiled model terms
+evaluated through the kernel agree over a corpus.  \emph{Shape}: the two
+sources have the same control-flow skeleton, so a corpus cannot miss a
+branch.  \emph{Coverage}: every exported function is modelled.
+\emph{Lean}: the export is accepted with no axioms.  And two the scheme
+layer does not have.  \emph{Compiled}: the same file through ShivyCX by
+\texttt{\#include}, as \texttt{kernel.c} takes it, against itself run as
+Python.  \emph{End to end}: the loader on the files of
+Table~\ref{tab:loader}.
+
+The tamper that swaps \texttt{<} for \texttt{<=} on the entry bound~---
+the loader's off-by-one, which lets an entry sit one byte past its
+segment~--- is caught by the behaviour corpus on three rows.
+
+\section{The founding rule}\label{sec:founding}
+
+\textbf{Memory is data before it is memory.}  Every region LeanOS will
+touch is an entry in one list: base, size, owner.  Disjointness of the
+list is the theorem everything else rests on, because a thread allocated
+from its own region has no address in its registers or its slots that
+lands in another's.  The register partition of
+\texttt{BAREMETAL\_THREADS.md}~--- two threads, one core, disjoint
+footprints, a switcher that saves what the partition says~--- is not a
+special case of this but its first instance.  LeanOS makes the same move
+for memory, for the same reason: so that the partition is a fact the
+compiler computed and the kernel can check.
+
+\subsection{The region list}
+
+\texttt{leanos/memmap.py} is written the way \texttt{elfcheck.py} is, and
+deliberately: \texttt{regions\_disjoint} is \texttt{loads\_ordered} with an
+owner column, so the loop theorem each owes is one theorem.
+
+\lstinputlisting[firstline=22,lastline=41]{\crustDir/leanos/memmap.py}
+
+\texttt{region\_of} is the access rule.  A thread may touch an address only
+if it says 1, and with disjointness in hand, 1 for one owner is 0 for every
+other.  Compiled by ShivyCX, laid out as the two-thread partition~--- kernel
+tables, two stacks, two slot regions~--- it finds an address in thread~1's
+stack, denies it to thread~2 and to the kernel, and reports the layout
+non-disjoint the moment thread~1's stack is grown one byte into its slots.
+
+\subsection{What is proved}
+
+\texttt{memmap\_eq.py} proves \memTheorems{} theorems in
+\memBuildSeconds{}s; Lean~4 \memLeanVerdict{} the \memLeanLines{}-line
+export in \memLeanSeconds{}s, \memLeanNoAxioms{} of \memTheorems{} free of
+axioms.  Five say a function decides.  The rest are a chain, and the chain
+ends at the founding sentence of \S\ref{sec:founding} stated verbatim:
+\begin{align*}
+\texttt{regions\_disjoint\_ordered} &: \texttt{regions\_disjoint}\ b\,s = 1 \to \texttt{ordered\_prefix}\ b\,s\ (\mathrm{len}\ b)\\
+\texttt{regions\_pairwise\_disjoint} &: \texttt{ordered\_prefix}\ b\,s\,n \to j<k<n \to b_j+s_j \le b_k\\
+\texttt{contains\_unique} &: \text{two positions holding the same address are one position}\\
+\texttt{region\_index\_found} &: \text{the index returned is owned by the asker and holds the address}\\
+\texttt{region\_of\_unique} &: \texttt{region\_of}\ w_1\,a = 1 \to \texttt{region\_of}\ w_2\,a = 1 \to w_1 = w_2
+\end{align*}
+The first of these,
+\[
+\texttt{regions\_disjoint}\ b\,s = 1 \;\to\; \texttt{ordered\_prefix}\ b\,s\ (\mathrm{len}\ b),
+\]
+says that if the checker answers 1, every consecutive pair of regions is
+in order, and \texttt{regions\_checked\_is\_len} is the equation the exit
+condition yields.  It did not need a ``for every element'' primitive.  The
+specification \texttt{ordered\_prefix} is written with the lowering's own
+guard expression~--- the same \texttt{ltb}, \texttt{nth}, \texttt{add} and
+\texttt{sub i 1}~--- so that once a guard is split the specification
+\emph{computes} rather than needing a lemma to connect it to the code.  And
+the code carries no \texttt{end} variable, recomputing the previous end from
+\texttt{i}, because carrying it would have made the invariant an equation
+between a variable and what it was meant to hold, and an equation is the one
+thing the fragment cannot rewrite with.  The guard is the theorem, and this
+time it reached into the shape of the loop.
+
+The last link needed a change to the shipped code, and it is a design
+rule: \texttt{region\_of} returned a Bool, and a proof about \emph{which}
+region was found cannot be written against a Bool.  It is now
+\texttt{region\_index}, which returns the witness or \texttt{len(bases)},
+with \texttt{region\_of} a two-line guard over it~--- exactly as
+\texttt{scheme\_of} returns an index and not a flag.  Write the code so the
+proof can see what it did.
+
+\section{On the region list: threads, allocation, admission}
+
+Milestone~0 was expensive because it built the machinery; milestones 1 to 3
+were cheap because they only used it.  Each is a file in \texttt{leanos/},
+compiled by ShivyCX together with \texttt{memmap.py} in one C unit, checked
+the five ways of \S2.4, and each theorem is a corollary of
+\texttt{region\_of\_unique} or of a guard.
+
+\paragraph{Threads as records.}  \texttt{threads.py}: a thread is an owner
+(\texttt{tid + 1}; the kernel is 0) and a stack pointer.  \texttt{sp\_ok} is
+the access rule applied to the stack, and \texttt{sp\_after\_push} moves the
+pointer down by $n$ \emph{if the result is still in the thread's region},
+otherwise leaves it~--- a stack overflow is a decision the kernel makes with
+the region list in hand, not a fault it discovers afterwards.  \thrTheorems{}
+theorems, \thrLeanVerdict{} by Lean in \thrLeanSeconds{}s:
+\begin{align*}
+\texttt{push\_keeps\_sp\_ok} &: \texttt{sp\_ok}\ t\,\mathit{sp} = 1 \to \texttt{sp\_ok}\ t\ (\texttt{sp\_after\_push}\ \ldots\ \mathit{sp}\ n) = 1\\
+\texttt{sp\_no\_cross} &: \texttt{sp\_ok}\ a\,\mathit{sp} = 1 \to \texttt{sp\_ok}\ b\,\mathit{sp} = 1 \to a = b
+\end{align*}
+The first is ``the guard is the invariant, so preservation is the guard'':
+the leaf that returns $\mathit{sp}-n$ is settled by the very guard that
+admitted it.  Neither needed a new lemma.
+
+\paragraph{The per-thread allocator.}  \texttt{alloc.py}: no shared heap.
+\texttt{bump} moves \texttt{used} up a region the thread owns if the request
+fits, else leaves it.  \alcTheorems{} theorems, \alcLeanVerdict{} in
+\alcLeanSeconds{}s: \texttt{bump\_bounded} ($\mathit{used}\le\mathit{size}$
+is kept), \texttt{bump\_monotone} (allocation never gives back),
+\texttt{slot\_in\_bounds} (the slot handed out is inside the region).  This
+is region-based allocation in Gay's sense~\cite{gay2001}, with the region
+structure fixed at build time rather than inferred, and the theorems about
+the structure rather than about a runtime.
+
+\paragraph{Admission.}  \texttt{loader.py}: \texttt{admit} is
+\texttt{accept\_image} on the headers and then \texttt{regions\_disjoint} on
+the region list with the loads appended under the guest's owner, both guards
+written \texttt{== 1} so each guard is the theorem about it.
+\ldrTheorems{} theorems, \ldrLeanVerdict{} in \ldrLeanSeconds{}s;
+the one that is the milestone is the composition
+\[
+\texttt{admit\_ordered} : \texttt{admit} = 1 \to \texttt{ordered\_prefix}\ (\texttt{extended}\ b\,v)\ (\texttt{extended}\ s\,m)\ (\mathrm{len}\ \ldots),
+\]
+which is \texttt{regions\_disjoint\_ordered} on the grown list: every
+theorem of \S3 holds with the guest in it.  The ELF theorem and the memory
+theorem are one because the loader makes them one check.
+
+\section{The switcher, from the binary}
+
+\texttt{leanos/switch.c} is the first C in LeanOS and the first thing
+proved from the compiled binary rather than from source.  It is the
+switcher's four decisions~--- which side owns a register, where it is
+saved, how many a side saves, who runs next~--- as integer functions of
+the partition of \texttt{BAREMETAL\_THREADS.md} (left $=$ x19--x24, right
+$=$ x25--x28).  \texttt{ilproof.py} lifts all \swFunctions{} from the IL the
+compiler produced; the binary agrees with the lift over \swRegs{} register
+numbers; and \swTheorems{} theorems proved from the lifted source are
+\swLeanVerdict{} by Lean in \swLeanSeconds{}s, \swLeanNoAxioms{} free of
+axioms.  The two that matter say the footprints are disjoint,
+\[
+\texttt{reg\_side}\ r = 0 \to r < 25 \qquad\qquad \texttt{reg\_side}\ r = 1 \to \neg(r<25),
+\]
+and \texttt{saves}\ 0 $= 6$ is the six-register footprint the measured
+case reports.  \texttt{save\_slot}\ r for $r<19$ is negative in C and 0
+over Nat; the test states that as the one column where model and machine
+part.
+
+What is not here is the saving itself: the stores and loads of register
+values into the thread's slots are memory access, which the lift refuses.
+That is the wall of \S1, and the region list was built so that each slot
+is a field of a region the list names.  Lifting \texttt{SetAt} and
+\texttt{ReadAt} against the list is the next compiler step.  A second
+compiler item: the contract front end takes \texttt{len(x)} bounds only,
+so \texttt{assert split >= 19} on a parameterised partition is not yet a
+contract, and the partition is constants.
+
+\section{What it cost the prover}
+\label{sec:prover}
+
+Additions to \texttt{hoare.py}, each general rather than fitted to the
+case that exposed it.  The prelude went from 75 to \preludeDecls{}
+declarations, every one a hand-written kernel term: totality, antisymmetry
+and irreflexivity of \texttt{leb}; \texttt{eqb} as an equation and back;
+\texttt{sub\_zero}, \texttt{le\_add\_right}, \texttt{add\_le\_add\_left};
+and the Bool lemmas that read a decided disjunction.  Each is an induction
+whose every case is computation, the hypothesis, or \texttt{absurd}.
+
+\paragraph{A guard written in terms of another.}
+\texttt{by\_every\_bool} settles a chain of guards by splitting each and
+computing.  It split the \emph{outermost} first.  In \texttt{accept\_image}
+the outermost guard is \texttt{eqb (reg\_class\_ok cls) 0}, and
+\texttt{reg\_class\_ok} is itself an \texttt{ite} on \texttt{leb cls 3};
+splitting the outer one as an atom left \texttt{leb cls 3} open everywhere
+else it occurred.  It now splits the innermost open guard first.  And a
+guard that \emph{computes} to a literal after earlier splits is written in,
+not split: splitting it asks for a proof of the branch computation rules
+out, and there is none.
+
+\paragraph{A postcondition about an early return.}
+\texttt{desugar\_returns} lowers a \texttt{return} inside a loop into a
+first-wins accumulator \texttt{\_return\_value}, and reserved that name
+against the body~--- including against an
+\texttt{assert invariant(...)} that merely \emph{read} it.  So no
+postcondition about a value returned early from a loop was provable: not
+\texttt{loads\_ordered}'s, not \texttt{regions\_disjoint}'s, not
+\texttt{scheme\_of}'s stated \texttt{result <= len(names)}.  The name is
+now reserved against assignment.  With that, the recipe is:
+entry by splitting the pre-loop guards, since the accumulator's seed is an
+\texttt{ite} over them; preservation by splitting the body's guards and
+then \texttt{\_returned}, where a branch that assigned a literal computes
+and a branch that did not is the hypothesis; the variant by
+\texttt{sub\_lt}; exit by splitting the final \texttt{\_returned}.
+\texttt{early\_return\_bound} is that recipe as one call, and
+\texttt{region\_of}~--- three nested guards, a different state
+shape~--- went through it unchanged.
+
+\paragraph{One weak-head step.}
+After a pass, the claim arrives as projections of the state tuple:
+\texttt{fst}/\texttt{snd} over \texttt{mk}.  \texttt{normalize} opens
+\texttt{leb} and \texttt{ite} into recursors there is nothing left to match
+against; unfolding \texttt{fst} and \texttt{snd} makes the term larger,
+since each is \texttt{Prod.rec} under a lambda.  \texttt{reduce\_projections}
+is the twelve lines that were missing.
+
+\paragraph{Two equations, and two inductions.}
+\texttt{holds\_orb\_left}, $\mathrm{Holds}\ a \to \mathrm{Holds}\ (\mathrm{orb}\ a\ b)$, is
+the first place a loop proof needed an equation rather than a case
+split~--- the hypothesis is about a variable, the goal about a term built
+from it~--- and is ten lines by \texttt{Eq.ind} once \texttt{eq\_symm}
+exists.  \texttt{ltb\_false\_leb} and \texttt{leb\_antisymm} are inductions
+on the first argument with a case split on the second, each case
+computation, the hypothesis, or \texttt{absurd}; together they turn ``the
+counter is $\le$ the bound and not $<$ it'' into the counter being the
+bound.
+
+\paragraph{A split that keeps its evidence.}
+\texttt{by\_bool} abstracts a guard out of the goal and applies
+\texttt{Bool.ind}; a branch learns the goal has \texttt{true} written in,
+not that the guard \emph{is} true.  That suffices when the goal's own
+occurrences of the guard are what is decided.  It fails the moment a
+branch must prove something about an occurrence that appears only after the
+\texttt{ite} reduces: a search returning \texttt{i} must show the guards
+hold \emph{at i}, and those copies were never substituted.
+\texttt{by\_bool\_with\_evidence} carries the equation in its motive, and
+\texttt{bound\_by\_ites} retries with it when the plain split will not
+close.  Getting it right took four turns and found four bugs, one of them a
+soundness hole of my own: a hypothesis about a variable offered as a proof
+of a claim about \texttt{true}, because the comparison had been made after
+substitution and the term had not been transported.  What settled it was
+not another hypothesis but a tool~--- type-check the built term in the
+leaf's own scope and bisect to the smallest failing piece.  This is the
+kind of invariant Koenig's inference targets~\cite{koenig2022}: quantified
+over positions, with the separation between regions doing the work.  Here
+every invariant is written by hand, and the quantified ones were the
+expensive ones.
+
+\paragraph{And one that was not needed: division.}
+\texttt{addr >> A::PAGE\_SHIFT} lifts as \texttt{addr // 4096}, which on an
+unsigned value is the same number~--- no truncation, no wrap.  \texttt{divb}
+in the prelude is \texttt{modb}'s counter incrementing where \texttt{modb}
+resets, and Lean accepts it.  The lift reaches the kernel's two
+\texttt{frame\_of} functions.  What it cannot yet do is prove
+\texttt{frame\_of(8192) == 2}, which should be settled by computation and
+is not: \texttt{normalize} opens the definition under its binder, where
+\texttt{divb addr 4096} has a free variable and cannot accelerate, and
+\texttt{eqb \_ 4096} unfolds \texttt{leb} four thousand levels deep.  Closed
+evaluation is fine~--- \texttt{divb 131072 65536} is 0.66s~--- the
+unfolding order is not, and that is a \texttt{lean4.py} matter.
+
+\section{What is claimed, and what is not}
+
+A theorem about a model is a theorem about a model.  The tests that run
+the compiled code over the same corpus are what make it a theorem about
+the kernel, and they are corpus tests: a corpus can miss an input.  The
+shape test says a model cannot miss a branch, which is narrower and harder
+to fake.
+
+The validator and the region list are proved from \emph{source}.  Of the
+validator's four functions, the lift reaches one from the compiled IL,
+\texttt{reg\_class\_ok}; the three with loops are refused, because a list
+index is a \texttt{ReadAt} at the IL level.  So the theorems here are about
+what \texttt{read\_procedure} read, and the compiled-agreement test is the
+bridge to what ShivyCX emitted.  Lifting list access is the same wall as
+lifting the kernel's pointers, and the region list is the plan for both.
+
+Addresses are \texttt{i64} in the code and \texttt{Nat} in the model;
+\texttt{vaddr + memsz} wraps past $2^{63}$ in one and not the other.  The
+model's numerals are unary, so a page-scale address is a term thousands
+deep; the corpora use small numbers, and the compiled leg runs page-scale
+and \texttt{0x7f...} cases because C does not care.
+
+Nothing here is a proof about machine code.  The distance from IL to
+what ShivyCX emits is translation validation, and it is the far end of
+this road.
+
+\section{Results: The Milestones (in proof order)}
+
+\begin{enumerate}
+\item \textbf{The region list, and its theorem.}  Done, to the founding
+  sentence verbatim.
+\item \textbf{Threads as records.}  Done.  \texttt{all\_sps\_ok}'s loop
+  theorem is not stated.
+\item \textbf{The per-thread allocator.}  Done.  The owner-level version of
+  \texttt{slot\_in\_bounds} waits on the completeness of
+  \texttt{region\_index}.
+\item \textbf{The loader.}  Done.  ``The guest can reach its own entry'' is
+  tested, and waits on the same completeness lemma.
+\item \textbf{The switch.}  The decisions, done, from the binary.  The
+  saving waits on memory access lifted against the region list.
+\item \textbf{Syscalls.}  Each a function from a thread record to a
+  thread record, which is what \texttt{tick} and \texttt{sched} already
+  are~--- now about a \texttt{Context} that ships.  Not started.
+\end{enumerate}
+
+Two items block the last steps of three milestones: the completeness of
+\texttt{region\_index}~--- if some region matches, it returns one~--- which
+is an induction over positions of the kind \S\ref{sec:prover} now has the
+tools for; and memory access in the lift, which is compiler work.
+
+This draft continues the line of~\cite{hartshorn2026a}, which set out the
+pipeline from \LaTeX{} theorems to compiler decisions, and
+of~\cite{hartshorn2026b}, which had a second kernel agree with the first;
+here the second kernel agrees about a kernel of the other kind.
+
+\appendix
+\section{The Generated LEAN4 Proofs}
+
+\begin{enumerate}
+\item alc.lean \url{https://github.com/brentharts/RosettaMath/wiki/alc.lean}
+\item elf.lean \url{https://github.com/brentharts/RosettaMath/wiki/elf.lean}
+\item ldr.lean \url{https://github.com/brentharts/RosettaMath/wiki/ldr.lean}
+\item mem.lean \url{https://github.com/brentharts/RosettaMath/wiki/mem.lean}
+\item sw.lean \url{https://github.com/brentharts/RosettaMath/wiki/sw.lean}
+\item thr.lean \url{https://github.com/brentharts/RosettaMath/wiki/thr.lean}
+\end{enumerate}
+
+
+\begin{thebibliography}{9}
+\bibitem{gay2001} David Gay.  \emph{Memory Management with Explicit
+  Regions}.  PhD thesis, University of California, Berkeley, 2001.
+  \url{https://theory.stanford.edu/~aiken/publications/theses/gay.pdf}
+\bibitem{koenig2022} Jason Koenig.  \emph{Invariant Inference via
+  Quantified Separation}.  PhD thesis, Stanford University, 2022.
+  \url{https://theory.stanford.edu/~aiken/publications/theses/koenig.pdf}
+
+\bibitem{hartshorn2026a} Brent Hartshorn.  ``LEAN Proofs Small Enough to
+  Read: Kernel Contracts from \LaTeX{} Theorems to Compiler Decisions.''
+  ai.viXra.org:2609.0019, 2026.
+  \url{https://ai.vixra.org/pdf/2609.0019v1.pdf}
+\bibitem{hartshorn2026b} Brent Hartshorn.  ``A Second Kernel Agrees:
+  `LEAN Proofs Small Enough to Read', Checked by Lean4 and Read Four
+  Ways.''  SSRN, 2026.  \url{https://dx.doi.org/10.2139/ssrn.7443439}
+\end{thebibliography}
+
+\end{document}

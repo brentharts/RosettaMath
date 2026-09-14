@@ -291,6 +291,8 @@ ACCELERATED = {
     # modb n 0 is n: the definition counts up and never reaches a zero
     # divisor to reset at, and an accelerator has to say the same thing
     'modb': (2, lambda a, b: a % b if b else a),
+    # divb n 0 is 0: the counter never reaches a zero divisor to increment at
+    'divb': (2, lambda a, b: a // b if b else 0),
     'dvdb': (2, lambda k, n: (n % k == 0) if k else n == 0),
 }
 
@@ -388,6 +390,23 @@ def prelude(env=None, fast=True):
                                      Var('k')),
                                  numeral(0),
                                  App(Var('succ'), Var('ih'))))),
+                      Var('n')))))
+    # -- division, as the counter modb already keeps ------------------------
+    # div 0 k = 0;  div (p+1) k = if mod p k + 1 = k then div p k + 1 else
+    # div p k.  The same structural recursion as modb, incrementing where
+    # modb resets, so division needs no well-founded recursion either.
+    # `div n 0` is 0, which is Lean's own convention for `Nat.div`.
+    define(env, 'divb', arrow(NAT, arrow(NAT, NAT)),
+           Lambda('n', NAT, Lambda('k', NAT,
+                  rec(NAT, NAT, numeral(0),
+                      Lambda('p', NAT, Lambda('ih', NAT,
+                             app('ite', NAT,
+                                 app('eqb',
+                                     App(Var('succ'),
+                                         app('modb', Var('p'), Var('k'))),
+                                     Var('k')),
+                                 App(Var('succ'), Var('ih')),
+                                 Var('ih')))),
                       Var('n')))))
     define(env, 'dvdb', arrow(NAT, arrow(NAT, BOOL)),
            Lambda('k', NAT, Lambda('n', NAT,
@@ -624,6 +643,32 @@ def prelude(env=None, fast=True):
                        Var('TrueP'), Var('b')))),
                Var('trivial'), Var('true'), Var('h')))))
 
+    # Symmetry, by transport along the equation into `Eq c a`.
+    define(env, 'eq_symm',
+           Pi('A', TYPE0, Pi('a', Var('A'), Pi('b', Var('A'),
+              arrow(app('Eq', Var('A'), Var('a'), Var('b')),
+                    app('Eq', Var('A'), Var('b'), Var('a')))))),
+           Lambda('A', TYPE0, Lambda('a', Var('A'), Lambda('b', Var('A'),
+               Lambda('h', app('Eq', Var('A'), Var('a'), Var('b')), app(
+                   'Eq.ind', Var('A'), Var('a'),
+                   Lambda('c', Var('A'), Lambda(
+                       '_t', app('Eq', Var('A'), Var('a'), Var('c')),
+                       app('Eq', Var('A'), Var('c'), Var('a')))),
+                   app('refl', Var('A'), Var('a')), Var('b'), Var('h')))))))
+    # `Holds a -> Holds (orb a b)`: rewrite `a` to `true` in the goal, where
+    # `orb true b` computes.  The one place a loop proof needs an equation
+    # rather than a case split: the hypothesis is about a variable and the
+    # goal is about a term built from it.
+    define(env, 'holds_orb_left',
+           Pi('a', BOOL, Pi('b', BOOL, arrow(holds(Var('a')),
+                                             holds(app('orb', Var('a'), Var('b')))))),
+           Lambda('a', BOOL, Lambda('b', BOOL, Lambda('h', holds(Var('a')), app(
+               'Eq.ind', BOOL, Var('true'),
+               Lambda('c', BOOL, Lambda('_t', app('Eq', BOOL, Var('true'), Var('c')),
+                                          holds(app('orb', Var('c'), Var('b'))))),
+               yes, Var('a'),
+               app('eq_symm', BOOL, Var('a'), Var('true'), Var('h')))))))
+
     refl_motive = Lambda('x', NAT, holds(leb_(Var('x'), Var('x'))))
     define(env, 'leb_refl', Pi('x', NAT, holds(leb_(Var('x'), Var('x')))),
            Lambda('x', NAT, app('Nat.ind', refl_motive, yes,
@@ -723,6 +768,354 @@ def prelude(env=None, fast=True):
     xb, yb = Var('x'), Var('y')
     both = lambda body: Pi('x', BOOL, Pi('y', BOOL, body))
     andb_ = lambda a, b: app('andb', a, b)
+    eqb_ = lambda a, b: app('eqb', a, b)
+    eqn = lambda a, b: app('Eq', NAT, a, b)
+    a2, b2 = Var('a2'), Var('b2')
+
+    # `Holds b -> Holds (orb a b)`: `orb a true` is true for either a, so
+    # this is a case split on `a` rather than a rewrite.
+    define(env, 'holds_orb_right',
+           Pi('a', BOOL, Pi('b', BOOL, arrow(holds(Var('b')),
+                                             holds(app('orb', Var('a'), Var('b')))))),
+           Lambda('a', BOOL, Lambda('b', BOOL, Lambda(
+               'h', holds(Var('b')),
+               app('Eq.ind', BOOL, Var('true'),
+                   Lambda('c', BOOL, Lambda('_t', app('Eq', BOOL, Var('true'), Var('c')),
+                                             holds(app('orb', Var('a'), Var('c'))))),
+                   app('Bool.ind', Lambda('_x', BOOL, holds(app('orb', Var('_x'), Var('true')))),
+                       yes, yes, Var('a')),
+                   Var('b'),
+                   app('eq_symm', BOOL, Var('b'), Var('true'), Var('h')))))))
+
+    # If `orb a b` holds and `a` is false, then `b` holds: rewrite `a` to
+    # false, where `orb false b` computes to `b`.  The companion to
+    # holds_orb_left, for reading the other side of a decided disjunction.
+    define(env, 'orb_false_left',
+           Pi('a', BOOL, Pi('b', BOOL, arrow(
+              holds(app('orb', Var('a'), Var('b'))),
+              arrow(app('Eq', BOOL, Var('a'), Var('false')),
+                    holds(Var('b')))))),
+           Lambda('a', BOOL, Lambda('b', BOOL, Lambda(
+               'h', holds(app('orb', Var('a'), Var('b'))), Lambda(
+               'e', app('Eq', BOOL, Var('a'), Var('false')),
+               app('Eq.ind', BOOL, Var('a'),
+                   Lambda('c', BOOL, Lambda(
+                       '_t', app('Eq', BOOL, Var('a'), Var('c')),
+                       arrow(holds(app('orb', Var('a'), Var('b'))),
+                             holds(app('orb', Var('c'), Var('b')))))),
+                   Lambda('g', holds(app('orb', Var('a'), Var('b'))), Var('g')),
+                   Var('false'), Var('e'), Var('h')))))))
+
+    Mer = Lambda('a', NAT, holds(eqb_(Var('a'), Var('a'))))
+    define(env, 'eqb_refl', Pi('a', NAT, holds(eqb_(Var('a'), Var('a')))),
+           Lambda('a', NAT, app('Nat.ind', Mer, yes,
+                  Lambda('m', NAT, Lambda('ih', App(Mer, Var('m')), Var('ih'))),
+                  Var('a'))))
+
+    # Nothing is below itself: `ltb a a` is `leb (succ a) a`, and at
+    # `succ a` that is the same term again, so the hypothesis serves.
+    Mi = Lambda('a', NAT, arrow(holds(ltb_(Var('a'), Var('a'))),
+                                holds(Var('false'))))
+    define(env, 'ltb_irrefl',
+           Pi('a', NAT, arrow(holds(ltb_(Var('a'), Var('a'))),
+                              holds(Var('false')))),
+           Lambda('a', NAT, app('Nat.ind', Mi,
+                  Lambda('h', holds(ltb_(numeral(0), numeral(0))), Var('h')),
+                  Lambda('m', NAT, Lambda('ih', App(Mi, Var('m')), Var('ih'))),
+                  Var('a'))))
+
+    # Two different numbers are ordered one way or the other.
+    tri_ = lambda x, y: app('orb', ltb_(x, y), ltb_(y, x))
+    Mtr = Lambda('j', NAT, Pi('k', NAT, arrow(
+        app('Eq', BOOL, eqb_(Var('j'), Var('k')), Var('false')),
+        holds(tri_(Var('j'), Var('k'))))))
+    Mtr0 = Lambda('k', NAT, arrow(
+        app('Eq', BOOL, eqb_(numeral(0), Var('k')), Var('false')),
+        holds(tri_(numeral(0), Var('k')))))
+    base_tr = Lambda('k', NAT, app('Nat.ind', Mtr0,
+        Lambda('he', app('Eq', BOOL, eqb_(numeral(0), numeral(0)), Var('false')),
+               app('absurd', holds(tri_(numeral(0), numeral(0))),
+                   app('eq_symm', BOOL, Var('true'), Var('false'), Var('he')))),
+        Lambda('k2', NAT, Lambda('_i', App(Mtr0, Var('k2')),
+               Lambda('_e', app('Eq', BOOL, eqb_(numeral(0), succ_(Var('k2'))),
+                                Var('false')), yes))),
+        Var('k')))
+    Mtrs = Lambda('k', NAT, arrow(
+        app('Eq', BOOL, eqb_(succ_(Var('j2')), Var('k')), Var('false')),
+        holds(tri_(succ_(Var('j2')), Var('k')))))
+    step_tr = Lambda('j2', NAT, Lambda('ih', App(Mtr, Var('j2')), Lambda(
+        'k', NAT, app('Nat.ind', Mtrs,
+            Lambda('_e', app('Eq', BOOL, eqb_(succ_(Var('j2')), numeral(0)),
+                             Var('false')), yes),
+            Lambda('k2', NAT, Lambda('_i', App(Mtrs, Var('k2')), Lambda(
+                'he', app('Eq', BOOL, eqb_(succ_(Var('j2')), succ_(Var('k2'))),
+                          Var('false')),
+                app(Var('ih'), Var('k2'), Var('he'))))),
+            Var('k')))))
+    define(env, 'ne_ordered',
+           Pi('j', NAT, Pi('k', NAT, arrow(
+              app('Eq', BOOL, eqb_(Var('j'), Var('k')), Var('false')),
+              holds(tri_(Var('j'), Var('k')))))),
+           Lambda('j', NAT, app('Nat.ind', Mtr, base_tr, step_tr, Var('j'))))
+
+    notb_ = lambda a: app('notb', a)
+    ltb_ = lambda a, b: app('ltb', a, b)
+
+    # `a < b` gives `eqb a b = false`: induction on a with a split on b,
+    # every case computation, the hypothesis, or absurd.
+    Mln = Lambda('a', NAT, Pi('b', NAT, arrow(holds(ltb_(Var('a'), Var('b'))),
+                  app('Eq', BOOL, eqb_(Var('a'), Var('b')), Var('false')))))
+    Mln0 = Lambda('b', NAT, arrow(holds(ltb_(numeral(0), Var('b'))),
+                  app('Eq', BOOL, eqb_(numeral(0), Var('b')), Var('false'))))
+    base_ln = Lambda('b', NAT, app('Nat.ind', Mln0,
+        Lambda('h', holds(ltb_(numeral(0), numeral(0))),
+               app('absurd', app('Eq', BOOL, eqb_(numeral(0), numeral(0)),
+                                 Var('false')), Var('h'))),
+        Lambda('b2', NAT, Lambda('_i', App(Mln0, Var('b2')),
+               Lambda('_h', holds(ltb_(numeral(0), succ_(Var('b2')))),
+                      app('refl', BOOL, Var('false'))))),
+        Var('b')))
+    Mlns = Lambda('b', NAT, arrow(holds(ltb_(succ_(Var('a2')), Var('b'))),
+                  app('Eq', BOOL, eqb_(succ_(Var('a2')), Var('b')), Var('false'))))
+    step_ln = Lambda('a2', NAT, Lambda('ih', App(Mln, Var('a2')), Lambda(
+        'b', NAT, app('Nat.ind', Mlns,
+            Lambda('h', holds(ltb_(succ_(Var('a2')), numeral(0))),
+                   app('absurd', app('Eq', BOOL, eqb_(succ_(Var('a2')), numeral(0)),
+                                     Var('false')), Var('h'))),
+            Lambda('b2', NAT, Lambda('_i', App(Mlns, Var('b2')), Lambda(
+                'h', holds(ltb_(succ_(Var('a2')), succ_(Var('b2')))),
+                app(Var('ih'), Var('b2'), Var('h'))))),
+            Var('b')))))
+    define(env, 'lt_ne',
+           Pi('a', NAT, Pi('b', NAT, arrow(holds(ltb_(Var('a'), Var('b'))),
+              app('Eq', BOOL, eqb_(Var('a'), Var('b')), Var('false'))))),
+           Lambda('a', NAT, app('Nat.ind', Mln, base_ln, step_ln, Var('a'))))
+
+    # `Holds a` gives `notb a = false`: rewrite a to true, where it computes.
+    define(env, 'holds_notb_false',
+           Pi('a', BOOL, arrow(holds(Var('a')),
+                               app('Eq', BOOL, notb_(Var('a')), Var('false')))),
+           Lambda('a', BOOL, Lambda('h', holds(Var('a')), app(
+               'Eq.ind', BOOL, Var('true'),
+               Lambda('c', BOOL, Lambda('_t', app('Eq', BOOL, Var('true'), Var('c')),
+                                          app('Eq', BOOL, notb_(Var('c')), Var('false')))),
+               app('refl', BOOL, Var('false')), Var('a'),
+               app('eq_symm', BOOL, Var('a'), Var('true'), Var('h'))))))
+
+    # `a <= a + b`.  `add` recurses on its second argument, so `add a 0` is
+    # `a` by computation and `add a (succ b)` is `succ (add a b)`: the
+    # induction is on `b`, and each step is leb_succ through leb_trans.
+    j2 = Var('j2')
+    Mla = Lambda('b', NAT, holds(leb_(Var('a'), app('add', Var('a'), Var('b')))))
+    define(env, 'le_add_right',
+           Pi('a', NAT, Pi('b', NAT,
+              holds(leb_(Var('a'), app('add', Var('a'), Var('b')))))),
+           Lambda('a', NAT, Lambda('b', NAT, app('Nat.ind', Mla,
+                  app('leb_refl', Var('a')),
+                  Lambda('k', NAT, Lambda('ih', App(Mla, Var('k')),
+                         app('leb_trans', Var('a'),
+                             app('add', Var('a'), Var('k')),
+                             succ_(app('add', Var('a'), Var('k'))),
+                             Var('ih'),
+                             app('leb_succ', app('add', Var('a'), Var('k')))))),
+                  Var('b')))))
+
+    # `x <= y` gives `b + x <= b + y`.  `add` recurses on its second
+    # argument, so the induction is on x with a split on y: x = 0 is
+    # le_add_right; at succ both sides step by succ and leb steps with them.
+    Mal = Lambda('x', NAT, Pi('y', NAT, arrow(holds(leb_(Var('x'), Var('y'))),
+                  holds(leb_(app('add', Var('b'), Var('x')),
+                             app('add', Var('b'), Var('y')))))))
+    Mal0 = Lambda('y', NAT, arrow(holds(leb_(numeral(0), Var('y'))),
+                  holds(leb_(app('add', Var('b'), numeral(0)),
+                             app('add', Var('b'), Var('y'))))))
+    base_al = Lambda('y', NAT, Lambda('_h', holds(leb_(numeral(0), Var('y'))),
+                     app('le_add_right', Var('b'), Var('y'))))
+    Mals = Lambda('y', NAT, arrow(holds(leb_(succ_(Var('x2')), Var('y'))),
+                  holds(leb_(app('add', Var('b'), succ_(Var('x2'))),
+                             app('add', Var('b'), Var('y'))))))
+    step_al = Lambda('x2', NAT, Lambda('ih', App(Mal, Var('x2')), Lambda(
+        'y', NAT, app('Nat.ind', Mals,
+            Lambda('h', holds(leb_(succ_(Var('x2')), numeral(0))),
+                   app('absurd', holds(leb_(app('add', Var('b'), succ_(Var('x2'))),
+                                            app('add', Var('b'), numeral(0)))),
+                       Var('h'))),
+            Lambda('y2', NAT, Lambda('_i', App(Mals, Var('y2')), Lambda(
+                'h', holds(leb_(succ_(Var('x2')), succ_(Var('y2')))),
+                app(Var('ih'), Var('y2'), Var('h'))))),
+            Var('y')))))
+    define(env, 'add_le_add_left',
+           Pi('b', NAT, Pi('x', NAT, Pi('y', NAT, arrow(
+              holds(leb_(Var('x'), Var('y'))),
+              holds(leb_(app('add', Var('b'), Var('x')),
+                         app('add', Var('b'), Var('y')))))))),
+           Lambda('b', NAT, Lambda('x', NAT,
+                  app('Nat.ind', Mal, base_al, step_al, Var('x')))))
+
+    # `eqb a b` as an equation: the bridge from a decided comparison to a
+    # substitution.  Every proof that splits on `eqb` and then wants to use
+    # the two sides interchangeably needs it, and it is an induction on both.
+    Meb = Lambda('a', NAT, Pi('b', NAT, arrow(holds(eqb_(Var('a'), Var('b'))),
+                                               eqn(Var('a'), Var('b')))))
+    Meb0 = Lambda('b', NAT, arrow(holds(eqb_(numeral(0), Var('b'))),
+                                  eqn(numeral(0), Var('b'))))
+    base_eb = Lambda('b', NAT, app('Nat.ind', Meb0,
+        Lambda('_h', holds(eqb_(numeral(0), numeral(0))), app('refl', NAT, numeral(0))),
+        Lambda('b2', NAT, Lambda('_i', App(Meb0, Var('b2')), Lambda(
+            'h', holds(eqb_(numeral(0), succ_(Var('b2')))),
+            app('absurd', eqn(numeral(0), succ_(Var('b2'))), Var('h'))))),
+        Var('b')))
+    Mebs = Lambda('b', NAT, arrow(holds(eqb_(succ_(Var('a2')), Var('b'))),
+                                  eqn(succ_(Var('a2')), Var('b'))))
+    cong_s = lambda e: app('Eq.ind', NAT, Var('a2'),
+                           Lambda('c', NAT, Lambda('_t', eqn(Var('a2'), Var('c')),
+                                                    eqn(succ_(Var('a2')), succ_(Var('c'))))),
+                           app('refl', NAT, succ_(Var('a2'))), Var('b2'), e)
+    step_eb = Lambda('a2', NAT, Lambda('ih', App(Meb, Var('a2')), Lambda('b', NAT,
+        app('Nat.ind', Mebs,
+            Lambda('h', holds(eqb_(succ_(Var('a2')), numeral(0))),
+                   app('absurd', eqn(succ_(Var('a2')), numeral(0)), Var('h'))),
+            Lambda('b2', NAT, Lambda('_i', App(Mebs, Var('b2')), Lambda(
+                'h', holds(eqb_(succ_(Var('a2')), succ_(Var('b2')))),
+                cong_s(app(Var('ih'), Var('b2'), Var('h')))))),
+            Var('b')))))
+    define(env, 'eqb_eq',
+           Pi('a', NAT, Pi('b', NAT, arrow(holds(eqb_(Var('a'), Var('b'))),
+                                            eqn(Var('a'), Var('b'))))),
+           Lambda('a', NAT, app('Nat.ind', Meb, base_eb, step_eb, Var('a'))))
+
+    # `a < succ b` and `a != b` give `a < b`: `ltb a (succ b)` is
+    # `leb a b`, and `leb` with `eqb` false is `ltb`.  Both halves are the
+    # same induction, so they are one lemma.
+    Mls = Lambda('a', NAT, Pi('b', NAT, arrow(holds(ltb_(Var('a'), succ_(Var('b')))),
+                  arrow(app('Eq', BOOL, eqb_(Var('a'), Var('b')), Var('false')),
+                        holds(ltb_(Var('a'), Var('b')))))))
+    Mls0 = Lambda('b', NAT, arrow(holds(ltb_(numeral(0), succ_(Var('b')))),
+                  arrow(app('Eq', BOOL, eqb_(numeral(0), Var('b')), Var('false')),
+                        holds(ltb_(numeral(0), Var('b'))))))
+    base_ls = Lambda('b', NAT, app('Nat.ind', Mls0,
+        Lambda('_h', holds(ltb_(numeral(0), succ_(numeral(0)))),
+               Lambda('he', app('Eq', BOOL, eqb_(numeral(0), numeral(0)), Var('false')),
+                      app('absurd', holds(ltb_(numeral(0), numeral(0))),
+                          app('eq_symm', BOOL, Var('true'), Var('false'),
+                              Var('he'))))),
+        Lambda('b2', NAT, Lambda('_i', App(Mls0, Var('b2')),
+               Lambda('_h', holds(ltb_(numeral(0), succ_(succ_(Var('b2'))))),
+                      Lambda('_e', app('Eq', BOOL, eqb_(numeral(0), succ_(Var('b2'))),
+                                        Var('false')), yes)))),
+        Var('b')))
+    Mlss = Lambda('b', NAT, arrow(holds(ltb_(succ_(Var('a2')), succ_(Var('b')))),
+                  arrow(app('Eq', BOOL, eqb_(succ_(Var('a2')), Var('b')), Var('false')),
+                        holds(ltb_(succ_(Var('a2')), Var('b'))))))
+    step_ls = Lambda('a2', NAT, Lambda('ih', App(Mls, Var('a2')), Lambda('b', NAT,
+        app('Nat.ind', Mlss,
+            Lambda('h', holds(ltb_(succ_(Var('a2')), succ_(numeral(0)))),
+                   Lambda('_e', app('Eq', BOOL, eqb_(succ_(Var('a2')), numeral(0)),
+                                     Var('false')),
+                          app('absurd', holds(ltb_(succ_(Var('a2')), numeral(0))),
+                              Var('h')))),
+            Lambda('b2', NAT, Lambda('_i', App(Mlss, Var('b2')), Lambda(
+                'h', holds(ltb_(succ_(Var('a2')), succ_(succ_(Var('b2'))))),
+                Lambda('e', app('Eq', BOOL, eqb_(succ_(Var('a2')), succ_(Var('b2'))),
+                                 Var('false')),
+                       app(Var('ih'), Var('b2'), Var('h'), Var('e')))))),
+            Var('b')))))
+    define(env, 'lt_succ_ne',
+           Pi('a', NAT, Pi('b', NAT, arrow(holds(ltb_(Var('a'), succ_(Var('b')))),
+                 arrow(app('Eq', BOOL, eqb_(Var('a'), Var('b')), Var('false')),
+                       holds(ltb_(Var('a'), Var('b'))))))),
+           Lambda('a', NAT, app('Nat.ind', Mls, base_ls, step_ls, Var('a'))))
+
+    # `sub m 0 = m` is an induction, because sub recurses on its *first*
+    # argument: `sub (succ j) 1` reduces to `sub j 0` and stops there.  A
+    # spec that indexes `i - 1` needs this to talk about position `j` when
+    # `i` is `succ j`, which is every inductive step over positions.
+    Msz = Lambda('m', NAT, app('Eq', NAT, app('sub', Var('m'), numeral(0)),
+                               Var('m')))
+    define(env, 'sub_zero',
+           Pi('m', NAT, app('Eq', NAT, app('sub', Var('m'), numeral(0)),
+                            Var('m'))),
+           Lambda('m', NAT, app('Nat.ind', Msz,
+                  app('refl', NAT, numeral(0)),
+                  Lambda('k', NAT, Lambda('ih', App(Msz, Var('k')),
+                         app('refl', NAT, succ_(Var('k'))))),
+                  Var('m'))))
+
+    # Totality and antisymmetry of leb, both by induction on the first
+    # argument with a case split on the second inside.  Each case is either
+    # computation, the inductive hypothesis, or absurd from a `false`
+    # hypothesis.  They are what turns a loop's exit condition -- the
+    # counter is <= the bound and not < it -- into the counter *being* the
+    # bound, which is the step from "every position checked" to "every
+    # position".
+    notb_ = lambda a: app('notb', a)
+    ltb_ = lambda a, b: app('ltb', a, b)
+    eqn = lambda a, b: app('Eq', NAT, a, b)
+    a_, b_, a2, b2 = Var('a'), Var('b'), Var('a2'), Var('b2')
+
+    # ltb_false_leb : forall a b, Holds (notb (ltb a b)) -> Holds (leb b a)
+    Mt = Lambda('a', NAT, Pi('b', NAT, arrow(holds(notb_(ltb_(a_, b_))),
+                                              holds(leb_(b_, a_)))))
+    # base a = 0, split b: b = 0 computes; b = succ _ has a false hypothesis
+    Mt0 = Lambda('b', NAT, arrow(holds(notb_(ltb_(numeral(0), b_))),
+                                 holds(leb_(b_, numeral(0)))))
+    base_t = Lambda('b', NAT, app('Nat.ind', Mt0,
+                Lambda('h', holds(notb_(ltb_(numeral(0), numeral(0)))), yes),
+                Lambda('b2', NAT, Lambda('_i', App(Mt0, b2), Lambda(
+                    'h', holds(notb_(ltb_(numeral(0), succ_(b2)))),
+                    app('absurd', holds(leb_(succ_(b2), numeral(0))), Var('h'))))),
+                b_))
+    # step a = succ a2, split b: b = 0 computes; b = succ b2 is ih at b2
+    Mts = Lambda('b', NAT, arrow(holds(notb_(ltb_(succ_(a2), b_))),
+                                 holds(leb_(b_, succ_(a2)))))
+    step_t = Lambda('a2', NAT, Lambda('ih', App(Mt, a2), Lambda('b', NAT,
+                app('Nat.ind', Mts,
+                    Lambda('h', holds(notb_(ltb_(succ_(a2), numeral(0)))), yes),
+                    Lambda('b2', NAT, Lambda('_i', App(Mts, b2), Lambda(
+                        'h', holds(notb_(ltb_(succ_(a2), succ_(b2)))),
+                        app(Var('ih'), b2, Var('h'))))),
+                    b_))))
+    define(env, 'ltb_false_leb',
+           Pi('a', NAT, Pi('b', NAT, arrow(holds(notb_(ltb_(a_, b_))),
+                                            holds(leb_(b_, a_))))),
+           Lambda('a', NAT, app('Nat.ind', Mt, base_t, step_t, a_)))
+
+    # leb_antisymm : forall a b, Holds (leb a b) -> Holds (leb b a) -> Eq a b
+    Ma = Lambda('a', NAT, Pi('b', NAT, arrow(holds(leb_(a_, b_)),
+                                              arrow(holds(leb_(b_, a_)), eqn(a_, b_)))))
+    Ma0 = Lambda('b', NAT, arrow(holds(leb_(numeral(0), b_)),
+                                 arrow(holds(leb_(b_, numeral(0))), eqn(numeral(0), b_))))
+    base_a = Lambda('b', NAT, app('Nat.ind', Ma0,
+                Lambda('_1', holds(leb_(numeral(0), numeral(0))),
+                       Lambda('_2', holds(leb_(numeral(0), numeral(0))),
+                              app('refl', NAT, numeral(0)))),
+                Lambda('b2', NAT, Lambda('_i', App(Ma0, b2),
+                    Lambda('_1', holds(leb_(numeral(0), succ_(b2))),
+                           Lambda('h2', holds(leb_(succ_(b2), numeral(0))),
+                                  app('absurd', eqn(numeral(0), succ_(b2)), Var('h2')))))),
+                b_))
+    Mas = Lambda('b', NAT, arrow(holds(leb_(succ_(a2), b_)),
+                                 arrow(holds(leb_(b_, succ_(a2))), eqn(succ_(a2), b_))))
+    # succ is a congruence: from Eq a2 b2, Eq (succ a2) (succ b2), by Eq.ind
+    succ_cong = lambda e: app('Eq.ind', NAT, a2,
+                              Lambda('c', NAT, Lambda('_t', eqn(a2, Var('c')),
+                                                       eqn(succ_(a2), succ_(Var('c'))))),
+                              app('refl', NAT, succ_(a2)), b2, e)
+    step_a = Lambda('a2', NAT, Lambda('ih', App(Ma, a2), Lambda('b', NAT,
+                app('Nat.ind', Mas,
+                    Lambda('h1', holds(leb_(succ_(a2), numeral(0))),
+                           Lambda('_2', holds(leb_(numeral(0), succ_(a2))),
+                                  app('absurd', eqn(succ_(a2), numeral(0)), Var('h1')))),
+                    Lambda('b2', NAT, Lambda('_i', App(Mas, b2),
+                        Lambda('h1', holds(leb_(succ_(a2), succ_(b2))),
+                               Lambda('h2', holds(leb_(succ_(b2), succ_(a2))),
+                                      succ_cong(app(Var('ih'), b2, Var('h1'), Var('h2'))))))),
+                    b_))))
+    define(env, 'leb_antisymm',
+           Pi('a', NAT, Pi('b', NAT, arrow(holds(leb_(a_, b_)),
+                                            arrow(holds(leb_(b_, a_)), eqn(a_, b_))))),
+           Lambda('a', NAT, app('Nat.ind', Ma, base_a, step_a, a_)))
+
     define(env, 'andb_both',
            both(arrow(holds(xb), arrow(holds(yb), holds(andb_(xb, yb))))),
            Lambda('x', BOOL, Lambda('y', BOOL, Lambda(
@@ -963,7 +1356,8 @@ SIGNATURES = {
 
 PRELUDE_ENV = None      # built below, once the tables above exist
 
-BINOPS = {ast.Add: 'add', ast.Sub: 'sub', ast.Mult: 'mul', ast.Mod: 'modb'}
+BINOPS = {ast.Add: 'add', ast.Sub: 'sub', ast.Mult: 'mul', ast.Mod: 'modb',
+          ast.FloorDiv: 'divb'}
 COMPARES = {ast.Lt: ('ltb', False), ast.Gt: ('ltb', True),
             ast.LtE: ('leb', False), ast.GtE: ('leb', True),
             ast.Eq: ('eqb', False)}
@@ -1722,6 +2116,22 @@ def _returns_in(stmts):
     return out
 
 
+def _names_outside_asserts(tree):
+    """Every name the body mentions anywhere but inside an `assert`."""
+    found = set()
+
+    def visit(node):
+        if isinstance(node, ast.Assert):
+            return
+        if isinstance(node, ast.Name):
+            found.add(node.id)
+        for child in ast.iter_child_nodes(node):
+            visit(child)
+
+    visit(tree)
+    return found
+
+
 def _free_names(node):
     """Names a fragment reads as values.
 
@@ -2017,8 +2427,13 @@ def desugar_returns(tree, params):
             f"{tree.name}: a body with an early `return` must still end in "
             f"one, so there is a value on the path that falls through")
 
+    # The two names are reserved against the body *writing* them.  An
+    # `assert invariant(...)` may read `_return_value`, as one may read
+    # `_pos` from the `for` lowering: a postcondition about a value returned
+    # early from a loop is provable only if the invariant can carry a bound
+    # on the accumulator that value lands in.
     for name in (DONE_FLAG, RESULT_VAR):
-        if name in _free_names(tree):
+        if name in _names_outside_asserts(tree):
             raise ContractError(
                 f"{tree.name}: '{name}' is reserved for lowering early "
                 f"returns; please rename it")
@@ -2342,6 +2757,73 @@ def at(proc, *args):
     return goal
 
 
+def first_difference(left, right, env=None, path=''):
+    """Where two terms first differ, as (path, left part, right part).
+
+    A mismatch between a proof's type and the goal it was meant to have is
+    reported by the kernel as two terms of a few thousand characters, and
+    reading them side by side is not a diagnosis.  This walks them together
+    and stops at the first place they part company, which usually names the
+    mistake outright.  None when they agree.
+    """
+    if env is not None and L.definitionally_equal(left, right, env):
+        return None
+    if type(left) is not type(right):
+        return (path, left, right)
+    if isinstance(left, App):
+        for side, a, b in (('fn', left.func, right.func),
+                           ('arg', left.arg, right.arg)):
+            found = first_difference(a, b, env, path + '/' + side)
+            if found is not None:
+                return found
+        return None
+    if isinstance(left, Binder):
+        for side, a, b in (('type', left.var_type, right.var_type),
+                           ('body', left.body, right.body)):
+            found = first_difference(a, b, env, path + '/' + side)
+            if found is not None:
+                return found
+        return None
+    if left != right:
+        return (path, left, right)
+    return None
+
+
+def structural_proof(env, claim):
+    """A proof of `Holds claim` from its shape, or None.
+
+    Takes `andb` and `orb` apart, and settles a leaf by computation or by
+    reflexivity -- `leb x x` and `eqb x x` hold for any x and do not reduce
+    to `true`.  Builds a term and type-checks nothing: the caller may be
+    inside lambdas that bind variables the ambient environment has never
+    heard of, which is the situation at every leaf of a loop proof.
+    """
+    claim = reduce_decided_ites(claim)
+    head, args = L.spine(claim)
+    if not isinstance(head, Var):
+        return None
+    if head.name == 'andb' and len(args) == 2:
+        left = structural_proof(env, args[0])
+        right = structural_proof(env, args[1])
+        if left is None or right is None:
+            return None
+        return app('andb_both', args[0], args[1], left, right)
+    if head.name == 'orb' and len(args) == 2:
+        left = structural_proof(env, args[0])
+        if left is not None:
+            return app('holds_orb_left', args[0], args[1], left)
+        right = structural_proof(env, args[1])
+        if right is not None:
+            return app('holds_orb_right', args[0], args[1], right)
+        return None
+    if normalize(claim, env) == Var('true'):
+        return app('refl', BOOL, Var('true'))
+    if (head.name in ('leb', 'eqb') and len(args) == 2
+            and L.definitionally_equal(args[0], args[1], env)):
+        return app(head.name + '_refl', args[0])
+    return None
+
+
 def discharge(proc, env=None, verbose=True):
     r"""Prove an obligation that computes: `refl` is the whole proof.
 
@@ -2363,6 +2845,23 @@ def discharge(proc, env=None, verbose=True):
     unknowns = [n for n, _, is_hyp in binders if not is_hyp]
     value = normalize(args[-1], env)
     if value != Var('true'):
+        # A comparison of a term with itself is true without computing it:
+        # `leb x x` and `eqb x x` hold for any x, and a search that ran off
+        # the end of a list returns the very length it is bounded by.  The
+        # reflexivity lemmas settle these where normalisation cannot, and
+        # the search goes under `andb`, since an invariant is a conjunction
+        # and only one half is usually the stuck one.
+        found = structural_proof(env, args[-1])
+        if found is not None:
+            for name, ty, _ in reversed(binders):
+                found = Lambda(name, ty, found)
+            actual = type_check(env, found)
+            if not L.definitionally_equal(goal, actual, env):
+                raise TheoremError(f"proved {readable(actual)}, "
+                                   f"not {readable(goal)}")
+            if verbose:
+                print("  proved by reflexivity")
+            return found
         if not unknowns:
             raise TheoremError(f"the contract does not hold: it computes to "
                                f"{readable(value)}, not true")
@@ -2562,16 +3061,66 @@ def by_bool(env, goal, scrutinee, when_true, when_false):
     return app('Bool.ind', motive, when_true, when_false, scrutinee)
 
 
+def by_bool_with_evidence(env, goal, scrutinee, when_true, when_false,
+                          label='_ev'):
+    r"""Case split on a Bool term, giving each branch the equation it won.
+
+    `by_bool` abstracts the term out of the goal and applies `Bool.ind`, so
+    a branch knows the goal has `true` written into it but not *that the
+    term is true*.  That is enough whenever the goal's own occurrences are
+    the thing being decided, and not enough the moment the branch has to
+    prove something about an occurrence that only appeared after the `ite`
+    reduced -- a search that returns `i` must then show the guards hold at
+    `i`, and those copies were never substituted.
+
+    Here the motive carries the equation, so `when_true` is called with a
+    proof of `Eq Bool scrutinee true` in scope and `when_false` with one of
+    `Eq Bool scrutinee false`.  Both are callables taking that proof term.
+    The whole is applied to `refl`, which is what discharges the equation
+    for the branch actually taken.
+    """
+    if scrutinee is None:
+        scrutinee = first_ite(goal)
+        if scrutinee is None:
+            raise ContractError(f"there is no `ite` in {readable(goal)} to "
+                                f"split on; name the condition explicitly")
+    motive = Lambda('_x', BOOL, arrow(
+        app('Eq', BOOL, scrutinee, Var('_x')),
+        replace_subterm(goal, scrutinee, Var('_x'))))
+    # `label` must differ between nested splits: an inner binder called
+    # `_ev` would shadow the outer one, and the evidence a leaf reaches for
+    # would be the wrong guard's equation, or ill-typed.
+    branch = lambda side, body: Lambda(
+        label, app('Eq', BOOL, scrutinee, Var(side)), body(Var(label)))
+    return app(app('Bool.ind', motive,
+                   branch('true', when_true), branch('false', when_false),
+                   scrutinee),
+               app('refl', BOOL, scrutinee))
+
+
 def _first_open_ite(term):
-    """The condition of the first `ite` not already decided by a literal."""
+    """The condition of the first `ite` not already decided by a literal.
+
+    Innermost first: a guard written in terms of another -- `accept` tests
+    `eqb (reg_class_ok cls) 0`, and `reg_class_ok` is itself an `ite` on
+    `leb cls 3` -- computes once the inner one is decided, and splitting
+    the outer one as an atom would leave `leb cls 3` open everywhere else
+    it occurs.
+    """
     head, args = L.spine(term)
     if (isinstance(head, Var) and head.name == 'ite' and len(args) >= 2
             and args[1] not in (Var('true'), Var('false'))):
-        return args[1]
+        inner = _first_open_ite(args[1])
+        if inner is not None:
+            return inner
+        return args[1] if not L.has_loose_bound(args[1]) else None
     if isinstance(term, App):
         return _first_open_ite(term.func) or _first_open_ite(term.arg)
     if isinstance(term, Binder):
-        return _first_open_ite(term.var_type) or _first_open_ite(term.body)
+        # only the binder's type: its body is abstracted, so a guard found
+        # in there carries de Bruijn indices that mean nothing outside, and
+        # splitting on it would quantify over a variable that does not exist
+        return _first_open_ite(term.var_type)
     return None
 
 
@@ -2605,7 +3154,19 @@ def by_every_bool(env, goal, unfolding=(), limit=16, verbose=False):
         return term
 
     def prove_claim(claim, depth):
-        scrutinee = _first_open_ite(claim)
+        # A guard that computes once earlier splits are written in --
+        # `eqb (ite true 1 0) 0` -- is decided, not split.  Splitting it
+        # would ask for a proof of the branch computation rules out, and
+        # there is none; writing its value in is a definitional step the
+        # final `prove` checks.
+        while True:
+            scrutinee = _first_open_ite(claim)
+            if scrutinee is None:
+                break
+            decided = normalize(scrutinee, env)
+            if decided not in (Var('true'), Var('false')):
+                break
+            claim = replace_subterm(claim, scrutinee, decided)
         if scrutinee is None:
             whole = discharge(close(claim), env, verbose=verbose)
             return app(whole, *[Var(n) for n, _, _ in binders])
@@ -2910,6 +3471,305 @@ def _supply(shape):
             term = Lambda(name, ty, term)
         return term
     return give, wrap
+
+
+def reduce_projections(term):
+    """`fst A B (mk A B a b)` is `a`, `snd` is `b`, everywhere, to a fixpoint.
+
+    The one weak-head step a proof about a loop needs and `normalize` cannot
+    give: after a pass the claim arrives as projections of the state tuple,
+    and normalising it opens `leb` and `ite` into recursors there is nothing
+    left to match against.  Unfolding `fst` and `snd` makes it larger, not
+    smaller, since each is `Prod.rec` in a lambda.  Bottom-up, so that
+    `fst (snd (mk ...))` sees the `mk` once the inner projection is gone.
+    """
+    if isinstance(term, App):
+        reduced = App(reduce_projections(term.func), reduce_projections(term.arg))
+        head, args = L.spine(reduced)
+        if (isinstance(head, Var) and head.name in ('fst', 'snd')
+                and len(args) == 3):
+            ctor, parts = L.spine(args[2])
+            if isinstance(ctor, Var) and ctor.name == 'mk' and len(parts) == 4:
+                return parts[2] if head.name == 'fst' else parts[3]
+        return reduced
+    if isinstance(term, Binder):
+        return term.__class__(term.var_name, reduce_projections(term.var_type),
+                              reduce_projections(term.body), raw=True,
+                              implicit=term.implicit)
+    return term
+
+
+def reduce_decided_ites(term):
+    """`ite T true a b` is `a` and `ite T false a b` is `b`, to a fixpoint.
+
+    Splitting a guard writes `true` or `false` into the scrutinee but leaves
+    the `ite` standing, so a leaf still looks like a branch.  Reducing them
+    is what turns a leaf into the value that branch actually produced.
+    """
+    if isinstance(term, App):
+        reduced = App(reduce_decided_ites(term.func),
+                      reduce_decided_ites(term.arg))
+        head, args = L.spine(reduced)
+        if (isinstance(head, Var) and head.name == 'ite' and len(args) == 4
+                and args[1] in (Var('true'), Var('false'))):
+            return args[2] if args[1] == Var('true') else args[3]
+        return reduced
+    if isinstance(term, Binder):
+        return term.__class__(term.var_name, reduce_decided_ites(term.var_type),
+                              reduce_decided_ites(term.body), raw=True,
+                              implicit=term.implicit)
+    return term
+
+
+def bound_by_ites(env, goal, hypothesis, hypothesis_claim, others=(),
+                  _subs=(), _evidence=None):
+    """Prove a goal whose subject is a tree of `ite`s over the loop state.
+
+    Splits every open guard.  At a leaf the branch has produced one value,
+    and there are three ways the claim can hold without looking at how the
+    leaf was reached: it is the one the hypothesis proves, and the branch
+    left the state alone; it is some other term already known -- the loop
+    counter, for a search that returns *where* it found something -- which
+    `others` carries as (claim, proof) pairs; or it computes.
+
+    A fourth way needs the guards themselves.  A search that returns `i`
+    must show the guards hold *at i*, and those occurrences appear only
+    once the `ite` has reduced, so no substitution reaches them.  That
+    needs each branch to carry the equation it won, which costs a bigger
+    proof term, so it is not the default: `_evidence` is None on the plain
+    path and a tuple once the caller has retried.  `bound_by_ites_or_guards`
+    is that retry.
+
+    Splitting substitutes into the goal, so the same substitutions are
+    applied to the hypothesis before comparing: a leaf reached by deciding
+    `_returned` is about `_returned = true`, while the invariant the
+    hypothesis proves is about the variable.
+    """
+    def specialise(term):
+        for scrutinee, value in _subs:
+            term = replace_subterm(term, scrutinee, value)
+        return term
+
+    def carry(proof, claim):
+        # A hypothesis in scope is about the variables as they were; the
+        # leaf is about them with the splits written in.  Comparing after
+        # `specialise` says the two agree *once the equations hold*, but
+        # the proof term's type does not know that: it has to be transported
+        # along each equation, which is what the evidence is for.  Without
+        # evidence only a literal match is sound.
+        if _evidence is None:
+            return proof
+        for scrutinee, side, equation in _evidence:
+            if replace_subterm(claim, scrutinee, Var(side)) == claim:
+                continue
+            motive = Lambda('_c', BOOL, Lambda(
+                '_t', app('Eq', BOOL, scrutinee, Var('_c')),
+                replace_subterm(claim, scrutinee, Var('_c'))))
+            proof = app('Eq.ind', BOOL, scrutinee, motive, proof, Var(side),
+                        equation)
+            claim = replace_subterm(claim, scrutinee, Var(side))
+        return proof
+
+    open_ite = _first_open_ite(goal)
+    if open_ite is None:
+        settled = reduce_decided_ites(goal)
+        if L.definitionally_equal(settled, hypothesis_claim, env):
+            return hypothesis
+        if (_evidence is not None and L.definitionally_equal(
+                settled, specialise(hypothesis_claim), env)):
+            return carry(hypothesis, hypothesis_claim)
+        for claim, proof in others:
+            if L.definitionally_equal(settled, claim, env):
+                return proof
+            if (_evidence is not None and L.definitionally_equal(
+                    settled, specialise(claim), env)):
+                return carry(proof, claim)
+        if _evidence is not None:
+            from_guards = by_decided_guards(env, settled, _evidence)
+            if from_guards is not None:
+                return from_guards
+        # by shape first, since a leaf sits inside binders the ambient
+        # environment does not know and `discharge` would type-check against
+        # it; `discharge` is the fallback for what computation alone settles
+        head, args = L.spine(settled)
+        if isinstance(head, Var) and head.name == 'Holds' and args:
+            shaped = structural_proof(env, args[-1])
+            if shaped is not None:
+                return shaped
+        return discharge(settled, env, verbose=False)
+    decided = normalize(open_ite, env)
+    if decided in (Var('true'), Var('false')):
+        return bound_by_ites(env, replace_subterm(goal, open_ite, decided),
+                             hypothesis, hypothesis_claim, others, _subs,
+                             _evidence)
+    step = lambda value, evidence: bound_by_ites(
+        env, replace_subterm(goal, open_ite, Var(value)), hypothesis,
+        hypothesis_claim, others, tuple(_subs) + ((open_ite, Var(value)),),
+        None if _evidence is None
+        else tuple(_evidence) + ((open_ite, value, evidence),))
+    if _evidence is None:
+        return by_bool(env, goal, open_ite,
+                       step('true', None), step('false', None))
+    return by_bool_with_evidence(
+        env, goal, open_ite,
+        lambda ev: step('true', ev), lambda ev: step('false', ev),
+        label='_ev%d' % len(_evidence))
+
+
+def bound_by_ites_or_guards(env, goal, hypothesis, hypothesis_claim,
+                            others=()):
+    """`bound_by_ites`, retried with the guards in hand if it will not close.
+
+    The plain split is enough for every claim whose leaves are about the
+    state the split substituted into.  When a leaf is about an occurrence
+    that only exists after reduction, it is not, and the equations each
+    branch won are what settles it.  Trying the cheap way first keeps the
+    proof terms small where they can be.
+    """
+    try:
+        return bound_by_ites(env, goal, hypothesis, hypothesis_claim, others)
+    except (TheoremError, ContractError):
+        return bound_by_ites(env, goal, hypothesis, hypothesis_claim, others,
+                             _evidence=())
+
+
+def by_decided_guards(env, goal, evidence):
+    """Prove `Holds b` from the guards a branch decided on the way here.
+
+    Each entry of `evidence` is a guard, the side it went, and a proof of
+    the equation.  Writing every one into the goal leaves a claim with no
+    undecided guards in it; if the branch really did establish the goal,
+    that claim now holds by its shape.  Transporting back along each
+    equation turns a proof of the rewritten claim into one of the original.
+
+    This is what a leaf needs when the goal mentions a guard at a
+    *different occurrence* than the one that was split: a search returning
+    `i` must show the guards hold at `i`, and those copies appear only once
+    the `ite` has reduced, so no substitution reaches them.
+
+    Everything is built and nothing is type-checked here.  The leaf sits
+    inside the lambdas `by_cases` wrapped around it, which bind the loop's
+    carried names; the ambient environment has never heard of them, and
+    checking against it would fail on the first mention of the counter.
+    Returns None if the guards do not settle the goal.
+    """
+    # the chain of claims, each one guard further rewritten
+    chain = [goal]
+    for scrutinee, side, _equation in evidence:
+        chain.append(replace_subterm(chain[-1], scrutinee, Var(side)))
+    head, args = L.spine(chain[-1])
+    if not (isinstance(head, Var) and head.name == 'Holds' and args):
+        return None
+    proof = structural_proof(env, args[-1])
+    if proof is None:
+        return None
+    # walk back: the motive abstracts *that guard* out of the claim as it
+    # stood before the rewrite, so nothing else that happens to be `true`
+    # is generalised with it
+    for index in range(len(evidence) - 1, -1, -1):
+        scrutinee, side, equation = evidence[index]
+        before = chain[index]
+        if replace_subterm(before, scrutinee, Var(side)) == before:
+            continue
+        motive = Lambda('_c', BOOL, Lambda(
+            '_t', app('Eq', BOOL, Var(side), Var('_c')),
+            replace_subterm(before, scrutinee, Var('_c'))))
+        # `Eq.ind`'s motive takes the point and the equation, and its base
+        # is the motive at the point itself: the proof in hand, of the
+        # claim with `side` written in.  The result is the motive at the
+        # guard, which is the claim with the guard back.
+        proof = app('Eq.ind', BOOL, Var(side), motive, proof, scrutinee,
+                    app('eq_symm', BOOL, scrutinee, Var(side), equation))
+    return proof
+
+
+def _project(term, state_type, k):
+    """Component `k` of a state tuple typed `Prod A (Prod B ...)`."""
+    head, args = L.spine(state_type)
+    if not (isinstance(head, Var) and head.name == 'Prod' and len(args) == 2):
+        return term
+    a, b = args
+    if k == 0:
+        return app('fst', a, b, term)
+    return _project(app('snd', a, b, term), b, k - 1)
+
+
+def early_return_bound(env, proc, bound, over, fallthrough, counter='i',
+                       verbose=False):
+    r"""`result <= bound` for a loop that returns a literal early.
+
+    The shape:  `while counter < len(over)`, a body that may `return k` for
+    literals `k <= bound`, a fall-through `return fallthrough` after it, and
+
+        assert invariant(counter <= len(over) and _return_value <= bound)
+
+    Each step is a kernel proof.  Entry splits the pre-loop guards, since the
+    accumulator's seed is an `ite` over them.  Preservation splits the body's
+    guards and then `_returned`: a branch that assigned a literal computes, a
+    branch that did not is the hypothesis, and the counter half is the loop
+    condition by definition of `ltb`.  The variant is `sub_lt`.  Exit splits
+    the final `_returned`.  Returns the proof of `proc.obligation`.
+    """
+    name = proc.name
+    goals = dict(proc.loop_obligations)
+    shape = proc.shapes[0]
+    carried = shape['carried']
+    bound_t = L.numeral(bound) if isinstance(bound, int) else bound
+    n = app('len', NAT, Var(over))
+    rv, rt = Var(RESULT_VAR), Var(DONE_FLAG)
+    inv_names = {f'{name}.inv1', f'{name}.pass1'}
+
+    entry = by_every_bool(env, goals['invariant holds on entry'],
+                          unfolding={f'{name}.inv1'}, verbose=verbose)
+
+    def keeps_it(f, h, claim):
+        conj = reduce_projections(
+            unfold(L.spine(claim)[1][-1], env, inv_names))
+        after_A, after_B = L.spine(conj)[1]
+        A = app('leb', f[counter], n)
+        B = app('leb', rv, bound_t)
+        have_B = app('andb_right', A, B, h[0])
+        counter_bounded = (app('Holds', app('leb', f[counter], bound_t)),
+                           app('andb_left', A, B, h[0])
+                           if L.definitionally_equal(bound_t, n, env)
+                           else None)
+        others = ([counter_bounded] if counter_bounded[1] is not None else [])
+        keep_B = bound_by_ites(env, app('Holds', after_B), have_B,
+                               app('Holds', B), others)
+        return app('andb_both', after_A, after_B, h[1], keep_B)
+
+    kept = by_cases(env, None, goals['invariant is preserved'],
+                    what='preservation', names=carried, using=keeps_it)
+    down = by_cases(env, None, goals['variant decreases'], what='the variant',
+                    names=carried,
+                    using=lambda f, h, g: app('sub_lt', n, f[counter], h[1]))
+    progress_by_loop(env, proc, entry, kept, down, verbose=verbose)
+    at_exit = invariant_at_exit(env, proc, entry, kept)
+
+    final = shape['result']
+    state = shape['state']
+    rv_f = _project(final, state, carried.index(RESULT_VAR))
+    rt_f = _project(final, state, carried.index(DONE_FLAG))
+    i_f = _project(final, state, carried.index(counter))
+    held = app(at_exit, *[Var(p) for p, _ in proc.params])
+    have_B = app('andb_right', app('leb', i_f, n), app('leb', rv_f, bound_t),
+                 held)
+    fall = (L.numeral(fallthrough) if isinstance(fallthrough, int)
+            else fallthrough)
+    motive = Lambda('_x', BOOL, app('Holds', app(
+        'leb', app('ite', proc.result_type, Var('_x'), rv_f, fall), bound_t)))
+    # the fall-through value against the bound: computation when both are
+    # literals, reflexivity when the fall-through *is* the bound (a search
+    # that ran off the end returns the length it was bounded by)
+    if L.definitionally_equal(fall, bound_t, env):
+        other = app('leb_refl', fall)
+    else:
+        other = discharge(app('Holds', app('leb', fall, bound_t)), env,
+                          verbose=False)
+    post = app('Bool.ind', motive, have_B, other, rt_f)
+    for p, ty in reversed(proc.params):
+        post = Lambda(p, ty, post)
+    return prove(proc.obligation, post, env, verbose=verbose)
 
 
 def invariant_at_exit(env, proc, entry, preserved, which=0):

@@ -210,6 +210,19 @@ leanos_paper:
 	pdflatex -interaction=nonstopmode leanos.tex >/dev/null
 	@echo leanos.pdf
 
+# Proof-Carrying Rust: every number produced by the run, Lean re-checking
+# the Rust theorem when installed.  Needs a crust checkout beside this tree
+# (or CRUST_DIR).
+rustproof_paper:
+	$(PYTHON) rustproof_paper.py
+	pdflatex -interaction=nonstopmode -halt-on-error rustproof.tex >/dev/null
+	pdflatex -interaction=nonstopmode rustproof.tex >/dev/null
+	@echo rustproof.pdf
+
+paperfast:
+	pdflatex -interaction=nonstopmode -halt-on-error rustproof.tex >/dev/null
+	pdflatex -interaction=nonstopmode rustproof.tex >/dev/null
+	open rustproof.pdf
 
 # The binary release, unpacked by hand.  No root, no package manager, no
 # release index -- just github.com.
@@ -397,7 +410,7 @@ clean:
 
 .PHONY: default help install install-all check-deps ui test census \
 	conjectures collisions physpaper proofs \
-	render-test pdf paper leanproof crustos_eq clean \
+	render-test pdf paper leanproof crustos_eq rustproof_paper clean \
 	install_apple install-apple install_apple-all \
 	install_windows install-windows \
 	install_lean install-lean install_lean_tarball install_lean_deps \

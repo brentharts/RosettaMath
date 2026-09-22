@@ -1,0 +1,486 @@
+\documentclass[11pt]{article}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{amsmath,amssymb,listings}
+\usepackage{booktabs}
+\usepackage{xurl}
+\usepackage{xcolor}
+\usepackage[colorlinks=true,linkcolor=blue!50!black,citecolor=blue!50!black,urlcolor=blue!50!black]{hyperref}
+\usepackage{orcidlink}
+
+\lstset{
+    basicstyle=\ttfamily\footnotesize,
+    keywordstyle=\color{blue!60!black}\bfseries,
+    stringstyle=\color{green!45!black},
+    commentstyle=\color{gray}\itshape,
+    breaklines=true,
+    frame=single,
+    framerule=0.3pt,
+    xleftmargin=1em,
+}
+\lstdefinelanguage{Rust}{
+  morekeywords={fn,let,mut,if,else,match,return,while,for,in,pub,struct,impl,u32,u64,usize,bool,use},
+  sensitive=true,
+  morecomment=[l]{//},
+  morestring=[b]",
+}
+\input{gen/rustproof_facts.tex}
+
+\title{Proof-Carrying Rust\\
+\large Logic safety on top of memory safety, in a toolchain small enough to read}
+\author{Brent S. Hartshorn \orcidlink{0009-0004-2853-655X}
+        \small (\url{brenthartshorn@proton.me})
+\\
+\small
+\url{https://github.com/brentharts/RosettaMath}
+\quad
+\url{https://github.com/brentharts/crust}
+}
+\date{September 22, 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Rust's guarantee ends at memory.  A function that returns the wrong number
+is well-typed Rust, and in the domains that still run on OCaml a wrong
+number has a price.  Crust, a Rust front end written in Python inside a C
+toolchain, now reads contracts in the syntax Creusot and Prusti already use
+--- \texttt{\#[requires]}, \texttt{\#[ensures]}, \texttt{\#[invariant]},
+\texttt{\#[variant]} --- so an annotated file stays ordinary Rust.  The
+compiler checks every clause at runtime by default.  A source-level lift
+turns the same function and the same clauses into the fragment a proof
+kernel of \kernelLines{} lines reads, and a second lift states every place
+the function could panic --- an overflow, an underflow, a division, an index,
+a broken precondition --- as a theorem of its own.  Every proof the kernel
+accepts is exported to Lean~4 and checked again.  On the LeanOS register
+sizer written as a Rust \texttt{match}, both postconditions are proved for
+every input, a false bound is refused, and Lean \regsLeanVerdict{} the export
+with \regsLeanNoAxioms{} theorem depending on no axioms.  On the LeanOS
+allocator ported to Rust, \allocProved{} of \allocObligations{} panic
+obligations are proved from the shipped source and the remaining
+\allocOpen{} are named.  Along the way the kernel's unary numerals, which
+made \texttt{u32::MAX} four billion nested terms, became one node each.  We
+argue for two checkers rather than a better one: after the 2026 soundness
+bugs in Lean's kernel, a proof is worth more when a second, independently
+written kernel agrees.
+\end{abstract}
+
+\section{Introduction: the gap Rust leaves}
+
+Rust made a class of bug a compile-time matter.  Use after free, data
+races, buffer overruns in safe code: the borrow checker refuses them before
+the program runs, and that is why Rust is arriving everywhere systems
+software is written.  But the guarantee is about memory.  A function that
+takes a class number and returns the wrong register count is well-typed
+Rust; so is one that computes a price, a margin, a settlement date, and
+gets it wrong.  Rust has no more to say about logic than C did.
+
+The domains where logic errors cost the most have noticed.  Trading firms
+kept OCaml for decades, in part because its type system and its culture of
+small, pure, reasoned-about functions let a team believe a function does
+what it says~\cite{biggar2020}.  Moving to Rust means gaining memory safety
+and losing nothing at the type level, but it does not gain a way to state
+what a function is \emph{for} and have the toolchain hold it to that.
+
+This paper closes that gap for a dialect of Rust, and the closing has four
+parts, each of which is already in the shipped toolchain:
+
+\begin{enumerate}
+\item Contracts written as Creusot and Prusti write them, so the file is
+  still Rust for those tools and for \texttt{rustc}
+  (Section~\ref{sec:contracts}).
+\item Every clause checked at runtime, at every exit, by default
+  (Section~\ref{sec:contracts}).
+\item A lift from the Rust source, not from an intermediate language, into
+  the fragment a small proof kernel reads; and a second lift that turns every
+  potential panic into a theorem (Sections~\ref{sec:lift}
+  and~\ref{sec:safety}).
+\item Two checkers.  The kernel that proves is \kernelLines{} lines of
+  Python; Lean~4 re-checks what it accepts (Section~\ref{sec:two}).
+\end{enumerate}
+
+The claim is not that this is the only Rust that can be verified.  Aeneas,
+Hax, Creusot and Prusti exist, and Klaus, Conejero and Tolmach report a
+working pipeline from production Rust to Lean~4 proofs closed by AI
+provers~\cite{klaus2026}.  The claim is narrower and, we think, more useful:
+that contracts, runtime checks, source-level proof and independent
+re-checking are one compile, in one toolchain a person can read end to
+end, with every number in this paper produced by the run that typeset it.
+
+\section{Contracts that are still Rust}\label{sec:contracts}
+
+Crust accepts contract attributes in the syntax of Creusot and Prusti
+\cite{creusot,prusti}, including their crate paths, and \texttt{use
+prusti\_contracts::*;} compiles to nothing.  A file annotated for Crust is
+valid input to those tools and, with their shim crates, to \texttt{rustc}.
+
+\begin{lstlisting}[language=Rust]
+#[requires(x < 100)]
+#[ensures(result <= 23)]
+fn regs(c: u32) -> u32 { match c { 0 => 6, 1 => 10, 2 => 15, _ => 23 } }
+
+#[ensures(*v == old(*v) + 1)]
+fn inc(v: &mut u32) { *v += 1; }
+
+#[invariant(i <= n)]
+#[variant(n - i)]
+while i < n { s += i; i += 1; }
+\end{lstlisting}
+
+The compiler lowers each clause to a runtime check: \texttt{requires} at
+entry; \texttt{ensures} at every exit, which includes an explicit
+\texttt{return}, a tail expression, each arm of a tail \texttt{match}, the
+early return of \texttt{?}, and falling off the end of a function that
+returns nothing; \texttt{invariant} at every loop head, including the head
+whose test fails; \texttt{variant} as a strict decrease.  Inside a clause,
+\texttt{result} is the return value, \texttt{old(e)} is \texttt{e}
+snapshotted at entry, and \texttt{a ==> b} is implication.  A violation
+prints the clause as written, the function and the line, then aborts:
+
+\begin{lstlisting}
+contract violated: ensures `result <= 23` of `regs` (line 2)
+\end{lstlisting}
+
+Clauses with \texttt{forall} or \texttt{exists} are kept for the prover and
+not run.  \texttt{CRUST\_CONTRACTS=0} turns the checks off, and the clauses
+are still parsed, so a malformed one is an error either way.  The
+\contractTests{} tests of this feature each compile a program, run it, and
+read the exit status and the message.
+
+Runtime checking is not verification, and it comes first on purpose.  It is
+what the code does today, in every build, with no proof tooling installed;
+and it keeps a discipline the earlier papers in this series relied on: a
+contract the test corpus breaks is a contract no proof will
+establish~\cite{hartshorn2026lean}.
+
+\section{From the source, not the IL}\label{sec:lift}
+
+The LeanOS papers reached compiled code through the intermediate language:
+\texttt{ilproof.py} lifts a function from the compiler's IL back into the
+imperative fragment that \texttt{hoare.py} proves things
+about~\cite{hartshorn2026leanos}.  That works for C.  For idiomatic Rust it
+reaches almost nothing, and the reason is instructive: the IL has already
+thrown away what a proof needs.  A \texttt{match} arrives as a
+\texttt{switch}, which the lift sees as \texttt{goto}s.  A tail
+\texttt{if}/\texttt{else} leaves a dangling implicit return.  \texttt{\&\&}
+is a pair of jumps.  And a \texttt{u32} is an \texttt{int} of no particular
+width, which is exactly the information an overflow obligation is made of.
+
+\texttt{shivyc/rustproof.py} (\liftLines{} lines) lifts from the source
+instead, where all of that is still present, and it reads the contracts on
+the function.  \texttt{leanos/regs.rs} is the register sizer of
+LeanOS~\cite{hartshorn2026leanos} written as Rust writes it:
+
+\lstinputlisting[language=Rust,firstline=20,lastline=29]{\crustDir/leanos/regs.rs}
+
+It lifts to what a person would write, the same fragment the IL lift
+produces from the C version in \texttt{crustos/kernel.c}, with the
+postconditions beside it:
+
+\lstinputlisting[language=Python]{gen/elf_regs_lifted.py}
+
+\texttt{by\_every\_bool} --- split on every guard, then compute --- proves
+\texttt{\regsEnsures} for every \texttt{cls} in \regsSeconds{}\,s, and the
+false bound \texttt{result <= 15} is \regsFalseBound.  The Rust model and the
+C model agree on every class.  This is the first function in the tree whose
+model and theorem are both read off the file that ships; the LeanOS paper
+spent a section on the transcription problem --- a model re-typed by hand
+beside the code, and tests to keep the two aligned --- and here there is
+nothing to transcribe.
+
+What the lift reaches: unsigned integers (as Nat) and \texttt{bool};
+slices and \texttt{\&Vec} as arrays; structs declared in the file as records,
+with one \texttt{\&mut} struct parameter threaded as state; \texttt{let} and
+assignment; \texttt{if} and \texttt{match} as statements, values or tails,
+\texttt{match} with literals, alternatives, ranges, bindings and guards;
+early \texttt{return}; \texttt{for} over ranges; \texttt{while} with
+\texttt{\#[invariant]} and \texttt{\#[variant]}; and calls within the file.
+Everything else --- signed integers, methods, recursion, bitwise operators,
+narrowing casts, quantified clauses --- is refused with the construct named.
+The refusals are the roadmap, as they were for the IL lift.
+
+\section{Every panic is a theorem}\label{sec:safety}
+
+A theorem about the lifted model is a theorem about Nat, and Rust's
+integers are not Nat: \texttt{a + b} wraps or panics past the type's
+maximum, and \texttt{a - b} panics below zero where Nat truncates.  Rather
+than weaken the model, the lift states the difference as obligations.
+\texttt{Lifted.safety()} is a second lift of the same function,
+\texttt{f\_\_safe}, with the same control flow, in which a boolean
+\texttt{\_ok} is conjoined with a claim at each place the Rust would panic
+and every \texttt{return} returns \texttt{\_ok}.  The theorem
+``\texttt{f\_\_safe(args)} for every \texttt{args}'' is ``no input reaches
+a panic''.
+
+\begin{center}
+\begin{tabular}{ll}
+\toprule
+Rust & owes \\
+\midrule
+\texttt{a + b}, \texttt{a * b}, \texttt{a << k} in a \texttt{uN} & the value $\le$ \texttt{max\_uN} \\
+\texttt{a - b} & \texttt{b <= a} \\
+\texttt{a / b}, \texttt{a \% b} & \texttt{b != 0} \\
+\texttt{xs[i]} & \texttt{i < xs.len()} \\
+\texttt{f(args)} & \texttt{f}'s \texttt{\#[requires]} of \texttt{args} \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Each obligation is paid before the statement that evaluates it, so it reads
+the variables as they are then, and one the Rust evaluates only on some
+paths --- the right of \texttt{\&\&}, a \texttt{match} guard --- is
+conditioned on the path.  A \texttt{\#[requires]} guards the body.  For a
+function that returns early when a subtraction would underflow:
+
+\lstinputlisting[language=Python]{gen/early_sub_safe.py}
+
+\texttt{tools/rustprove.py} (\proveLines{} lines) proves each obligation on
+its own and reports it \emph{proved} or \emph{open}.  Open means the
+automation did not settle it and says nothing about whether it holds.  Over
+\safetyShapes{} small functions chosen to be safe or unsafe by construction,
+the verdicts \safetyAgrees{} with the construction:
+
+\begin{center}
+\begin{tabular}{lrl}
+\toprule
+function & obligations & verdict \\
+\midrule
+\input{gen/safety_table.tex}
+\end{tabular}
+\end{center}
+
+Three adjustments to the kernel's tactics were needed to get there, each
+checked by the kernel rather than trusted.  An obligation's hypotheses are
+weakened away and the proof re-wrapped, since \texttt{by\_every\_bool}
+does not bind them.  An obligation is stated in every spelling a guard
+might use, because \texttt{if i >= len \{ return \}} decides
+\texttt{len <= i} and not \texttt{i < len}, which over Nat is the same fact
+and as a boolean is a different term.  And \texttt{if a \&\& b} with no
+\texttt{else} is lowered as nested \texttt{if}s, so that each conjunct is a
+guard the split can decide.
+
+\subsection{The allocator, ported and proved}
+
+\texttt{leanos/alloc.rs} is the LeanOS per-thread bump
+allocator~\cite{hartshorn2026leanos}, ported from RPython to Rust so that
+no input can make it panic --- every array read behind its own length
+check, \texttt{tid + 1} rewritten so it cannot overflow --- and checked
+against the Python row for row on the \allocCorpusRows-row corpus of the
+original model test.  All \allocFunctions{} functions lift
+(\allocRefused{} refused).  \texttt{bump}, the function that moves the
+counter:
+
+\lstinputlisting[language=Python]{gen/bump_lifted.py}
+
+Its \texttt{\#[ensures(used <= result)]} is the theorem the LeanOS paper
+called \texttt{bump\_monotone}, there proved about a hand-typed model; here
+it is \bumpMonotone{} about the generated one, and \texttt{bump\_bounded}
+is proved by that paper's own recipe against the same generated model.  Of
+the \allocObligations{} panic obligations in the file, \allocProved{} are
+proved and \allocOpen{} are open, in \allocSeconds{}\,s:
+
+\begin{center}
+\small
+\begin{tabular}{lll}
+\toprule
+function & obligation & verdict \\
+\midrule
+\input{gen/alloc_table.tex}
+\end{tabular}
+\end{center}
+
+The open ones are \allocOpenAllAdds{} \texttt{u64} additions.  Each fits
+whenever the surrounding code admits it --- \texttt{used + n <= sizes[heap]}
+was tested, and a size is a \texttt{u64} --- but saying so is arithmetic
+about the maximum, which splitting and computing does not do.  A test pins
+the open set, so a new open obligation fails it and so does closing one
+quietly.  The model test for the Python allocator notes that its model
+answers 0 past the end of an array where the compiled C reads out of
+bounds; the port has no such read, and the obligations are the proof of
+that.
+
+\section{Discussion: numerals that fit}
+\label{sec:numerals}
+
+Stating an overflow obligation needs the type's maximum, and the kernel
+could not write one.  Its \texttt{Nat} is unary --- $3$ is
+\texttt{succ (succ (succ zero))} --- so \texttt{u32::MAX} written out is
+four billion nested terms, and the first attempt at stating one ran out of
+memory.  \texttt{u64::MAX} is not writable at all.  The LeanOS paper
+recorded the limit: ``a page-scale address is a term thousands deep''
+\cite{hartshorn2026leanos}, and \texttt{crustproof} refused lengths past
+200{,}000 for the same reason.
+
+The kernel now has a literal node, as Lean's does.  It is the same term,
+not an approximation: every closed numeral above zero normalises to one
+literal, zero stays the constructor, so \texttt{succ (succ zero)} and the
+literal $2$ share a normal form and are definitionally equal by the
+ordinary comparison (this run: \litDefEq).  Where something needs a
+numeral's structure --- the recursor matching on it, the unifier taking
+\texttt{succ ?m} against it --- a literal is viewed as \texttt{succ} of the
+numeral below it, one step at a time and no further.  The accelerated
+definitions read and produce literals.  \texttt{numeral}$(2^{64}-1)$ is one
+node (\litIsOneNode).
+
+The effect on the SIMD contract certification of the earlier
+paper~\cite{hartshorn2026memsafe}, which settles a bounds contract at a
+known length:
+
+\begin{center}
+\begin{tabular}{lrl}
+\toprule
+length & seconds & verdict \\
+\midrule
+64 & \numSixtyFourSeconds & \numSixtyFourVerdict \\
+$10^6$ & \numMillionSeconds & \numMillionVerdict \\
+$2^{32}-1$ & \numUThirtyTwoSeconds & \numUThirtyTwoVerdict \\
+$2^{64}-1$ (\texttt{len <= MAX}) & \numUSixtyFourSeconds & \numUSixtyFourVerdict \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+and, so that speed is not mistaken for credulity, \texttt{div-by 4} at
+$2^{32}-1$ is \numDivByFour.
+
+Literal arithmetic is done by Python's integers, as Lean's is done by GMP
+--- and two of the six 2026 Lean kernel bugs were in the interaction with
+GMP~\cite{moses2026}.  The mitigation here is the one the earlier paper
+introduced for the accelerators: each is run against the definition it
+stands in for over a grid, in the prover's selftest, and a literal's
+properties are pinned by \kernelChecks{} kernel checks (\kernelChecksVerdict)
+and \hoareChecks{} prover checks (\hoareChecksVerdict).  It is a
+mitigation, not a proof, and Section~\ref{sec:two} is the rest of the
+answer.
+
+\section{Results: Independence, not superiority}
+\label{sec:two}
+
+In the summer of 2026, AI-assisted audits found soundness bugs in the Lean~4
+kernel: Hulin's, Kumar's, and then six more in a systematic search by the
+Lean FRO with OpenAI, after which the FRO changed its security practices
+\cite{moses2026,reddit2026}.  Moses draws the conclusion in his title:
+don't trust Lean alone.  His argument is not that Lean is bad --- it is that
+a kernel is software, that its type theory is subtle, that its dependencies
+are part of its trusted base, and that an agent given an impossible task
+will look for the seams.
+
+It would be easy, and wrong, to answer with a claim that our kernel is safer.
+It is \kernelLines{} lines rather than eight thousand, and it can be read in
+an afternoon; but small does not mean sound, and the people who missed Lean's
+bugs were not careless.  The claim we make is about \emph{independence}.
+Every theorem in this paper is checked twice: by a kernel written in Python
+by one person for this purpose, and by Lean~4, written in C++ by others for
+theirs.  The two share no code, no type theory implementation, no
+arithmetic library.  A soundness bug lets a false theorem through only if it
+exists in both, and a bug of the kind Hulin found --- an oversight in one
+of three declaration paths --- has no reason to be repeated in a kernel
+with a different shape.  The earlier ``A Second Kernel Agrees'' paper
+\cite{hartshorn2026second} set this up for the LeanOS proofs; the Rust
+theorems here go through the same export.  For the register sizer: Lean
+\leanVersion{} \regsLeanVerdict{} the export in \regsLeanSeconds{}\,s, with
+\regsLeanNoAxioms{} theorem depending on no axioms.
+
+Klaus et al.\ write that in their pipeline ``every proof is checked by the
+Lean kernel, so AI output cannot compromise soundness''~\cite{klaus2026}.
+That was the right thing to say in May 2026 and, after August, it is one
+kernel's opinion.  Two kernels are cheap, and the second one being small
+enough to read is what makes it worth having as a second.
+
+\section{Conclusion: Why this dialect of Rust}
+
+We call this, carefully, a dialect of Rust with logic safety on top of
+memory safety: memory safety by Rust's rules, contracts checked at runtime
+in every build, proofs from the shipped source, and independent re-checking,
+in one compile.  To our knowledge no other Rust toolchain does all four at
+once.
+
+The reasons this is possible in Crust and not, or not easily, in
+\texttt{rustc} are the reasons the series has given before.  The compiler
+is \crustLines{} lines of Python that a reader can follow, so a new lift, a
+new target, a new contract syntax is an afternoon rather than a project;
+the same front end compiles C, C++, C\# and RPython into one translation
+unit without an interface~\cite{hartshorn2026interop}, so a team can
+sketch in Python, port to Rust, and regression-test both; the runtime
+memory checks are placed where a proof could not remove
+them~\cite{hartshorn2026memsafe}; and the operating system it targets was
+written to be proved, with proofs that reach from the loader to the memory
+map~\cite{hartshorn2026leanos}.  This paper adds the layer those left open.
+
+What this is not:
+
+\begin{itemize}
+\item \textbf{Not a proof about machine code.}  The theorems are about the
+  lifted model; the model is tied to the binary by tests that run both over
+  the same inputs, and a corpus can miss an input.  Translation validation
+  from IL to emitted code is the far end of this road, as before.
+\item \textbf{Not yet arithmetic.}  An obligation that holds because
+  \texttt{a < 1000} and \texttt{b < 1000} give \texttt{a + b < 2000} is
+  out of reach of split-and-compute.  The lemmas an interval tactic would
+  build on --- commutativity, two-sided monotonicity of $+$ and $\times$,
+  subtract-then-add cancellation --- are not in the prelude yet.  With
+  literals in the kernel, that tactic can now compare against the real
+  \texttt{u32::MAX}, and it is the next step.
+\item \textbf{Not signed.}  Signed integers are refused, not modelled.
+\item \textbf{Not all of Rust.}  Methods, traits, closures in the proof
+  subset, recursion: refused by name.  The compiler handles far more Rust
+  than the lift does; the lift grows toward it.
+\item \textbf{Known gaps, asserted.}  \texttt{class\_covers} in
+  \texttt{regs.rs} (\classCoversProved) needs reasoning about the range a
+  guard establishes; a record contract through a field update is not yet
+  proved.  Each has a test asserting it is still open, so closing it cannot
+  happen quietly, and each is checked at runtime meanwhile.
+\end{itemize}
+
+\appendix
+\footnotesize
+\section{Reproducing this paper}
+
+\texttt{python3 rustproof\_paper.py} in the RosettaMath tree, beside a
+checkout of Crust, writes every number above into
+\texttt{gen/rustproof\_facts.tex} and the lifted models and Lean sources
+into \texttt{gen/}; \texttt{pdflatex rustproof.tex} typesets it.  The
+tables are generated; the listings are the shipped files.  In the Crust
+tree, \texttt{make test\_rustproof} runs the \rustproofTests{} tests behind
+Sections~\ref{sec:lift}--\ref{sec:safety}, and \texttt{make prove\_rust}
+prints the obligation report for every Rust module under \texttt{leanos/}.
+
+
+\begin{thebibliography}{9}
+\bibitem{moses2026} Milo Moses.  ``Don't trust Lean4 alone.''  LessWrong,
+  17 September 2026.
+  \url{https://www.lesswrong.com/posts/jgmmMa7AqJNausrqx/don-t-trust-lean4-alone}
+\bibitem{reddit2026} ``Model by OpenAI discovers 6 more soundness bugs in
+  the Lean kernel.''  r/mathematics, August 2026.
+  \url{https://www.reddit.com/r/mathematics/comments/1vdb5an/}
+\bibitem{biggar2020} Paul Biggar.  ``First thoughts on Rust vs OCaml.''
+  Darklang blog, August 2020.
+  \url{https://blog.darklang.com/first-thoughts-on-rust-vs-ocaml/}
+\bibitem{klaus2026} Natalia Klaus, Juan Conejero, Palina Tolmach.  ``A
+  Rust-to-Lean Verification Pipeline with AI Provers: An Experience
+  Report.''  arXiv:2605.30106, 2026 (AIMACS at CAV 2026).
+  \url{https://arxiv.org/abs/2605.30106}
+\bibitem{creusot} Xavier Denis, Jacques-Henri Jourdan, Claude March\'e.
+  ``Creusot: a Foundry for the Deductive Verification of Rust Programs.''
+  ICFEM 2022.
+\bibitem{prusti} Vytautas Astrauskas, Peter M\"uller, Federico Poli,
+  Alexander J. Summers.  ``Leveraging Rust Types for Modular Specification
+  and Verification.''  OOPSLA 2019.
+\bibitem{hartshorn2026leanos} Brent S. Hartshorn.  ``LeanOS: a kernel
+  written to be proved by LEAN4, from a proof-checked loader to a
+  proof-checked memory map.''  SSRN, 2026.
+  \url{https://dx.doi.org/10.2139/ssrn.7461558}
+\bibitem{hartshorn2026lean} Brent S. Hartshorn.  ``LEAN Proofs Small Enough
+  to Read: Kernel Contracts from \LaTeX{} Theorems to Compiler Decisions.''
+  ai.viXra.org:2609.0019, 2026.  \url{https://ai.vixra.org/abs/2609.0019}
+\bibitem{hartshorn2026second} Brent S. Hartshorn.  ``A Second Kernel
+  Agrees: `LEAN Proofs Small Enough to Read', Checked by Lean4 and Read Four
+  Ways.''  SSRN, 2026.  \url{https://dx.doi.org/10.2139/ssrn.7443439}
+\bibitem{hartshorn2026memsafe} Brent S. Hartshorn.  ``Memory Safety Where
+  it is Needed: Proof-guided Runtime Checking in a Toolchain Small Enough to
+  Read.''  SSRN, 2026.  \url{https://dx.doi.org/10.2139/ssrn.7396160}
+\bibitem{hartshorn2026interop} Brent S. Hartshorn.  ``Interoperation
+  Without an Interface: C++ and Rust in One Translation Unit, and One
+  Toolchain.''  SSRN, 2026.  \url{https://dx.doi.org/10.2139/ssrn.7315678}
+\end{thebibliography}
+
+\end{document}

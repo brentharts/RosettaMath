@@ -454,10 +454,20 @@ avoid.
 | 1024 | 43 s | 0.005 s |
 | 65536 | (never) | 0.38 s |
 
-What is left is the representation: building a numeral for length `n` is still
-`n` nodes, so `NUMERAL_LIMIT` refuses past 200,000 rather than overflowing the
-stack in a traceback. `CRUST_PROOF_MAX` (65536) is the compiler's budget within
-that.
+**And a literal is one node.** The representation used to be the last limit:
+building a numeral for length `n` was `n` nodes, so `NUMERAL_LIMIT` refused
+past 200,000 rather than overflowing the stack in a traceback. A closed numeral
+is now a `NatLit`, one node however large, as in Lean's kernel. It is not an
+approximation of the unary numeral but the same term. Every closed numeral above
+zero normalises to one (zero stays the constructor `zero`), so `succ (succ zero)`
+and `NatLit(2)` have one normal form. Where something needs the structure --
+the Nat recursor matching on it, the unifier taking `succ ?m` against it -- a
+literal is viewed as `succ` of the numeral below it, one step at a time, and no
+further. The accelerators read and produce literals, so arithmetic at `u64::MAX`
+is as cheap as at 64, and a contract at that length settles in the same
+microseconds. `NUMERAL_LIMIT` is gone; `CRUST_PROOF_MAX` (65536) remains the
+compiler's own budget. Readers that walked a normal form as a chain of `succ`s
+must accept a literal at the bottom of it (`lean4.as_numeral` does).
 
 **A proof removes a runtime check.** `memsafe_elide` has a new rule.
 

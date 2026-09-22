@@ -170,6 +170,8 @@ class LeanPrinter:
             if expr.name == 'zero':
                 return '0'
             return self.cat.at(expr.name) + self.cat.lean_name(expr.name)
+        if isinstance(expr, L.NatLit):
+            return str(expr.value)
         if isinstance(expr, Bound):
             raise L.KernelError(f'loose de Bruijn index #{expr.index}')
         if isinstance(expr, Meta):

@@ -173,22 +173,19 @@ def _check(length, items):
     return _deep(work)
 
 
-#: `Nat` is unary, so the term for a length has that many nodes.  Reducing it
-#: is now constant time -- the accelerators see a numeral and do arithmetic --
-#: but *building* one is still linear, and past a million nodes the recursive
-#: walk that hashes it runs out of stack.  This is the representation showing
-#: through, and the honest place to say so is here rather than in a traceback.
-NUMERAL_LIMIT = 200_000
+#: There used to be a `NUMERAL_LIMIT` of 200,000 here: `Nat` was unary, so the
+#: term for a length had that many nodes, and past a million the recursive walk
+#: that hashes it ran out of stack.  A numeral is now one `NatLit` node (see
+#: `lean4.NatLit`), so a length of `u64::MAX` is as cheap to build as 64, and
+#: the accelerators settle the contract without unfolding it.  What bounds the
+#: lengths the compiler certifies is its own policy (`CRUST_PROOF_MAX`), not
+#: the representation.
 
 
 def check(length, bounds):
     """Settle a contract at a known length, and say how it was settled."""
     if length < 0:
         raise H.ContractError("a length is a Nat; there is no negative one")
-    if length > NUMERAL_LIMIT:
-        raise H.ContractError(
-            f"length {length} is past what a unary numeral can be built for "
-            f"({NUMERAL_LIMIT}); the term would have that many nodes")
     return _check(length, tuple(sorted(bounds.items())))
 
 

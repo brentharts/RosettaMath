@@ -210,6 +210,8 @@ def replace_subterm(expr, target, replacement):
 
 def read_numeral(term):
     """A term as a Python int, if it is a numeral in normal form."""
+    if isinstance(term, L.NatLit):
+        return term.value
     count = 0
     while isinstance(term, App):
         head = term.func
@@ -223,10 +225,12 @@ def read_numeral(term):
 
 
 def as_term(value):
-    """A Python answer, back as a term."""
+    """A Python answer, back as a term: a literal, one node however large --
+    so an accelerated `mul` does not hand back a result the size of its
+    value."""
     if isinstance(value, bool):
         return Var('true') if value else Var('false')
-    return numeral(value)
+    return L.numeral(value)
 
 
 def accelerate(env, name, arity, compute):
@@ -3926,6 +3930,15 @@ def selftest():
     computes("sub", app('sub', numeral(7), numeral(3)), numeral(4))
     computes("sub below zero", app('sub', numeral(3), numeral(7)), numeral(0))
     computes("pred", app('pred', numeral(5)), numeral(4))
+    # A literal is one node however large, and the accelerators read and
+    # produce literals: u32::MAX and u64::MAX cost what 5 does.
+    u32max, u64max = numeral(2 ** 32 - 1), numeral(2 ** 64 - 1)
+    computes("leb at u32::MAX", app('leb', numeral(1998), u32max), T)
+    computes("add past u32::MAX", app('add', u32max, numeral(1)),
+             numeral(2 ** 32))
+    computes("mul to u64::MAX", app('mul', numeral(2 ** 32 + 1), u32max),
+             u64max)
+    computes("ltb at u64::MAX", app('ltb', u64max, u64max), F)
     computes("leb yes", app('leb', numeral(3), numeral(3)), T)
     computes("leb no", app('leb', numeral(4), numeral(3)), F)
     computes("ltb", app('ltb', numeral(3), numeral(3)), F)

@@ -236,6 +236,66 @@ class Bound(Expr):
         return pretty(self)
 
 
+class NatLit(Expr):
+    r"""A natural-number literal: one node for `n`, whatever its size.
+
+    `Nat` is unary -- `3` is `succ (succ (succ zero))` -- which is the right
+    definition to reason about and the wrong one to write a large number in.
+    `u32::MAX` as a chain is four billion nested terms; `u64::MAX` is not
+    writable at all.  Lean's kernel has the same problem and the same answer:
+    a literal is a primitive, and it *is* the numeral it stands for.
+
+    That identity is kept, not approximated.  Every closed numeral above zero
+    normalises to a literal, and zero to the constructor `zero` -- the one
+    spelling of it the prelude's own types already use -- so `succ (succ
+    zero)` and `NatLit(2)` have one normal form and are definitionally equal
+    by the kernel's ordinary comparison.  In the other direction, where
+    something needs a numeral's structure -- the Nat recursor matching on it,
+    the unifier decomposing `succ ?m` against it -- a literal `n` is viewed as
+    `succ` of the numeral `n - 1`, one step at a time.  Nothing unfolds a literal further than it is
+    looked into, so a large one costs what a small one does until something
+    genuinely recurses on it.
+    """
+
+    def __init__(self, value):
+        if value < 0:
+            raise KernelError("a natural-number literal cannot be negative")
+        self.value = value
+
+    def key(self):
+        cached = getattr(self, '_key', None)
+        if cached is None:
+            cached = self._key = intern_key(('natlit', self.value))
+        return cached
+
+    def unfolded(self):
+        """One constructor step: `zero`, or `succ` of the next numeral down."""
+        if self.value == 0:
+            return Var('zero')
+        return App(Var('succ'), numeral(self.value - 1))
+
+    def __str__(self):
+        return pretty(self)
+
+
+def _is_nat_ctor(env, name):
+    """Is `name` Nat's `zero` (type `Nat`) or `succ` (type `Nat -> Nat`)?
+
+    Checked by declaration, not by spelling, so an unrelated constant that
+    happens to be called `zero` is left alone.
+    """
+    if name not in ('zero', 'succ'):
+        return False
+    decl = decl_of(env if env is not None else GLOBAL_ENV, name)
+    if decl is None or decl.kind != 'constructor':
+        return False
+    nat = Var('Nat')
+    if name == 'zero':
+        return decl.type == nat
+    return isinstance(decl.type, Pi) and decl.type.var_type == nat \
+        and decl.type.body == nat
+
+
 class App(Expr):
     """Function application: f(x)"""
 
@@ -382,13 +442,18 @@ def free_names(expr, acc=None):
 
 
 def as_numeral(expr):
-    """succ (succ zero) -> 2, or None if it is not a closed numeral."""
+    """succ (succ zero) -> 2, or None if it is not a closed numeral.
+
+    A literal counts, including one at the bottom of a chain of `succ`s --
+    which is what a partly unfolded literal looks like."""
     count = 0
     while isinstance(expr, App):
         if not (isinstance(expr.func, Var) and expr.func.name == 'succ'):
             return None
         count += 1
         expr = expr.arg
+    if isinstance(expr, NatLit):
+        return count + expr.value
     if isinstance(expr, Var) and expr.name == 'zero':
         return count
     return None
@@ -413,6 +478,8 @@ def pretty(expr, names=None):
         return "Prop" if expr.level == 0 else f"Type {expr.level - 1}"
     if isinstance(expr, Var):
         return '0' if expr.name == 'zero' else expr.name
+    if isinstance(expr, NatLit):
+        return str(expr.value)
     if isinstance(expr, Bound):
         return names[expr.index] if expr.index < len(names) else f"#{expr.index}"
     if isinstance(expr, Meta):
@@ -600,12 +667,23 @@ def _normalize(expr, env):
         arg = normalize(expr.arg, env)
         if isinstance(func, Lambda):
             return normalize(instantiate(func.body, arg), env)
+        # `succ` of a numeral is the next literal: the one normal form every
+        # closed numeral shares, however it was written.
+        if isinstance(func, Var) and func.name == 'succ' \
+                and _is_nat_ctor(env, 'succ'):
+            if isinstance(arg, NatLit):
+                return NatLit(arg.value + 1)
+            if isinstance(arg, Var) and arg.name == 'zero' \
+                    and _is_nat_ctor(env, 'zero'):
+                return NatLit(1)
         whole = App(func, arg)
         reduced = reduce_head(whole, env)
         return normalize(reduced, env) if reduced is not None else whole
     if isinstance(expr, Binder):
         return expr.rebuild(normalize(expr.var_type, env),
                             normalize(expr.body, env))
+    if isinstance(expr, NatLit) and expr.value == 0:
+        return Var('zero')
     if isinstance(expr, Var):
         value = value_of(env, expr.name)
         return normalize(value, env) if value is not None else expr
@@ -700,6 +778,12 @@ def type_check(env, expr, local=None):
 
     if isinstance(expr, Universe):
         return Universe(expr.level + 1)
+
+    if isinstance(expr, NatLit):
+        if not _is_nat_ctor(env, 'zero') or not _is_nat_ctor(env, 'succ'):
+            raise KernelError("a Nat literal needs Nat's zero and succ in "
+                              "scope")
+        return Var('Nat')
 
     if isinstance(expr, Var):
         declared = type_of(env, expr.name)
@@ -936,7 +1020,13 @@ def recursor_rule(rname, constructors, nparams=0, nindices=0):
         cases = args[nparams + 1:nparams + 1 + ncases]
         scrutinee = args[needed - 1]
         rest = args[needed:]
-        head, cargs = spine(normalize(scrutinee, env))
+        norm = normalize(scrutinee, env)
+        if isinstance(norm, NatLit) and \
+                [c[0] for c in constructors] == ['zero', 'succ']:
+            # A literal is the numeral it stands for; to match on it, take
+            # one constructor step and no more.
+            norm = norm.unfolded()
+        head, cargs = spine(norm)
         if not isinstance(head, Var):
             return None
         for case, (cname, spec, _ivals) in zip(cases, constructors):
@@ -1224,6 +1314,12 @@ def unify(a, b, subst, ctx=None, pending=None, env=None):
             if solved is not None:
                 return solved
 
+    # A literal meeting an application -- `succ ?m` against `3` -- is looked
+    # at one constructor step deep, `succ 2`, and decomposed as usual.
+    if isinstance(a, NatLit) and a.value > 0 and isinstance(b, App):
+        a = a.unfolded()
+    if isinstance(b, NatLit) and b.value > 0 and isinstance(a, App):
+        b = b.unfolded()
     if isinstance(a, App) and isinstance(b, App):
         return (unify(a.func, b.func, subst, ctx, pending, env)
                 and unify(a.arg, b.arg, subst, ctx, pending, env))
@@ -1358,6 +1454,9 @@ class Elaborator:
 
         if isinstance(expr, Universe):
             return expr, Universe(expr.level + 1)
+
+        if isinstance(expr, NatLit):
+            return expr, Var('Nat')
 
         if isinstance(expr, Var):
             declared = type_of(self.env, expr.name)
@@ -1715,7 +1814,19 @@ def latex2type(statement):
 
 
 def numeral(n):
-    """3 is succ (succ (succ zero)); writing it out is what a numeral is."""
+    """The numeral n, as the literal it normalises to (see `NatLit`).
+
+    It used to be the chain `succ (succ (succ zero))`, which is still what
+    the literal *is*: the two normalise to one term and are definitionally
+    equal.  Building the literal directly means a numeral written into a
+    proof is already in normal form, and one the size of `u32::MAX` is one
+    node rather than four billion.  Zero is the constructor itself."""
+    return Var('zero') if n == 0 else NatLit(n)
+
+
+def unary(n):
+    """The numeral n written out as `succ (succ .. zero)`, for code and
+    tests that want the chain itself rather than its normal form."""
     out = Var('zero')
     for _ in range(n):
         out = App(Var('succ'), out)
@@ -1814,6 +1925,8 @@ class LatexPrinter:
                         f'not Type {expr.level - 1}')
         if isinstance(expr, Var):
             return '0' if expr.name == 'zero' else self.word(expr.name)
+        if isinstance(expr, NatLit):
+            return str(expr.value)
         if isinstance(expr, Bound):
             self.refuse(f'a loose de Bruijn index #{expr.index} has no name')
         if isinstance(expr, Meta):
@@ -2879,6 +2992,42 @@ def selftest():
         return zzz
     check('--non-strict records the failure instead of raising',
           hasattr(lenient, 'lean_error'))
+
+    print('Native Nat literals')
+    add_ = lambda a, b: App(App(Var('add'), a), b)
+    check('a numeral is one node', isinstance(numeral(7), NatLit))
+    check('zero is the constructor, not a literal',
+          numeral(0) == Var('zero')
+          and normalize(NatLit(0), GLOBAL_ENV) == Var('zero'))
+    check('a unary chain normalises to the literal',
+          normalize(unary(7), GLOBAL_ENV) == numeral(7))
+    check('and succ of a literal is the next one',
+          normalize(App(Var('succ'), numeral(9)), GLOBAL_ENV) == numeral(10))
+    check('a chain and a literal are definitionally equal',
+          definitionally_equal(unary(5), numeral(5), GLOBAL_ENV))
+    check('a literal has type Nat',
+          type_check(GLOBAL_ENV, numeral(3)) == Var('Nat'))
+    check('iota fires on a literal: 2 + 3 = 5',
+          normalize(add_(numeral(2), numeral(3)), GLOBAL_ENV) == numeral(5))
+    check('and on a mixed spelling: 2 + succ 2 = 5',
+          normalize(add_(unary(2), App(Var('succ'), numeral(2))),
+                    GLOBAL_ENV) == numeral(5))
+    check('an open sum still stops at the variable: x + 2 = succ (succ x)',
+          normalize(add_(Var('x'), numeral(2)), GLOBAL_ENV)
+          == App(Var('succ'), App(Var('succ'), Var('x'))))
+    subst = {}
+    hole = new_meta('m')
+    check('succ ?m unifies with a literal, one step deep',
+          unify(App(Var('succ'), hole), numeral(4), subst, env=GLOBAL_ENV)
+          and normalize(resolve(hole, subst), GLOBAL_ENV) == numeral(3))
+    check('a literal of any size is one node',
+          type_check(GLOBAL_ENV, NatLit(2 ** 64 - 1)) == Var('Nat')
+          and as_numeral(NatLit(2 ** 64 - 1)) == 2 ** 64 - 1)
+    check('as_numeral reads a literal under a succ',
+          as_numeral(App(Var('succ'), numeral(41))) == 42)
+    check('a literal prints as its digits', str(numeral(4096)) == '4096')
+    check('a negative literal is refused', raises(lambda: NatLit(-1),
+                                                  'negative'))
 
     failed = [label for label, ok in checks if not ok]
     print('\n%d checks, %s' % (len(checks),

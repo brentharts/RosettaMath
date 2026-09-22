@@ -341,7 +341,7 @@ indices of that occurrence.
 | `f x` | application, by juxtaposition |
 | `\forall \{A : T\}, B` | implicit binder |
 | `a = b` | `Eq A a b`, with `A` from the binder, or inferred |
-| `0`, `1`, `2` | numerals, as stacks of `succ` over `zero` |
+| `0`, `1`, `2` | numerals: `succ` over `zero`, stored as one `NatLit` node |
 
 The front end is shared with the rest of the project: `rosettaui.tokenize`
 lexes the subset and `rosettamath.unescape` handles `\text{}` content.

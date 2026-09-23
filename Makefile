@@ -90,6 +90,7 @@ help:
 	@echo 'make pdf            typeset the paper to /tmp/neomath.pdf'
 	@echo 'make paper          the paper with the source appendix'
 	@echo 'make physpaper      the physics knowledge graph paper'
+	@echo 'make rust_lean      Rust theorems from ../crust, checked by Lean 4'
 	@echo 'make crustos_eq     the supplement: Equation (1) checked by Lean 4'
 	@echo 'make clean          remove caches and build products'
 	@echo
@@ -213,6 +214,10 @@ leanos_paper:
 # Proof-Carrying Rust: every number produced by the run, Lean re-checking
 # the Rust theorem when installed.  Needs a crust checkout beside this tree
 # (or CRUST_DIR).
+# Every Rust theorem lean4.py settles, each put to Lean 4 as its own file.
+rust_lean:
+	$(PYTHON) rustlean.py ../crust/leanos/regs.rs ../crust/leanos/alloc.rs
+
 rustproof_paper:
 	$(PYTHON) rustproof_paper.py
 	pdflatex -interaction=nonstopmode -halt-on-error rustproof.tex >/dev/null
@@ -408,7 +413,7 @@ clean:
 	rm -rf __pycache__ /tmp/rosettaui-cache
 	rm -f /tmp/neomath.aux /tmp/neomath.log /tmp/neomath.out /tmp/neomath.tex
 
-.PHONY: default help install install-all check-deps ui test census \
+.PHONY: rust_lean default help install install-all check-deps ui test census \
 	conjectures collisions physpaper proofs \
 	render-test pdf paper leanproof crustos_eq rustproof_paper clean \
 	install_apple install-apple install_apple-all \

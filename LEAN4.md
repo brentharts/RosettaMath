@@ -226,6 +226,10 @@ All proved, none assumed:
 | `loop_preserves` | the two composed |
 | `stuck` | once the condition is false, iterating changes nothing |
 | `fold_terminates` | the variant bounds the number of passes |
+| `add_le_add_right`, `add_le_add` | induction on the added term: `add` recurses on its second argument, so `succ` on both sides is `leb`'s own step |
+| `add_le_of_le_sub` | induction on `n` generalising `s`, split on `s`: `n <= s` and `u <= s - n` give `u + n <= s`, the lemma a checked addition needs |
+| `lt_le`, `not_lt_le`, `not_le_lt` | a guard that held, or went false, read as `<=` |
+| `nth_all_le` | induction on the list, split on the index: a slice of `uN` stays below `max_uN` element by element |
 
 `fold_terminates` is the one that matters most: `progress` used to be checked
 only at concrete values, which checks the examples and says nothing about the
@@ -293,6 +297,7 @@ record's projections unsticks `fst` and `snd` for the same reason.
 | `preserves_by_loop` | prefix, loop and suffix chained into the syscall's obligation |
 | `compose` | syscalls and their proofs, in sequence |
 | `prove` | a hand-written term, checked by the kernel |
+| `by_bounds` | `by_bool` on every guard, *dependently* -- each branch keeps `Holds g` or `g = false` -- with the goal's hypotheses kept; a branch whose facts contradict is closed, and a leaf that does not compute is settled by chaining `<=` facts (below) |
 
 `by_cases` binds fields **by name**: `f['current']`, not `f[3]`. With a state
 nested as `Prod A (Prod B C)` the index that happens to be right is an accident
@@ -543,6 +548,10 @@ decoration.
 *   **Rule 4 is for constant offsets.** `p[i]` in a loop is rule 3's problem,
     and a contract bound is not yet joined up with the loop-carried ranges
     that rule already computes.
+*   **Huge literals stay folded beside a symbol.** `sub 2^64-1 u` does not
+    unfold (`UNFOLD_LITERAL_LIMIT`, 2^16), since unfolding walks the
+    literal down one `succ` at a time. Reducing less can refuse a true
+    statement, never admit a false one.
 *   **The accelerators are trusted Python.** Nine of them, each checked
     against its definition over a grid, but checked is not proved.
 *   **`preserves_by_loop` handles one loop per procedure.** Two loops in

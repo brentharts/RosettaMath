@@ -57,8 +57,11 @@ sizer written as a Rust \texttt{match}, both postconditions are proved for
 every input, a false bound is refused, and Lean \regsLeanVerdict{} the export
 with \regsLeanNoAxioms{} theorem depending on no axioms.  On the LeanOS
 allocator ported to Rust, \allocProved{} of \allocObligations{} panic
-obligations are proved from the shipped source and the remaining
-\allocOpen{} are named.  Along the way the kernel's unary numerals, which
+obligations are proved from the shipped source --- after three the prover
+left open turned out to be real overflows, which the runtime contract check
+confirmed and the source now avoids.  Every one of the \rustCertificates{} Rust theorems
+the kernel settles is exported, and Lean accepts \rustLeanAgreed{} of them
+with no axioms.  Along the way the kernel's unary numerals, which
 made \texttt{u32::MAX} four billion nested terms, became one node each.  We
 argue for two checkers rather than a better one: after the 2026 soundness
 bugs in Lean's kernel, a proof is worth more when a second, independently
@@ -264,7 +267,8 @@ guard the split can decide.
 \texttt{leanos/alloc.rs} is the LeanOS per-thread bump
 allocator~\cite{hartshorn2026leanos}, ported from RPython to Rust so that
 no input can make it panic --- every array read behind its own length
-check, \texttt{tid + 1} rewritten so it cannot overflow --- and checked
+check, \texttt{tid + 1} rewritten so it cannot overflow, every addition
+checked before it is made (Section~\ref{sec:bounds}) --- and checked
 against the Python row for row on the \allocCorpusRows-row corpus of the
 original model test.  All \allocFunctions{} functions lift
 (\allocRefused{} refused).  \texttt{bump}, the function that moves the
@@ -275,7 +279,7 @@ counter:
 Its \texttt{\#[ensures(used <= result)]} is the theorem the LeanOS paper
 called \texttt{bump\_monotone}, there proved about a hand-typed model; here
 it is \bumpMonotone{} about the generated one, and \texttt{bump\_bounded}
-is proved by that paper's own recipe against the same generated model.  Of
+is proved against the same generated model.  Of
 the \allocObligations{} panic obligations in the file, \allocProved{} are
 proved and \allocOpen{} are open, in \allocSeconds{}\,s:
 
@@ -289,15 +293,63 @@ function & obligation & verdict \\
 \end{tabular}
 \end{center}
 
-The open ones are \allocOpenAllAdds{} \texttt{u64} additions.  Each fits
-whenever the surrounding code admits it --- \texttt{used + n <= sizes[heap]}
-was tested, and a size is a \texttt{u64} --- but saying so is arithmetic
-about the maximum, which splitting and computing does not do.  A test pins
-the open set, so a new open obligation fails it and so does closing one
-quietly.  The model test for the Python allocator notes that its model
-answers 0 past the end of an array where the compiled C reads out of
-bounds; the port has no such read, and the obligations are the proof of
-that.
+The model test for the Python allocator notes that its model answers 0
+past the end of an array where the compiled C reads out of bounds; the port
+has no such read, and the obligations are the proof of that.
+
+\subsection{Bounds, and the three that were false}\label{sec:bounds}
+
+An earlier draft of this section reported four obligations open, all
+\texttt{u64} additions, and said each fitted whenever the surrounding code
+admitted it.  One did.  Three were false.
+
+The first port of \texttt{bump} tested \texttt{used + n <= sizes[heap]}
+--- evaluating \texttt{used + n} in order to find out whether it fitted.
+At \texttt{used = n =} $2^{63}$ the sum wraps to 0, passes the test, and
+\texttt{bump} returns 0; Crust's runtime check aborts on
+\texttt{ensures used <= result}.  The kernel's proof of that
+\texttt{ensures} was not wrong --- it is a theorem about \texttt{Nat}, where
+nothing wraps --- and the open obligation was the place the model and the
+machine part.  \texttt{slot\_addr} and \texttt{slot\_ok} formed
+\texttt{bases[heap] + used} with nothing bounding either.  The first port
+is kept in the paper's generator, and this run measures it again: the
+addition in its guard is \oldGuardAdd{}, and the one behind the guard is
+\oldReturnAdd{}.
+
+Two things were missing to tell those apart.  The lift gave a slice's
+elements no range, so nothing said \texttt{sizes[heap] <= u64::MAX}; it
+now states \texttt{all\_le(sizes, max\_u64)} for every integer slice, as it
+already stated a range for every integer parameter.  And
+\texttt{by\_every\_bool} writes \texttt{true} or \texttt{false} in for a
+guard and forgets that it held.  \texttt{by\_bounds} splits the same way,
+but dependently --- the branch gets \texttt{Holds g} or
+\texttt{g = false} as a hypothesis --- keeps the obligation's own
+hypotheses rather than weakening them away, closes a branch whose facts
+contradict each other, and at a leaf that does not compute chains
+\texttt{<=} facts by transitivity.  Its steps are \boundsLemmas{} lemmas
+added to the prelude, \boundsLemmasAll{} proved rather than assumed, among
+them \texttt{add\_le\_of\_le\_sub}: \texttt{n <= s} and
+\texttt{u <= s - n} give \texttt{u + n <= s}.  That is the lemma a
+checked addition needs, and the fix to \texttt{bump} is its guard:
+
+\begin{lstlisting}
+if n <= sizes[heap] && used <= sizes[heap] - n { return used + n; }
+\end{lstlisting}
+
+The same answer wherever \texttt{used + n} fits; at $2^{63} + 2^{63}$ the
+fixed build now answers \texttt{used}, $\overflowAnswer$.
+\texttt{slot\_ok} answers 0 for an address past \texttt{u64::MAX}, since
+such an address is in no region; \texttt{slot\_addr} cannot answer
+anything but an address, so it asks its caller with
+\texttt{\#[requires(bases[heap] <= u64::MAX - used)]}.  Writing that took
+\texttt{u64::MAX} in Rust expressions, which Crust had flattened to an
+undefined \texttt{u64\_MAX}; it is now a typed literal, and in the safety
+lift the symbol \texttt{max\_u64} every range fact is stated against.
+
+The same tactic closes \texttt{class\_covers} in \texttt{regs.rs}
+(\classCoversProved{}), a gap the first draft pinned open: each arm of
+\texttt{class\_for\_regs} is behind the range guard that bounds it, and the
+\texttt{requires} bounds the last.
 
 \section{Discussion: numerals that fit}
 \label{sec:numerals}
@@ -352,6 +404,18 @@ and \hoareChecks{} prover checks (\hoareChecksVerdict).  It is a
 mitigation, not a proof, and Section~\ref{sec:two} is the rest of the
 answer.
 
+One consequence of a literal being cheap arrived with \texttt{u64::MAX}
+in a guard.  \texttt{sub 18446744073709551615 used} has nothing to
+compute --- one argument is symbolic --- so the accelerator falls through
+to the definition, and \texttt{sub} recurses on its first argument:
+normalising it walks the literal down one \texttt{succ} at a time, under
+the step function, $2^{64}$ times.  A literal above $2^{16}$ beside a
+symbolic argument now leaves an accelerated definition folded.  That can
+cost completeness and cannot cost soundness: reducing less can make the
+kernel refuse a true statement, never admit a false one, and two copies of
+the folded term are still equal.  Lean, given the same statements, checked
+them without unfolding the literal either.
+
 \section{Results: Independence, not superiority}
 \label{sec:two}
 
@@ -379,6 +443,18 @@ with a different shape.  The earlier ``A Second Kernel Agrees'' paper
 theorems here go through the same export.  For the register sizer: Lean
 \leanVersion{} \regsLeanVerdict{} the export in \regsLeanSeconds{}\,s, with
 \regsLeanNoAxioms{} theorem depending on no axioms.
+
+And not only the register sizer.  The prover keeps every obligation it
+settles as a certificate --- the statement, the term \texttt{type\_check}
+accepted, and the environment of callees, records and preconditions it was
+proved in --- and \texttt{rustlean.py} (\rustleanLines{} lines) writes each
+as a Lean file of its own, ending in \texttt{\#print axioms}.  One file per
+theorem, because each obligation lives in its own environment and two may
+define the same name differently.  Of the \rustCertificates{} certificates
+from \texttt{regs.rs}, the safety table and \texttt{alloc.rs}, Lean accepted
+\rustLeanAgreed{}, each depending on no axioms, in \rustLeanSeconds{}\,s.  A
+theorem counts only if Lean accepts the file \emph{and} reports no axioms;
+the open obligations have no certificate and are not counted either way.
 
 Klaus et al.\ write that in their pipeline ``every proof is checked by the
 Lean kernel, so AI output cannot compromise soundness''~\cite{klaus2026}.
@@ -413,22 +489,23 @@ What this is not:
   lifted model; the model is tied to the binary by tests that run both over
   the same inputs, and a corpus can miss an input.  Translation validation
   from IL to emitted code is the far end of this road, as before.
-\item \textbf{Not yet arithmetic.}  An obligation that holds because
-  \texttt{a < 1000} and \texttt{b < 1000} give \texttt{a + b < 2000} is
-  out of reach of split-and-compute.  The lemmas an interval tactic would
-  build on --- commutativity, two-sided monotonicity of $+$ and $\times$,
-  subtract-then-add cancellation --- are not in the prelude yet.  With
-  literals in the kernel, that tactic can now compare against the real
-  \texttt{u32::MAX}, and it is the next step.
+\item \textbf{Arithmetic, but only chains of it.}  \texttt{by\_bounds}
+  chains \texttt{<=} facts through addition, a checked subtraction and a
+  slice's range; \texttt{a < 1000} and \texttt{b < 1000} give
+  \texttt{a + b < 1999} only by \texttt{add\_le\_add} and a literal
+  comparison, and nothing about $\times$ is proved yet.  Its search is
+  bounded in depth, so an open obligation still means only that it was not
+  found.
 \item \textbf{Not signed.}  Signed integers are refused, not modelled.
 \item \textbf{Not all of Rust.}  Methods, traits, closures in the proof
   subset, recursion: refused by name.  The compiler handles far more Rust
   than the lift does; the lift grows toward it.
-\item \textbf{Known gaps, asserted.}  \texttt{class\_covers} in
-  \texttt{regs.rs} (\classCoversProved) needs reasoning about the range a
-  guard establishes; a record contract through a field update is not yet
-  proved.  Each has a test asserting it is still open, so closing it cannot
-  happen quietly, and each is checked at runtime meanwhile.
+\item \textbf{Known gaps, asserted.}  A record contract through a field
+  update is not yet proved; a test asserts it is still open, so closing it
+  cannot happen quietly, and it is checked at runtime meanwhile.  A
+  callee's \texttt{requires} that mentions \texttt{u64::MAX} reaches its
+  callers as the number, not the symbol, so a caller cannot yet discharge
+  it.
 \end{itemize}
 
 \appendix

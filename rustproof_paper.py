@@ -27,6 +27,27 @@ LEAN = shutil.which('lean') or next(
      if os.path.exists(p)), None)
 
 
+# `bump` as the first Rust port wrote it, before the prover's open
+# obligation was read as the bug it was.  Line numbers are this text's.
+FIRST_PORT_BUMP = """\
+#[ensures(used <= result)]
+pub fn bump(bases: &[u64], sizes: &[u64], owners: &[u32], tid: u32,
+            heap: usize, used: u64, n: u64) -> u64 {
+    if heap < bases.len() && heap < owners.len() && heap < sizes.len() {
+        if owners[heap] >= 1 && owners[heap] - 1 == tid {
+            if used + n <= sizes[heap] {
+                return used + n;
+            }
+        }
+    }
+    used
+}
+"""
+
+BOUNDS_LEMMAS = ('add_le_add_right', 'add_le_add', 'add_le_of_le_sub',
+                 'lt_le', 'not_lt_le', 'not_le_lt', 'nth_all_le')
+
+
 def macro(name, value):
     return '\\newcommand{\\%s}{%s}\n' % (name, value)
 
@@ -110,27 +131,6 @@ def main(run_lean=True):
                      else 'NOT PROVED'))
     out.append(macro('classCoversProved',
                      'proved' if prover.contract('class_covers') else 'open'))
-    if run_lean and LEAN:
-        def work():
-            env, sig = prover.fresh_env(lifted)
-            proc = H.read_procedure(lifted.source, env, sig, lifted.ensures)
-            proof = H.by_every_bool(env, proc.obligation,
-                                    unfolding={'elf_regs_for_class'})
-            L.define(env, 'rust_elf_regs_bounded', proc.obligation, proof)
-            slow = H.prelude(fast=False)
-            values = {n: L.value_of(slow, n) for n in H.ACCELERATED}
-            src, _ = X.export(env, ['rust_elf_regs_bounded'], values,
-                              ['#print axioms rust_elf_regs_bounded'])
-            return src
-        src = rustprove.in_big_stack(work)
-        path = os.path.join(GEN, 'rust_elf_regs.lean')
-        with open(path, 'w') as fh:
-            fh.write(src)
-        secs, ok, clean = lean_check(path)
-        out.append(macro('regsLeanSeconds', '%.1f' % secs))
-        out.append(macro('regsLeanVerdict', 'accepted' if ok else 'REJECTED'))
-        out.append(macro('regsLeanNoAxioms', clean))
-
     # -- the safety lift over a table of shapes ----------------------------------
     from tests.test_rustproof import SAFETY, SAFE
     sp = rustprove.Prover(SAFETY)
@@ -178,12 +178,57 @@ def main(run_lean=True):
     out.append(macro('allocObligations', total))
     out.append(macro('allocProved', proved_n))
     out.append(macro('allocOpen', total - proved_n))
-    out.append(macro('allocOpenAllAdds',
-                     'all' if all('`+`' in o for o in opens) else 'NOT ALL'))
     out.append(macro('bumpMonotone',
                      'proved' if ap.contract('bump') else 'open'))
     from tests.test_alloc_model import CORPUS
     out.append(macro('allocCorpusRows', len(CORPUS)))
+
+    # -- the first port's bump, kept to show what the prover said of it --------
+    # Its guard evaluated `used + n` in order to test whether it fitted.  The
+    # verdicts below are measured on it every run: the overflow at the guard
+    # is refused, and the one behind the guard is proved.
+    old = rustprove.Prover(FIRST_PORT_BUMP)
+    verdicts = dict(old.safety('bump'))
+    guard = next(k for k in verdicts if 'overflow' in k and 'line 6)' in k)
+    ret = next(k for k in verdicts if 'overflow' in k and 'line 7)' in k)
+    out.append(macro('oldGuardAdd', 'refused' if not verdicts[guard]
+                     else 'PROVED'))
+    out.append(macro('oldReturnAdd', 'proved' if verdicts[ret] else 'open'))
+    half = 2 ** 63
+    sys.path.insert(0, os.path.join(CRUST, 'tests'))
+    from tests.test_rustproof import _compile_and_print
+    got = _compile_and_print(alloc, [
+        'bump(&[0u64][..], &[100u64][..], &[1u32][..], 0, 0, %du64, %du64)'
+        % (half, half)])
+    out.append(macro('overflowAnswer', r'2^{63}' if got == [half]
+                     else str(got)))
+    out.append(macro('boundsLemmas', len(BOUNDS_LEMMAS)))
+    out.append(macro('boundsLemmasAll', 'all' if all(
+        n in H.prelude() for n in BOUNDS_LEMMAS) else 'NOT ALL'))
+
+    # -- the second kernel: every certificate, not one ----------------------------
+    # Each obligation lean4.py settled above left a certificate; every one of
+    # them is written as a Lean file and put to Lean 4.
+    certs = prover.certificates + sp.certificates + ap.certificates
+    out.append(macro('rustCertificates', len(certs)))
+    if run_lean and LEAN:
+        import rustlean
+        t0 = time.time()
+        verdicts = rustprove.in_big_stack(
+            lambda: rustlean.check(certs, os.path.join(GEN, 'lean_rust'),
+                                   lean=LEAN))
+        agreed = [v for v in verdicts if v.agreed]
+        out.append(macro('rustLeanAgreed', len(agreed)))
+        out.append(macro('rustLeanSeconds', '%.1f' % (time.time() - t0)))
+        out.append(macro('rustLeanVerdict',
+                         'all' if len(agreed) == len(certs) else 'NOT ALL'))
+        regs_v = next(v for v in verdicts
+                      if v.name == 'rust_elf_regs_for_class_ensures')
+        out.append(macro('regsLeanSeconds', '%.1f' % regs_v.seconds))
+        out.append(macro('regsLeanVerdict',
+                         'accepted' if regs_v.accepted else 'REJECTED'))
+        out.append(macro('regsLeanNoAxioms', int(regs_v.axiom_free)))
+        shutil.copy(regs_v.path, os.path.join(GEN, 'rust_elf_regs.lean'))
 
     # -- compact numerals ---------------------------------------------------------
     def timed(length, bounds):
@@ -228,6 +273,8 @@ def main(run_lean=True):
         out.append(macro('leanVersion', ver.split('(version ')[1].split(',')[0]))
     else:
         out.append(macro('leanVersion', 'not installed'))
+    out.append(macro('rustleanLines',
+                     source(os.path.join(HERE, 'rustlean.py')).count('\n')))
     out.append(macro('crustDir', CRUST.replace('_', r'\_')))
 
     with open(os.path.join(GEN, 'rustproof_facts.tex'), 'w') as fh:

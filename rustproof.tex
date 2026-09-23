@@ -59,7 +59,12 @@ with \regsLeanNoAxioms{} theorem depending on no axioms.  On the LeanOS
 allocator ported to Rust, \allocProved{} of \allocObligations{} panic
 obligations are proved from the shipped source --- after three the prover
 left open turned out to be real overflows, which the runtime contract check
-confirmed and the source now avoids.  Every one of the \rustCertificates{} Rust theorems
+confirmed and the source now avoids.  The rest of LeanOS --- the region
+list, the loader's header checks, threads and the loader --- is ported too,
+and the prover now goes through loops by their own \texttt{\#[invariant]}:
+\portProved{} of \portObligations{} obligations across \portFunctions{}
+functions and \portLoops{} loops, every port answering as its Python does.
+Every one of the \rustCertificates{} Rust theorems
 the kernel settles is exported, and Lean accepts \rustLeanAgreed{} of them
 with no axioms.  Along the way the kernel's unary numerals, which
 made \texttt{u32::MAX} four billion nested terms, became one node each.  We
@@ -351,6 +356,72 @@ The same tactic closes \texttt{class\_covers} in \texttt{regs.rs}
 \texttt{class\_for\_regs} is behind the range guard that bounds it, and the
 \texttt{requires} bounds the last.
 
+\section{Loops, and the rest of LeanOS}\label{sec:loops}
+
+Nearly every function LeanOS still had in Python is a loop over the region
+list, and the automation of Section~\ref{sec:bounds} did not go through a
+loop at all: \texttt{xs[i]} behind \texttt{i < xs.len()} was open when the
+comparison was the loop's condition.  \texttt{read\_procedure} already
+stated a loop's four obligations --- the invariant holds on entry, a guarded
+pass keeps it, the variant comes down, and the loop finishes --- and the
+hand-written models of the LeanOS papers discharged them one shape at a
+time.  \texttt{by\_loop} discharges them for any shape the facts reach:
+each by \texttt{by\_bounds}, after \texttt{by\_state} splits the loop's
+state tuple into named fields with one \texttt{Prod.ind} per \texttt{mk}.
+The invariant at exit and the failed loop condition then become two facts,
+and the postcondition is proved with them in hand.
+
+The invariant used is the one written, with one addition the prover makes
+for the proof and not the theorem.  An early \texttt{return} is lowered as
+state --- \texttt{\_returned}, \texttt{\_return\_value} --- and the lowered
+loop goes on iterating with the returned value frozen, so what the loop
+keeps need only hold while nothing has returned: the written invariant
+\texttt{X} is used as \texttt{\_returned or X}, conjoined with
+\texttt{not \_returned or post(\_return\_value)} for a contract and
+\texttt{\_returned or \_ok} for a panic obligation.  The theorem's statement
+never mentions an invariant; the kernel checks all four obligations for the
+one used.  An invariant too weak to carry the goal is not strengthened
+beyond that, and the goal stays open --- a count of matches is bounded by
+the length only if the invariant says the count is bounded by \texttt{i}.
+
+Getting there took \loopLemmas{} more lemmas in the prelude,
+\loopLemmasAll{} proved: commutativity of addition, so that a checked
+addition is recognised written either way round; \texttt{sub\_one\_lt},
+which makes \texttt{xs[i - 1]} an index behind \texttt{i > 0}; and a
+refuted comparison read as its converse.  \texttt{by\_bounds} learned to
+carry each fact across a case split by \texttt{Eq.ind}, so that a
+hypothesis \texttt{g or X} becomes \texttt{X} in the branch where
+\texttt{g} is false, and to split on such a disjunction when a leaf is
+stuck.
+
+\begin{center}
+\small
+\begin{tabular}{lrrrr}
+\toprule
+port & functions & loops & obligations proved & corpus rows agreeing \\
+\midrule
+\input{gen/leanos_table.tex}
+\end{tabular}
+\end{center}
+
+Each port gives its Python's answer on the Python model test's own
+corpus, compiled by Crust and run.  They differ where the Python's integers
+pass $2^{64}$: every \texttt{base + size} and \texttt{vaddr + memsz} in the
+Python can wrap in a \texttt{u64}, and each is the checked form here --- a
+region ending at the top of the address space followed by another is
+\portWrapRefused{} rather than passed on a wrapped sum.  Three of the
+theorems RosettaMath had proved only about hand-typed models are now
+contracts proved about the lifted source: \texttt{reg\_class\_sized} and
+\texttt{accept\_sized} on \texttt{elfcheck.rs}, \texttt{push\_keeps\_sp\_ok}
+as the contract of \texttt{sp\_after\_push}, and \texttt{admit\_accepts} and
+\texttt{admit\_disjoint} on \texttt{admit}.  The loader reads
+\texttt{bases ++ vaddrs} in place rather than building it, since a
+function returning a list is not in the fragment; the test checks it
+against the Python's \texttt{regions\_disjoint} of the built list.  A
+file names the files it calls into with a \texttt{// uses:} line; they are
+appended after it, so its own line numbers, the ones every obligation
+names, stay exact.  In \portSeconds{}\,s.
+
 \section{Discussion: numerals that fit}
 \label{sec:numerals}
 
@@ -415,6 +486,17 @@ cost completeness and cannot cost soundness: reducing less can make the
 kernel refuse a true statement, never admit a false one, and two copies of
 the folded term are still equal.  Lean, given the same statements, checked
 them without unfolding the literal either.
+
+The loops found a second route to the same walk, inside the kernel's own
+type checker.  To check \texttt{leb\_trans a b c} it normalised
+\texttt{leb\_trans}'s type first, while \texttt{a}, \texttt{b} and
+\texttt{c} were still variables --- and with a variable there is nothing to
+compute, so \texttt{leb} opened into its recursor --- and substituted the
+literal after, into a recursor with no \texttt{leb} left to fold.  The
+type checker now normalises a function's type only if it is not already a
+\texttt{Pi}, and a partial application's type only once its last argument
+has arrived.  Argument types are compared by definitional equality as
+before; only the order of substitution and normalisation moved.
 
 \section{Results: Independence, not superiority}
 \label{sec:two}
@@ -500,12 +582,15 @@ What this is not:
 \item \textbf{Not all of Rust.}  Methods, traits, closures in the proof
   subset, recursion: refused by name.  The compiler handles far more Rust
   than the lift does; the lift grows toward it.
+\item \textbf{Not yet the theorems about pairs.}  That a disjoint
+  region list has no two overlapping regions, and that an address belongs
+  to at most one owner, are quantified over positions; RosettaMath proves
+  them about hand-typed models, and the Rust ports' contracts do not reach
+  them yet.  They will take proofs directed by hand against the lifted
+  models, as \texttt{bump\_bounded} was.
 \item \textbf{Known gaps, asserted.}  A record contract through a field
   update is not yet proved; a test asserts it is still open, so closing it
-  cannot happen quietly, and it is checked at runtime meanwhile.  A
-  callee's \texttt{requires} that mentions \texttt{u64::MAX} reaches its
-  callers as the number, not the symbol, so a caller cannot yet discharge
-  it.
+  cannot happen quietly, and it is checked at runtime meanwhile.
 \end{itemize}
 
 \appendix

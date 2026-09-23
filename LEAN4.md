@@ -229,6 +229,10 @@ All proved, none assumed:
 | `add_le_add_right`, `add_le_add` | induction on the added term: `add` recurses on its second argument, so `succ` on both sides is `leb`'s own step |
 | `add_le_of_le_sub` | induction on `n` generalising `s`, split on `s`: `n <= s` and `u <= s - n` give `u + n <= s`, the lemma a checked addition needs |
 | `lt_le`, `not_lt_le`, `not_le_lt` | a guard that held, or went false, read as `<=` |
+| `add_zero_left`, `add_succ_left`, `add_comm` | induction on the second argument, `succ` congruence by `Eq.ind` |
+| `add_le_of_le_sub_r` | `add_le_of_le_sub` carried along `add_comm`: the checked addition written the other way round |
+| `sub_one_lt` | `0 < i` gives `i - 1 < i`; at `i = k + 1`, `sub (k + 1) 1` is `sub k 0`, which computes once `k` is split |
+| `lt_not_le`, `le_not_lt` | a refuted comparison: a dependent case on it, where the true branch chains into `x < x` and `ltb_irrefl` |
 | `nth_all_le` | induction on the list, split on the index: a slice of `uN` stays below `max_uN` element by element |
 
 `fold_terminates` is the one that matters most: `progress` used to be checked
@@ -297,6 +301,7 @@ record's projections unsticks `fst` and `snd` for the same reason.
 | `preserves_by_loop` | prefix, loop and suffix chained into the syscall's obligation |
 | `compose` | syscalls and their proofs, in sequence |
 | `prove` | a hand-written term, checked by the kernel |
+| `by_loop` | a postcondition through `while` loops: each loop's four obligations (entry, preservation, variant, progress) by `by_bounds`, preservation and variant after `by_state` splits the state tuple into named fields; then the goal with the invariant at exit and the failed condition as facts. The invariant used is the one written; if it is too weak, the goal stays open |
 | `by_bounds` | `by_bool` on every guard, *dependently* -- each branch keeps `Holds g` or `g = false` -- with the goal's hypotheses kept; a branch whose facts contradict is closed, and a leaf that does not compute is settled by chaining `<=` facts (below) |
 
 `by_cases` binds fields **by name**: `f['current']`, not `f[3]`. With a state
@@ -548,6 +553,12 @@ decoration.
 *   **Rule 4 is for constant offsets.** `p[i]` in a loop is rule 3's problem,
     and a contract bound is not yet joined up with the loop-carried ranges
     that rule already computes.
+*   **`type_check` normalises a function's type only when it is not already
+    a `Pi`**, and a partial application's type only once the last argument
+    has arrived. Normalising first opened `leb a b` into its recursor while
+    `a` was a variable, and the literal substituted afterwards met the
+    recursor, not `leb`. Only the order of substitution and normalisation
+    moved; argument types are compared by definitional equality as before.
 *   **Huge literals stay folded beside a symbol.** `sub 2^64-1 u` does not
     unfold (`UNFOLD_LITERAL_LIMIT`, 2^16), since unfolding walks the
     literal down one `succ` at a time. Reducing less can refuse a true

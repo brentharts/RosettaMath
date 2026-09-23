@@ -1482,6 +1482,120 @@ def arithmetic_lemmas(env):
                'h', is_false(leb_(a, b)),
                app('ltb_false_leb', a, succ_(b), notb_of(leb_(a, b)))))))
 
+    # -- commutativity, for a checked addition written either way round ------
+    eqn = lambda l, r: app('Eq', NAT, l, r)
+
+    def congr_succ(l, r, h):
+        """Eq Nat (succ l) (succ r) from h : Eq Nat l r."""
+        return app('Eq.ind', NAT, l,
+                   Lambda('_w', NAT, Lambda('_e', eqn(l, Var('_w')),
+                                            eqn(succ_(l), succ_(Var('_w'))))),
+                   app('refl', NAT, succ_(l)), r, h)
+
+    Mz = Lambda('b', NAT, eqn(add_(numeral(0), b), b))
+    define(env, 'add_zero_left', Pi('b', NAT, eqn(add_(numeral(0), b), b)),
+           Lambda('b', NAT, app('Nat.ind', Mz, app('refl', NAT, numeral(0)),
+               Lambda('k', NAT, Lambda('ih', App(Mz, Var('k')), congr_succ(
+                   add_(numeral(0), Var('k')), Var('k'), Var('ih')))),
+               b)))
+    Ms = Lambda('b', NAT, eqn(add_(succ_(a), b), succ_(add_(a, b))))
+    define(env, 'add_succ_left',
+           Pi('a', NAT, Pi('b', NAT, eqn(add_(succ_(a), b),
+                                         succ_(add_(a, b))))),
+           Lambda('a', NAT, Lambda('b', NAT, app(
+               'Nat.ind', Ms, app('refl', NAT, succ_(a)),
+               Lambda('k', NAT, Lambda('ih', App(Ms, Var('k')), congr_succ(
+                   add_(succ_(a), Var('k')), succ_(add_(a, Var('k'))),
+                   Var('ih')))),
+               b))))
+    Mc = Lambda('b', NAT, eqn(add_(a, b), add_(b, a)))
+    k_ = Var('k')
+    define(env, 'add_comm',
+           Pi('a', NAT, Pi('b', NAT, eqn(add_(a, b), add_(b, a)))),
+           Lambda('a', NAT, Lambda('b', NAT, app(
+               'Nat.ind', Mc,
+               app('symm', NAT, add_(numeral(0), a), a,
+                   app('add_zero_left', a)),
+               Lambda('k', NAT, Lambda('ih', App(Mc, k_), app(
+                   'trans', NAT, succ_(add_(a, k_)), succ_(add_(k_, a)),
+                   add_(succ_(k_), a),
+                   congr_succ(add_(a, k_), add_(k_, a), Var('ih')),
+                   app('symm', NAT, add_(succ_(k_), a), succ_(add_(k_, a)),
+                       app('add_succ_left', k_, a))))),
+               b))))
+
+    # u <= s and n <= s - u give u + n <= s: add_le_of_le_sub, turned round
+    n_ = Var('n')
+    define(env, 'add_le_of_le_sub_r',
+           Pi('u', NAT, Pi('n', NAT, Pi('s', NAT, arrow(
+               holds(leb_(u, s)),
+               arrow(holds(leb_(n_, sub_(s, u))),
+                     holds(leb_(add_(u, n_), s))))))),
+           Lambda('u', NAT, Lambda('n', NAT, Lambda('s', NAT, Lambda(
+               'h1', holds(leb_(u, s)), Lambda(
+                   'h2', holds(leb_(n_, sub_(s, u))),
+                   app('Eq.ind', NAT, add_(n_, u),
+                       Lambda('_w', NAT, Lambda('_e', eqn(add_(n_, u),
+                                                          Var('_w')),
+                                                holds(leb_(Var('_w'), s)))),
+                       app('add_le_of_le_sub', n_, u, s, Var('h1'),
+                           Var('h2')),
+                       add_(u, n_), app('add_comm', n_, u))))))))
+
+    # A comparison refuted: b < a gives not (a <= b), b <= a gives not
+    # (a < b).  By a dependent case on the comparison: where it came out
+    # true, the two chain by leb_trans into x < x, which ltb_irrefl refutes.
+    def refuted(name, g, lo, hi, chain_from, chain_to, irr):
+        e = app('Eq', BOOL, g, Var('_x'))
+        motive = Lambda('_x', BOOL, arrow(e, holds(app('notb', Var('_x')))))
+        when_true = Lambda('_e', app('Eq', BOOL, g, Var('true')), app(
+            'absurd', holds(app('notb', Var('true'))),
+            app('ltb_irrefl', irr, chain_from(Var('_e')))))
+        when_false = Lambda('_e', app('Eq', BOOL, g, Var('false')), yes)
+        return app(app('Bool.ind', motive, when_true, when_false, g),
+                   app('refl', BOOL, g))
+    define(env, 'lt_not_le',
+           Pi('a', NAT, Pi('b', NAT, arrow(holds(app('ltb', b, a)),
+                                           holds(app('notb', leb_(a, b)))))),
+           Lambda('a', NAT, Lambda('b', NAT, Lambda(
+               'h', holds(app('ltb', b, a)),
+               refuted('lt_not_le', leb_(a, b), None, None,
+                       lambda e: app('leb_trans', succ_(b), a, b, Var('h'),
+                                     e), None, b)))))
+    define(env, 'le_not_lt',
+           Pi('a', NAT, Pi('b', NAT, arrow(holds(leb_(b, a)),
+                                           holds(app('notb',
+                                                     app('ltb', a, b)))))),
+           Lambda('a', NAT, Lambda('b', NAT, Lambda(
+               'h', holds(leb_(b, a)),
+               refuted('le_not_lt', app('ltb', a, b), None, None,
+                       lambda e: app('leb_trans', succ_(a), b, a, e,
+                                     Var('h')), None, a)))))
+
+    # 0 < i gives i - 1 < i: what makes `xs[i - 1]` in bounds behind `i > 0`
+    # and `i < xs.len()`.  At i = k + 1, `sub (k + 1) 1` is `sub k 0`, which
+    # is k only once k is split.
+    Mk = Lambda('k', NAT, holds(leb_(sub_(k_, numeral(0)), k_)))
+    inner = app('Nat.ind', Mk, yes,
+                Lambda('m', NAT, Lambda('_i', App(Mk, Var('m')),
+                                        app('leb_refl', Var('m')))), k_)
+    Mi1 = Lambda('i', NAT, arrow(holds(app('ltb', numeral(0), Var('i'))),
+                                 holds(app('ltb', sub_(Var('i'), numeral(1)),
+                                           Var('i')))))
+    define(env, 'sub_one_lt',
+           Pi('i', NAT, arrow(holds(app('ltb', numeral(0), Var('i'))),
+                              holds(app('ltb', sub_(Var('i'), numeral(1)),
+                                        Var('i'))))),
+           Lambda('i', NAT, app(
+               'Nat.ind', Mi1,
+               Lambda('h', holds(app('ltb', numeral(0), numeral(0))),
+                      app('absurd', holds(app('ltb', sub_(numeral(0),
+                                                          numeral(1)),
+                                                  numeral(0))), Var('h'))),
+               Lambda('k', NAT, Lambda('_ih', App(Mi1, k_), Lambda(
+                   'h', holds(app('ltb', numeral(0), succ_(k_))), inner))),
+               Var('i'))))
+
     # -- a list of values of one integer type ---------------------------------
     listnat = app('List', NAT)
     m = Var('m')
@@ -3411,6 +3525,17 @@ def _simplify_bool(term):
                 if a == Var('false'):
                     term = args[1]
                     continue
+            if n == 'add' and len(args) == 2 and args[1] == numeral(1):
+                # `x + 1` is `succ x` by computation (`add` recurses on its
+                # second argument), and `x < y` is `succ x <= y`: one key
+                # for the counter step and the strict bound it came from
+                return App(Var('succ'), _simplify_bool(args[0]))
+            if n == 'notb' and len(args) == 1:
+                a = _simplify_bool(args[0])
+                if a == Var('true'):
+                    return Var('false')
+                if a == Var('false'):
+                    return Var('true')
             if n == 'ite' and len(args) == 4:
                 c = _simplify_bool(args[1])
                 if c in (Var('true'), Var('false')):
@@ -3433,6 +3558,13 @@ def _is(term, name, arity):
     return None
 
 
+def _succ_of(x):
+    """`succ x`, written as the literal when x is one: `1 <= i` and
+    `succ 0 <= i` are one fact, and the search compares keys."""
+    k = L.as_numeral(x)
+    return numeral(k + 1) if k is not None else App(Var('succ'), x)
+
+
 def _le_edges(facts):
     """Every `x <= y` the facts give, as (x, y, proof of Holds (leb x y)).
 
@@ -3450,7 +3582,7 @@ def _le_edges(facts):
                 edges.append((args[0], args[1], pf))
             elif (args := _is(b, 'ltb', 2)) is not None:
                 x, y = args
-                edges.append((App(Var('succ'), x), y, pf))
+                edges.append((_succ_of(x), y, pf))
                 edges.append((x, y, app('lt_le', x, y, pf)))
             elif (args := _is(b, 'eqb', 2)) is not None:
                 x, y = args
@@ -3477,9 +3609,28 @@ def _le_edges(facts):
             elif (xy := _is(g, 'leb', 2)) is not None:
                 x, y = xy
                 lt = app('not_le_lt', x, y, pf)
-                edges.append((App(Var('succ'), y), x, lt))
+                edges.append((_succ_of(y), x, lt))
                 edges.append((y, x, app('lt_le', y, x, lt)))
     return edges
+
+
+def _conjuncts(facts):
+    """The facts, with every `Holds (andb a b)` also given as `Holds a` and
+    `Holds b`: an invariant is a conjunction, and a leaf wants a part."""
+    out, todo = [], list(facts)
+    while todo:
+        prop, pf = todo.pop()
+        out.append((prop, pf))
+        body = _is(prop, 'Holds', 1)
+        if body is None:
+            continue
+        both = _is(_simplify_bool(body[0]), 'andb', 2)
+        if both is not None:
+            todo.append((app('Holds', both[0]),
+                         app('andb_left', both[0], both[1], pf)))
+            todo.append((app('Holds', both[1]),
+                         app('andb_right', both[0], both[1], pf)))
+    return out
 
 
 def _subterms(term):
@@ -3514,6 +3665,19 @@ def _prove_le(env, a, b, edges, ranges, depth=6):
                 return app('refl', BOOL, true)
         except L.KernelError:
             pass
+        # x <= y + 1 from x <= y, by leb_succ
+        bs1 = _is(b, 'succ', 1)
+        if bs1 is not None and depth > 1:
+            below = _prove_le(env, x, bs1[0], edges, ranges, depth - 1)
+            if below is not None:
+                return app('leb_trans', x, bs1[0], b, below,
+                           app('leb_succ', bs1[0]))
+        # succ x <= succ y is x <= y, by leb's own step
+        xs_, bs_ = _is(x, 'succ', 1), _is(b, 'succ', 1)
+        if xs_ is not None and bs_ is not None and depth > 1:
+            inner = _prove_le(env, xs_[0], bs_[0], edges, ranges, depth - 1)
+            if inner is not None:
+                return inner
         # a sum below a sum, term by term
         xa, ba = _is(x, 'add', 2), _is(b, 'add', 2)
         if xa is not None and ba is not None and depth > 1:
@@ -3528,6 +3692,12 @@ def _prove_le(env, a, b, edges, ranges, depth=6):
         for lo, hi, pf in edges:
             if lo.key() == x.key():
                 yield hi, pf
+        # succ x <= succ y from x <= y: the same proof, by leb's own step
+        inner = _is(x, 'succ', 1)
+        if inner is not None:
+            for lo, hi, pf in edges:
+                if lo.key() == inner[0].key():
+                    yield App(Var('succ'), hi), pf
         for xs, m, pf in ranges:
             nth = _is(x, 'nth', 4)
             if nth is not None and nth[2].key() == xs.key() \
@@ -3538,12 +3708,27 @@ def _prove_le(env, a, b, edges, ranges, depth=6):
             u, n = parts
             for lo, hi, pf in edges:
                 diff = _is(hi, 'sub', 2)
-                if lo.key() == u.key() and diff is not None \
-                        and diff[1].key() == n.key():
-                    s = diff[0]
+                if diff is None:
+                    continue
+                s = diff[0]
+                if lo.key() == u.key() and diff[1].key() == n.key():
+                    # u <= s - n, the checked form of u + n
                     below = _prove_le(env, n, s, edges, ranges, 1)
                     if below is not None:
                         yield s, app('add_le_of_le_sub', u, n, s, below, pf)
+                elif lo.key() == n.key() and diff[1].key() == u.key():
+                    # n <= s - u, the same check written the other way
+                    below = _prove_le(env, u, s, edges, ranges, 1)
+                    if below is not None:
+                        yield s, app('add_le_of_le_sub_r', u, n, s, below,
+                                     pf)
+        # succ (i - 1) <= i behind 0 < i: an index `xs[i - 1]`
+        pred = _is(x, 'succ', 1)
+        pred = pred and _is(pred[0], 'sub', 2)
+        if pred and pred[1] == numeral(1):
+            pos = _prove_le(env, numeral(1), pred[0], edges, ranges, 1)
+            if pos is not None:
+                yield pred[0], app('sub_one_lt', pred[0], pos)
 
     frontier, seen = [(a, None)], {a.key()}
     for _ in range(depth + 1):
@@ -3566,7 +3751,8 @@ def _prove_le(env, a, b, edges, ranges, depth=6):
     return None
 
 
-def by_bounds(env, goal, unfolding=(), limit=64, verbose=False):
+def by_bounds(env, goal, unfolding=(), limit=64, verbose=False,
+              facts=()):
     r"""`by_every_bool`, for claims the guards imply but do not decide.
 
     `by_every_bool` writes `true` or `false` in for a guard and forgets it
@@ -3576,13 +3762,25 @@ def by_bounds(env, goal, unfolding=(), limit=64, verbose=False):
 
     This splits the same way but *dependently*: the branch where `g` went
     true gets `h : Holds g`, the other `h : Eq Bool g false`, through the
-    motive `fun x => Eq Bool g x -> claim[x]` applied at `refl g`.  The goal's
-    own hypotheses -- a `requires`, an integer's range -- are kept, not
-    weakened away.  At a leaf that does not compute, a claim `a <= b` or
-    `a < b` goes to `_prove_le`, which chains what the facts say.
+    motive `fun x => Eq Bool g x -> claim[x]` applied at `refl g`.  Every
+    fact that mentions `g` is carried across the split by `Eq.ind`, so a
+    fact `orb (notb g) P` becomes `P` in the branch where `g` held, and a
+    fact that becomes `Holds false` closes its branch.  The goal's own
+    hypotheses -- a `requires`, an integer's range, a loop invariant -- are
+    kept, with the named definitions in `unfolding` opened and projections
+    of a state tuple reduced, as the claim is.  `facts` are more
+    (proposition, proof) pairs from the caller, over the goal's binder
+    names: what a loop's invariant says at its exit, say.  At a leaf that
+    does not compute, `a <= b` or `a < b` goes to `_prove_le`, and a
+    variant step `n - (i + 1) < n - i` to `sub_lt`.
 
     The limit is on splits, as in `by_every_bool`.
     """
+    names = set(unfolding)
+
+    def prep(t):
+        return _simplify_bool(reduce_projections(unfold(t, env, names)))
+
     binders, body = [], goal
     while isinstance(body, Pi):
         head, _ = L.spine(body.var_type)
@@ -3590,19 +3788,26 @@ def by_bounds(env, goal, unfolding=(), limit=64, verbose=False):
         name = f'_h{len(binders)}' if hyp else body.var_name
         binders.append((name, body.var_type, hyp))
         body = L.instantiate(body.body, Var(name))
-    claim = unfold(body, env, set(unfolding))
-    base_facts = [(ty, Var(n)) for n, ty, hyp in binders if hyp]
+    claim = prep(body)
+    base_facts = [(prep(ty), Var(n)) for n, ty, hyp in binders if hyp]
+    if callable(facts):
+        # facts that need the hypotheses by name: a loop's invariant at
+        # exit is stated under the procedure's `requires`
+        facts = facts([n for n, _, hyp in binders if hyp])
+    base_facts += [(prep(ty), pf) for ty, pf in facts]
     counter = [0]
 
     def contradiction(facts):
-        """A proof of `Holds false` from `Holds g` and `Eq Bool g false`,
-        or None: a branch the facts rule out.  `Eq.ind` carries the first
-        along the second, turning `Eq Bool g true` into `Eq Bool false
+        """A proof of `Holds false` from the facts, or None: a fact that is
+        `Holds false` itself, or `Holds g` beside `Eq Bool g false`, where
+        `Eq.ind` carries the first along the second to `Eq Bool false
         true`."""
         held = {}
         for prop, pf in facts:
             body = _is(prop, 'Holds', 1)
             if body is not None:
+                if _simplify_bool(body[0]) == Var('false'):
+                    return pf
                 held[body[0].key()] = (body[0], pf)
         for prop, pf in facts:
             eq = _is(prop, 'Eq', 3)
@@ -3615,6 +3820,41 @@ def by_bounds(env, goal, unfolding=(), limit=64, verbose=False):
                 return app('Eq.ind', BOOL, g, motive, yes_pf, Var('false'),
                            pf)
         return None
+
+    def carried(facts, g, value, h):
+        """Each fact that mentions `g`, with `value` written in for it and
+        the proof carried along `h : Eq Bool g value`."""
+        out = list(facts)
+        counter[0] += 1
+        z = f'_z{counter[0]}'
+        for prop, pf in facts:
+            moved = replace_subterm(prop, g, value)
+            if moved.key() == prop.key():
+                continue
+            motive = Lambda(z, BOOL, Lambda(
+                '_e', app('Eq', BOOL, g, Var(z)),
+                replace_subterm(prop, g, Var(z))))
+            out.append((_simplify_bool(moved),
+                        app('Eq.ind', BOOL, g, motive, pf, value, h)))
+        return out
+
+    def variant_step(target, edges, ranges):
+        """`n - (i + 1) < n - i` from `i < n`, by `sub_lt`."""
+        args = _is(target, 'ltb', 2)
+        if args is None:
+            return None
+        lo, hi = _is(args[0], 'sub', 2), _is(args[1], 'sub', 2)
+        if lo is None or hi is None or lo[0].key() != hi[0].key():
+            return None
+        n, c = hi
+        step = _is(lo[1], 'succ', 1)
+        plus = _is(lo[1], 'add', 2)
+        if not ((step is not None and step[0].key() == c.key()) or
+                (plus is not None and plus[0].key() == c.key()
+                 and plus[1] == numeral(1))):
+            return None
+        below = _prove_le(env, App(Var('succ'), c), n, edges, ranges)
+        return None if below is None else app('sub_lt', n, c, below)
 
     def leaf(claim, facts):
         claim = _simplify_bool(claim)
@@ -3634,20 +3874,91 @@ def by_bounds(env, goal, unfolding=(), limit=64, verbose=False):
             if r:
                 ranges.append((r[0], r[1], pf))
         target = _simplify_bool(inner[0])
+        proof = None
+        if (args := _is(target, 'andb', 2)) is not None:
+            left = leaf(app('Holds', args[0]), facts)
+            right = leaf(app('Holds', args[1]), facts)
+            return app('andb_both', args[0], args[1], left, right)
+        if (args := _is(target, 'orb', 2)) is not None:
+            for k, side in enumerate(args):
+                try:
+                    one = leaf(app('Holds', side), facts)
+                except TheoremError:
+                    continue
+                return app('holds_orb_left' if k == 0 else
+                           'holds_orb_right', args[0], args[1], one)
         if (args := _is(target, 'leb', 2)) is not None:
             proof = _prove_le(env, args[0], args[1], edges, ranges)
         elif (args := _is(target, 'ltb', 2)) is not None:
-            proof = _prove_le(env, App(Var('succ'), args[0]), args[1],
-                              edges, ranges)
+            proof = variant_step(target, edges, ranges)
+            if proof is None:
+                proof = _prove_le(env, App(Var('succ'), args[0]), args[1],
+                                  edges, ranges)
+        elif (neg := _is(target, 'notb', 1)) is not None and \
+                ((args := _is(_simplify_bool(neg[0]), 'leb', 2)) is not None
+                 or (args := _is(_simplify_bool(neg[0]), 'ltb', 2))
+                 is not None):
+            # not (a <= b) from b < a; not (a < b) from b <= a
+            a_, b_ = args
+            if _is(_simplify_bool(neg[0]), 'leb', 2) is not None:
+                below = _prove_le(env, _succ_of(b_), a_, edges, ranges)
+                proof = below and app('lt_not_le', a_, b_, below)
+            else:
+                below = _prove_le(env, b_, a_, edges, ranges)
+                proof = below and app('le_not_lt', a_, b_, below)
         else:
-            proof = None
+            # a claim that is itself one of the facts, or a part of one
+            for prop, pf in _conjuncts(facts):
+                body = _is(prop, 'Holds', 1)
+                if body is not None and \
+                        _simplify_bool(body[0]).key() == target.key():
+                    return pf
         if proof is None:
             raise TheoremError(f"no chain of facts settles "
                                f"{readable(claim)}")
         return proof
 
+    def split(scrutinee, claim, facts, depth):
+        """Both branches of a dependent split on `scrutinee`."""
+        counter[0] += 1
+        h = f'_g{counter[0]}'
+        is_ = lambda val: app('Eq', BOOL, scrutinee, val)
+        when_true = Lambda(h, is_(Var('true')), prove_claim(
+            replace_subterm(claim, scrutinee, Var('true')),
+            carried(facts, scrutinee, Var('true'), Var(h))
+            + [(app('Holds', scrutinee), Var(h))], depth + 1))
+        when_false = Lambda(h, is_(Var('false')), prove_claim(
+            replace_subterm(claim, scrutinee, Var('false')),
+            carried(facts, scrutinee, Var('false'), Var(h))
+            + [(is_(Var('false')), Var(h))], depth + 1))
+        motive = Lambda('_x', BOOL, arrow(
+            is_(Var('_x')), replace_subterm(claim, scrutinee, Var('_x'))))
+        return app(app('Bool.ind', motive, when_true, when_false, scrutinee),
+                   app('refl', BOOL, scrutinee))
+
+    def disjuncts(facts):
+        """The left side of each `Holds (orb a b)` fact not yet decided:
+        what a case split on a disjunction splits on."""
+        out, seen = [], set()
+        for prop, _ in _conjuncts(facts):
+            body = _is(prop, 'Holds', 1)
+            either = body and _is(_simplify_bool(body[0]), 'orb', 2)
+            if not either:
+                continue
+            a = _simplify_bool(either[0])
+            neg = _is(a, 'notb', 1)
+            a = neg[0] if neg else a
+            if a in (Var('true'), Var('false')) or a.key() in seen:
+                continue
+            seen.add(a.key())
+            out.append(a)
+        return out
+
     def prove_claim(claim, facts, depth):
         while True:
+            # decided `ite`s out first, so that two copies of one call --
+            # one reached through a substitution, one not -- are one key
+            claim = _simplify_bool(claim)
             scrutinee = _first_open_ite(claim)
             if scrutinee is None:
                 break
@@ -3656,27 +3967,180 @@ def by_bounds(env, goal, unfolding=(), limit=64, verbose=False):
                 break
             claim = replace_subterm(claim, scrutinee, decided)
         if scrutinee is None:
-            return leaf(claim, facts)
+            try:
+                return leaf(claim, facts)
+            except TheoremError:
+                # a fact `a or b` the leaf could not use whole: split on `a`,
+                # so one branch has `a` and the other has `b`
+                if depth >= limit:
+                    raise
+                for a in disjuncts(facts):
+                    try:
+                        return split(a, claim, facts, depth)
+                    except TheoremError:
+                        continue
+                raise
         if depth >= limit:
             raise TheoremError(f"more than {limit} conditions to split on")
-        counter[0] += 1
-        h = f'_g{counter[0]}'
-        is_ = lambda val: app('Eq', BOOL, scrutinee, val)
-        when_true = Lambda(h, is_(Var('true')), prove_claim(
-            replace_subterm(claim, scrutinee, Var('true')),
-            facts + [(app('Holds', scrutinee), Var(h))], depth + 1))
-        when_false = Lambda(h, is_(Var('false')), prove_claim(
-            replace_subterm(claim, scrutinee, Var('false')),
-            facts + [(is_(Var('false')), Var(h))], depth + 1))
-        motive = Lambda('_x', BOOL, arrow(
-            is_(Var('_x')), replace_subterm(claim, scrutinee, Var('_x'))))
-        return app(app('Bool.ind', motive, when_true, when_false, scrutinee),
-                   app('refl', BOOL, scrutinee))
+        return split(scrutinee, claim, facts, depth)
 
     proof = prove_claim(claim, base_facts, 0)
     for name, ty, _ in reversed(binders):
         proof = Lambda(name, ty, proof)
     return prove(goal, proof, env, verbose=verbose)
+
+
+def _prod_fields(ty):
+    """The component types of a right-nested `Prod`: [A, B, C] for
+    `Prod A (Prod B C)`; [ty] for anything else."""
+    parts = _is(ty, 'Prod', 2)
+    if parts is None:
+        return [ty]
+    return [parts[0]] + _prod_fields(parts[1])
+
+
+def _mk(fields_ty, values):
+    """`mk` down a right-nested tuple: the inverse of `_prod_fields`."""
+    if len(values) == 1:
+        return values[0]
+    return app('mk', fields_ty[0], _prod_of(fields_ty[1:]), values[0],
+               _mk(fields_ty[1:], values[1:]))
+
+
+def _prod_of(tys):
+    if len(tys) == 1:
+        return tys[0]
+    return app('Prod', tys[0], _prod_of(tys[1:]))
+
+
+def by_state(env, goal, names, tactic):
+    r"""Prove `forall .. (s : Prod A (Prod B C)), P s` by `tactic` on
+    `forall .. (a : A) (b : B) (c : C), P (mk a (mk b c))`.
+
+    A loop's state is a tuple, and until it is known to be built by `mk`
+    its projections are stuck: `fst s` does not reduce, so nothing about
+    the counter it holds can be computed or compared.  One `Prod.ind` per
+    `mk` unsticks them all, and the fields get the loop variables' names.
+    The first binder whose type is a `Prod` is the one split.
+    """
+    pre, body = [], goal
+    while isinstance(body, Pi):
+        if _is(body.var_type, 'Prod', 2) is not None:
+            break
+        # hypotheses from `arrow` are all named `_`; two of them opened
+        # under one name would be one variable
+        name = body.var_name
+        if name == '_' or any(name == n for n, _ in pre):
+            name = f'_pre{len(pre)}'
+        pre.append((name, body.var_type))
+        body = L.instantiate(body.body, Var(name))
+    if not isinstance(body, Pi):
+        return tactic(env, goal)
+    state_ty = body.var_type
+    rest = L.instantiate(body.body, Var('_s'))
+    tys = _prod_fields(state_ty)
+    fields = [f'{n}_' if n else f'_f{k}' for k, n in
+              enumerate(list(names) + [None] * (len(tys) - len(names)))]
+    at = lambda t: L.instantiate(L.abstract(rest, '_s'), t)
+    opened = at(_mk(tys, [Var(f) for f in fields]))
+    for f, ty in reversed(list(zip(fields, tys))):
+        opened = Pi(f, ty, opened)
+    for n, ty in reversed(pre):
+        opened = Pi(n, ty, opened)
+    inner = tactic(env, opened)
+    whole = app(inner, *[Var(n) for n, _ in pre])
+
+    if len(tys) == 1:
+        term = app(whole, Var('_s'))
+    else:
+        term = _split_chain(tys, fields, whole, at)
+    term = Lambda('_s', state_ty, term)
+    for n, ty in reversed(pre):
+        term = Lambda(n, ty, term)
+    return prove(goal, term, env, verbose=False)
+
+
+def _split_chain(tys, fields, whole, at):
+    """`Prod.ind` down a right-nested tuple held in `_s`, binding each field
+    by name and ending in `whole` applied to them all."""
+    def go(k, prefix, var):
+        if k == len(tys) - 1:
+            # the last field is the remainder itself
+            return app(whole, *[Var(f) for f in fields[:k]], var)
+        here, there = tys[k], _prod_of(tys[k + 1:])
+        motive = Lambda(f'_t{k}', app('Prod', here, there),
+                        at(prefix(Var(f'_t{k}'))))
+        rest_name = fields[k + 1] if k + 1 == len(tys) - 1 else f'_r{k}'
+        minor = Lambda(fields[k], here, Lambda(rest_name, there, go(
+            k + 1, lambda u, x=Var(fields[k]), p=prefix, h=here, t=there:
+                p(app('mk', h, t, x, u)), Var(rest_name))))
+        return app('Prod.ind', here, there, motive, minor, var)
+    return go(0, lambda t: t, Var('_s'))
+
+
+def by_loop(env, proc, goal=None, unfolding=(), verbose=False):
+    r"""A postcondition through `while` loops, from their own annotations.
+
+    For each loop in order: the invariant holds on entry, a guarded pass
+    keeps it, and the variant comes down -- each by `by_bounds`, the last two
+    after `by_state` has split the loop's state into named fields.  Then
+    `progress_by_loop` and `invariant_at_exit` turn those into two facts
+    about the value the loop produced: the invariant still holds of it, and
+    the condition is false.  The goal -- `proc.obligation` unless another is
+    given -- is proved by `by_bounds` with those facts, for every loop, in
+    hand.  A later loop's entry is proved with the earlier loops' facts.
+
+    Nothing about a loop is assumed: the four obligations are the ones
+    `read_procedure` states, and each is a kernel proof.  What this does
+    not do is invent an invariant; the one written is the one used, and if
+    it is too weak to carry the goal, the goal stays open.  Nested loops are
+    not reached.
+    """
+    name = proc.name
+    goal = proc.obligation if goal is None else goal
+    base = set(unfolding) | {name}
+    exits = []                      # (statement of `at_exit`, its proof)
+
+    def fact_list(hyps):
+        out = []
+        params = {p for p, _ in proc.params}
+        for prop, pf, shape in exits:
+            if any(b not in params for b, _ in shape['binders']):
+                continue            # stated over locals the goal cannot name
+            args = [Var(b) for b, _ in shape['binders']]
+            args += [Var(h) for h in hyps[:len(shape['assumptions'])]]
+            out.append((prop, app(pf, *args)))
+        return out
+
+    for k, shape in enumerate(proc.shapes):
+        n = k + 1
+        goals = dict(proc.loop_obligations[4 * k:4 * k + 4]) \
+            if len(proc.loop_obligations) >= 4 * (k + 1) \
+            else dict(proc.loop_obligations)
+        mine = base | {f'{name}.inv{n}', f'{name}.cond{n}',
+                       f'{name}.pass{n}', f'{name}.rank{n}'}
+        entry = by_bounds(env, goals['invariant holds on entry'],
+                          unfolding=mine, facts=fact_list)
+        tactic = lambda e, g: by_bounds(e, g, unfolding=mine)
+        kept = by_state(env, goals['invariant is preserved'],
+                        shape['carried'], tactic)
+        down = by_state(env, goals['variant decreases'], shape['carried'],
+                        tactic)
+        progress = progress_by_loop(env, proc, entry, kept, down, which=k,
+                                    verbose=False)
+        at_exit = invariant_at_exit(env, proc, entry, kept, which=k)
+        # Stated as written, over the loop's binder names -- not read back
+        # from `type_check`, which answers with the normal form, where the
+        # invariant's `andb`s and `leb`s have become recursors
+        holds = lambda t: App(Var('Holds'), t)
+        exits.append((holds(App(shape['inv'], shape['result'])), at_exit,
+                      shape))
+        exits.append((holds(app('notb', App(shape['cond'],
+                                            shape['result']))),
+                      progress, shape))
+        base |= {f'{name}.inv{n}', f'{name}.cond{n}'}
+    return by_bounds(env, goal, unfolding=base, facts=fact_list,
+                     verbose=verbose)
 
 
 def by_cases(env, record_name, goal, verbose=False, what='this', using=None,
@@ -4300,7 +4764,10 @@ def progress_by_loop(env, proc, entry, preserved, decreases, which=0,
                     shape['init'], give(entry),
                     app('leb_refl', shape['fuel'])))
 
-    goal = dict(proc.loop_obligations)['progress']
+    # four obligations per loop, in order; `dict(..)['progress']` would be
+    # the last loop's whichever loop this is
+    label, goal = proc.loop_obligations[4 * which]
+    assert label == 'progress', label
     try:
         return prove(goal, term, env, verbose=verbose)
     except KernelError as exc:
@@ -5314,7 +5781,92 @@ def selftest():
                "    return m < x\n")
     ok("by_bounds: a branch its own hypotheses rule out is closed",
        bounds(vacuous, ["result"]) is not None)
+    for name in ('add_zero_left', 'add_succ_left', 'add_comm',
+                 'add_le_of_le_sub_r', 'sub_one_lt', 'lt_not_le',
+                 'le_not_lt'):
+        ok(f"{name} is a theorem of the prelude",
+           name in PRELUDE_ENV and L.value_of(PRELUDE_ENV, name) is not None)
+    mirrored = ("def r(u: 'Nat', n: 'Nat', m: 'Nat') -> 'Bool':\n"
+                "    assert (u <= m)\n"
+                "    if n <= m - u:\n"
+                "        return u + n <= m\n"
+                "    return True\n")
+    ok("by_bounds: the checked addition written the other way round",
+       bounds(mirrored, ["result"]) is not None)
+    previous = ("def p(xs: 'Array', i: 'Nat') -> 'Bool':\n"
+                "    if i < len(xs):\n"
+                "        if i > 0:\n"
+                "            return (i - 1) < len(xs)\n"
+                "    return True\n")
+    ok("by_bounds: i - 1 is an index behind 0 < i and i < len",
+       bounds(previous, ["result"]) is not None)
+    refuses("by_bounds: without 0 < i it is not",
+            lambda: bounds(previous.replace("        if i > 0:\n"
+                                            "            return",
+                                            "        if True:\n"
+                                            "            return"),
+                           ["result"]),
+            "no chain of facts")
+
+    # -- loops, by their own invariant ---------------------------------------
+    def looped(src, ensures):
+        env = prelude()
+        proc = read_procedure(src, env, None, ensures)
+        return by_loop(env, proc)
+
+    counting = ("def c(xs: 'Array', v: 'Nat') -> 'Nat':\n"
+                "    n = 0\n"
+                "    i = 0\n"
+                "    while i < len(xs):\n"
+                "        assert invariant(i <= len(xs) and n <= i)\n"
+                "        assert variant(len(xs) - i)\n"
+                "        if xs[i] == v:\n"
+                "            n = n + 1\n"
+                "        i = i + 1\n"
+                "    return n\n")
+    ok("by_loop: a count is at most the length, by the loop's invariant",
+       looped(counting, ["result <= len(xs)"]) is not None)
+    refuses("by_loop: and not at most zero",
+            lambda: looped(counting, ["result <= 0"]), "no chain of facts")
+    refuses("by_loop: an invariant too weak to carry it is not strengthened",
+            lambda: looped(counting.replace(" and n <= i", ""),
+                           ["result <= len(xs)"]), "no chain of facts")
+    searching = ("def s(xs: 'Array') -> 'Nat':\n"
+                 "    i = 0\n"
+                 "    while i < len(xs):\n"
+                 "        assert invariant((i <= len(xs)) and ((not _returned)"
+                 " or (_return_value <= 1)))\n"
+                 "        assert variant(len(xs) - i)\n"
+                 "        if xs[i] == 0:\n"
+                 "            return 0\n"
+                 "        i = i + 1\n"
+                 "    return 1\n")
+    ok("by_loop: through a loop that returns early",
+       looped(searching, ["result <= 1"]) is not None)
+    two = ("def t(xs: 'Array', ys: 'Array') -> 'Nat':\n"
+           "    i = 0\n"
+           "    while i < len(xs):\n"
+           "        assert invariant(i <= len(xs))\n"
+           "        assert variant(len(xs) - i)\n"
+           "        i = i + 1\n"
+           "    j = 0\n"
+           "    while j < len(ys):\n"
+           "        assert invariant(j <= len(ys))\n"
+           "        assert variant(len(ys) - j)\n"
+           "        j = j + 1\n"
+           "    return j\n")
+    ok("by_loop: two loops, each proved by its own obligations",
+       looped(two, ["result <= len(ys)"]) is not None)
+
+    # -- the kernel meets a huge literal inside a lemma's type -----------------
     big = numeral(2 ** 64 - 1)
+    ok("leb_trans at 2^64 - 1 type-checks without unfolding the literal",
+       L.definitionally_equal(
+           type_check(PRELUDE_ENV, app('leb_trans', Var('zero'), big, big)),
+           arrow(app('Holds', app('leb', Var('zero'), big)),
+                 arrow(app('Holds', app('leb', big, big)),
+                       app('Holds', app('leb', Var('zero'), big)))),
+           PRELUDE_ENV))
     ok("a huge literal beside a symbol stays folded",
        normalize(app('sub', big, Var('u')), PRELUDE_ENV)
        == app('sub', big, Var('u')))

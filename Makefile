@@ -216,7 +216,8 @@ leanos_paper:
 # (or CRUST_DIR).
 # Every Rust theorem lean4.py settles, each put to Lean 4 as its own file.
 rust_lean:
-	$(PYTHON) rustlean.py ../crust/leanos/regs.rs ../crust/leanos/alloc.rs
+	$(PYTHON) rustlean.py $(addprefix ../crust/leanos/,regs.rs alloc.rs \
+	    memmap.rs elfcheck.rs threads.rs loader.rs)
 
 rustproof_paper:
 	$(PYTHON) rustproof_paper.py

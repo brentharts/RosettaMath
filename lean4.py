@@ -812,7 +812,18 @@ def type_check(env, expr, local=None):
         return Universe(max(domain.level, codomain.level))
 
     if isinstance(expr, App):
-        func_type = normalize(type_check(env, expr.func, local), env)
+        # Normalised only when it is not already a Pi.  A constant's stated
+        # type usually is one, and normalising it first would open every
+        # definition under its binders while their arguments are still
+        # variables -- `leb a b` into `leb`'s recursor -- so that the
+        # argument substituted below meets a recursor, not `leb`.  At
+        # `a = 2^64 - 1` that recursor walks 2^64 steps, where `leb`, seen
+        # whole, is left folded (hoare.accelerate).  The argument's type is
+        # still compared by definitional equality, and the result is still
+        # normalised: only the order of instantiation and normalisation moves.
+        func_type = type_check(env, expr.func, local)
+        if not isinstance(func_type, Pi):
+            func_type = normalize(func_type, env)
         if not isinstance(func_type, Pi):
             raise KernelError(f"Expected a function, got {func_type}")
         arg_type = type_check(env, expr.arg, local)
@@ -820,7 +831,10 @@ def type_check(env, expr, local=None):
             raise KernelError(f"Type mismatch: expected "
                               f"{readable(func_type.var_type)}, "
                               f"got {readable(arg_type)}")
-        return normalize(instantiate(func_type.body, expr.arg), env)
+        # Likewise the result: while it is still a Pi, more arguments are
+        # coming, and it is normalised once they have all arrived.
+        result = instantiate(func_type.body, expr.arg)
+        return result if isinstance(result, Pi) else normalize(result, env)
 
     raise KernelError(f"Cannot typecheck: {expr}")
 

@@ -44,6 +44,10 @@ pub fn bump(bases: &[u64], sizes: &[u64], owners: &[u32], tid: u32,
 }
 """
 
+# What going through loops and address checks added to the prelude.
+LOOP_LEMMAS = ('add_zero_left', 'add_succ_left', 'add_comm',
+               'add_le_of_le_sub_r', 'sub_one_lt', 'lt_not_le', 'le_not_lt')
+
 BOUNDS_LEMMAS = ('add_le_add_right', 'add_le_add', 'add_le_of_le_sub',
                  'lt_le', 'not_lt_le', 'not_le_lt', 'nth_all_le')
 
@@ -206,10 +210,70 @@ def main(run_lean=True):
     out.append(macro('boundsLemmasAll', 'all' if all(
         n in H.prelude() for n in BOUNDS_LEMMAS) else 'NOT ALL'))
 
+    # -- the rest of LeanOS: memmap, elfcheck, threads, loader --------------------
+    # Each port is proved from its source, through its loops, and run against
+    # its Python over the Python model test's corpus.  The table is measured.
+    import unittest
+    from tests import test_leanos_rust as TL
+    port_rows, port_certs = [], []
+    port_total = port_proved = port_loops = port_fns = 0
+    t0 = time.time()
+    for mod in ('memmap', 'elfcheck', 'threads', 'loader'):
+        unit, own = rustprove.load_unit(os.path.join(CRUST, 'leanos',
+                                                     mod + '.rs'))
+        pp = rustprove.Prover(unit, own)
+        mine = sorted(n for n in pp.lifted if n in own)
+        n_ob = n_ok = 0
+
+        def work(pp=pp, mine=mine):
+            got = [0, 0]
+            for name in mine:
+                fn = pp.lifted[name]
+                if fn.ensures:
+                    got[0] += 1
+                    got[1] += bool(pp.contract(name))
+                for _label, ok in pp.safety(name):
+                    got[0] += 1
+                    got[1] += bool(ok)
+            return got
+        n_ob, n_ok = rustprove.in_big_stack(work)
+        loops = source(os.path.join(CRUST, 'leanos', mod + '.rs')).count(
+            '\n    while ') + source(os.path.join(
+                CRUST, 'leanos', mod + '.rs')).count('\n        while ')
+        corpus = getattr(TL, {'memmap': 'MM', 'elfcheck': 'EM',
+                              'threads': 'TM', 'loader': 'LM'}[mod]).CORPUS
+        result = unittest.TestResult()
+        TL.TestAgreesWithPython('test_' + mod).run(result)
+        agree = 'all %d' % len(corpus) if result.wasSuccessful() \
+            else 'NOT ALL'
+        port_rows.append('\\texttt{%s.rs} & %d & %d & %d of %d & %s \\\\'
+                         % (mod, len(mine), loops, n_ok, n_ob, agree))
+        port_total += n_ob
+        port_proved += n_ok
+        port_loops += loops
+        port_fns += len(mine)
+        port_certs += pp.certificates
+    with open(os.path.join(GEN, 'leanos_table.tex'), 'w') as fh:
+        fh.write('\n'.join(port_rows) + '\n\\bottomrule\n')
+    out.append(macro('portSeconds', '%.1f' % (time.time() - t0)))
+    out.append(macro('portObligations', port_total))
+    out.append(macro('portProved', port_proved))
+    out.append(macro('portOpen', port_total - port_proved))
+    out.append(macro('portLoops', port_loops))
+    out.append(macro('portFunctions', port_fns))
+    wrap = unittest.TestResult()
+    TL.TestAgreesWithPython('test_what_would_have_wrapped').run(wrap)
+    out.append(macro('portWrapRefused',
+                     'refused' if wrap.wasSuccessful() else 'NOT REFUSED'))
+    out.append(macro('loopLemmas', len(LOOP_LEMMAS)))
+    out.append(macro('loopLemmasAll', 'all' if all(
+        n in H.prelude() for n in LOOP_LEMMAS) else 'NOT ALL'))
+
     # -- the second kernel: every certificate, not one ----------------------------
     # Each obligation lean4.py settled above left a certificate; every one of
     # them is written as a Lean file and put to Lean 4.
-    certs = prover.certificates + sp.certificates + ap.certificates
+    certs = prover.certificates + sp.certificates + ap.certificates \
+        + port_certs
     out.append(macro('rustCertificates', len(certs)))
     if run_lean and LEAN:
         import rustlean

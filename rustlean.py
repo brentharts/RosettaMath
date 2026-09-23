@@ -144,7 +144,7 @@ def prove_everything(prover):
     """Ask `prover` for every contract and every panic obligation, so that
     each one it settles leaves a certificate.  Returns the open ones."""
     open_ = []
-    for name in sorted(prover.lifted):
+    for name in sorted(n for n in prover.lifted if n in prover.own):
         fn = prover.lifted[name]
         if fn.ensures and not prover.contract(name):
             open_.append((name, 'ensures ' + ' and '.join(fn.ensures)))
@@ -166,8 +166,8 @@ def main(argv):
     import rustprove
     total_agreed = total = 0
     for path in argv:
-        with open(path) as fh:
-            prover = rustprove.Prover(fh.read())
+        # a file and the files its `// uses:` line names, as one unit
+        prover = rustprove.Prover(*rustprove.load_unit(path))
         open_ = prove_everything(prover)
         verdicts = rustprove.in_big_stack(
             lambda: check(prover.certificates, out_dir))

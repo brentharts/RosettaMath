@@ -76,19 +76,27 @@ def in_order_at(b, s, k):
                app('notb', app('ltb', nth(b, k), prev_end)), L.Var('true'))
 
 
-def build(verbose=False):
-    env = H.prelude()
-    facts = {}
-    model = {}
+def define_spec(env):
+    """`ordered_prefix bases sizes i`: every position below i passed the
+    guard.  The specification the pair theorems are stated over; it names no
+    model, so a port of `regions_disjoint` -- `memmap_rs.py`'s, lifted from
+    Rust -- is held to the same one."""
     b, s = L.Var('bases'), L.Var('sizes')
-
-    # -- the specification: every position below i passed the guard ---------
     define(env, 'ordered_prefix', arrow(BYTES, arrow(BYTES, arrow(NAT, BOOL))),
            Lambda('bases', BYTES, Lambda('sizes', BYTES, Lambda('i', NAT,
                rec(NAT, BOOL, L.Var('true'),
                    Lambda('k', NAT, Lambda('ih', BOOL,
                           app('andb', in_order_at(b, s, L.Var('k')), L.Var('ih')))),
                    L.Var('i'))))))
+
+
+def build(verbose=False):
+    env = H.prelude()
+    facts = {}
+    model = {}
+    b, s = L.Var('bases'), L.Var('sizes')
+
+    define_spec(env)
 
     @remember
     @procedure(env=env, verbose=verbose, ensures=['result <= 1'],

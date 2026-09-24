@@ -64,6 +64,10 @@ list, the loader's header checks, threads and the loader --- is ported too,
 and the prover now goes through loops by their own \texttt{\#[invariant]}:
 \portProved{} of \portObligations{} obligations across \portFunctions{}
 functions and \portLoops{} loops, every port answering as its Python does.
+The two theorems LeanOS is founded on --- a region list the checker accepts
+has no two overlapping regions, and an address belongs to at most one
+owner --- are proved about the region list as lifted from Rust, stated term
+for term as they were about the hand-typed model.
 Every one of the \rustCertificates{} Rust theorems
 the kernel settles is exported, and Lean accepts \rustLeanAgreed{} of them
 with no axioms.  Along the way the kernel's unary numerals, which
@@ -422,6 +426,53 @@ file names the files it calls into with a \texttt{// uses:} line; they are
 appended after it, so its own line numbers, the ones every obligation
 names, stay exact.  In \portSeconds{}\,s.
 
+\section{The theorems LeanOS rests on}\label{sec:founding}
+
+Everything above is a property of one function at a time.  LeanOS is
+founded on two properties of the region list as a whole, and the LeanOS
+paper proved them about a model of it typed out by hand~\cite{hartshorn2026leanos}:
+\texttt{regions\_pairwise\_disjoint} --- if \texttt{regions\_disjoint}
+says 1, then for every $j < k$ region $j$ ends at or before region $k$
+begins --- and \texttt{region\_of\_unique} --- \texttt{region\_of} says 1
+for at most one owner.  \texttt{memmap\_rs.py} proves both about
+\texttt{memmap.rs} as lifted, \foundingProved{} of \foundingTheorems{}
+theorems in \foundingSeconds{}\,s.
+
+Most of the argument turned out not to need the model at all.  The hand
+proof is about a \emph{specification}, \texttt{ordered\_prefix}, the
+conjunction of the checker's guard at every position below a bound, and
+the steps from it --- a guard at every position gives consecutive regions
+in order, consecutive gives every pair, and two positions holding one
+address are one position --- name no model.  They are run unchanged.  What
+is proved afresh is where the Rust meets the specification.  The bridge,
+\texttt{regions\_disjoint\_ordered}, goes through the lifted loop by
+\texttt{by\_loop} with the invariant strengthened by
+\texttt{ordered\_prefix} at the counter; \texttt{by\_bounds} opens the
+specification one step at \texttt{i + 1} and rewrites it from the final
+counter to the length by antisymmetry.  The port tests
+\texttt{bases[i] - bases[i-1] < sizes[i-1]} behind
+\texttt{bases[i-1] <= bases[i]} and the specification
+\texttt{bases[i] < bases[i-1] + sizes[i-1]}; over the naturals they agree,
+and \texttt{add\_le\_of\_le\_sub\_r} is the step.  The witness
+\texttt{region\_index} returns is a Rust contract in the checked form,
+proved by \texttt{rustprove} like any other, and read in the
+specification's form by \texttt{lt\_add\_of\_sub\_lt}.
+\texttt{region\_of\_unique} is then the hand model's composition proof, run
+over the Rust's \texttt{region\_of}, \texttt{region\_index} and
+\texttt{regions\_disjoint}, which have the Python's names and argument
+order.
+
+Three checks run with the proofs, so that the claim is not only in the
+prose.  The shared theorems are stated here as in \texttt{memmap\_eq.py},
+the same term: \foundingSame{}.  The \texttt{regions\_disjoint} under them
+is the Rust's, its loop forming the checked subtraction and no sum:
+\foundingIsRust{}.  And a Rust with the size check deleted --- a list with
+overlapping regions accepted --- is \foundingMutant{} at the bridge, while
+the same loop with \texttt{ordered\_prefix} left out of the invariant
+\foundingMutantWhy{}: the proof fails exactly where the guard is missing.
+Lean~\leanVersion{} accepted the exported file, \foundingLean{} theorems
+depending on no axioms, in \foundingLeanSeconds{}\,s.
+
 \section{Discussion: numerals that fit}
 \label{sec:numerals}
 
@@ -582,12 +633,14 @@ What this is not:
 \item \textbf{Not all of Rust.}  Methods, traits, closures in the proof
   subset, recursion: refused by name.  The compiler handles far more Rust
   than the lift does; the lift grows toward it.
-\item \textbf{Not yet the theorems about pairs.}  That a disjoint
-  region list has no two overlapping regions, and that an address belongs
-  to at most one owner, are quantified over positions; RosettaMath proves
-  them about hand-typed models, and the Rust ports' contracts do not reach
-  them yet.  They will take proofs directed by hand against the lifted
-  models, as \texttt{bump\_bounded} was.
+\item \textbf{Not every theorem of the hand models, yet.}  The founding
+  pair are proved about the Rust; two built on them are not yet:
+  \texttt{sp\_no\_cross} in \texttt{threads\_eq.py} --- two threads whose
+  stack pointers coincide, each in its own region, are one thread --- and
+  \texttt{admit\_ordered} in \texttt{loader\_eq.py} --- an admitted
+  image leaves the grown region list ordered.  The first is
+  \texttt{region\_of\_unique} through \texttt{sp\_ok}; the second is the
+  bridge again, over the concatenation \texttt{loader.rs} reads in place.
 \item \textbf{Known gaps, asserted.}  A record contract through a field
   update is not yet proved; a test asserts it is still open, so closing it
   cannot happen quietly, and it is checked at runtime meanwhile.

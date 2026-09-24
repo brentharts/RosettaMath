@@ -269,6 +269,41 @@ def main(run_lean=True):
     out.append(macro('loopLemmasAll', 'all' if all(
         n in H.prelude() for n in LOOP_LEMMAS) else 'NOT ALL'))
 
+    # -- the founding theorems, about the lifted region list ------------------------
+    # memmap_rs.py: regions_pairwise_disjoint and region_of_unique, stated as
+    # memmap_eq.py states them, proved over memmap.rs as lifted.
+    import memmap_rs
+    memmap_rs.CRUST = CRUST
+    t0 = time.time()
+    menv = rustprove.in_big_stack(memmap_rs.build)
+    out.append(macro('foundingSeconds', '%.1f' % (time.time() - t0)))
+    out.append(macro('foundingTheorems', len(memmap_rs.THEOREMS)))
+    out.append(macro('foundingProved', sum(
+        n in menv for n in memmap_rs.THEOREMS)))
+    verdicts = dict(rustprove.in_big_stack(lambda: memmap_rs.checks(menv)))
+    same = [v for k, v in verdicts.items() if 'stated as' in k]
+    out.append(macro('foundingSame', '%d of %d' % (sum(same), len(same))))
+    out.append(macro('foundingIsRust', 'yes' if verdicts[
+        'regions_disjoint is the Rust: the checked subtraction'] else 'NO'))
+    out.append(macro('foundingMutant', 'refused' if verdicts[
+        'a Rust without the size check: the bridge is refused'] else
+        'PROVED'))
+    out.append(macro('foundingMutantWhy', 'proves' if verdicts[
+        '... and only for ordered_prefix: without it, it proves'] else
+        'DOES NOT PROVE'))
+    if run_lean and LEAN:
+        path = os.path.join(GEN, 'MemMapRs.lean')
+        with open(path, 'w') as fh:
+            fh.write(rustprove.in_big_stack(
+                lambda: memmap_rs.lean_source(menv)))
+        t0 = time.time()
+        run = subprocess.run([LEAN, path], capture_output=True, text=True)
+        free = sum("'RM.%s' does not depend on any axioms" % t in run.stdout
+                   for t in memmap_rs.THEOREMS)
+        out.append(macro('foundingLean', '%d of %d' % (
+            free if run.returncode == 0 else 0, len(memmap_rs.THEOREMS))))
+        out.append(macro('foundingLeanSeconds', '%.1f' % (time.time() - t0)))
+
     # -- the second kernel: every certificate, not one ----------------------------
     # Each obligation lean4.py settled above left a certificate; every one of
     # them is written as a Lean file and put to Lean 4.

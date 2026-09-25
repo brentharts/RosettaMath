@@ -662,8 +662,63 @@ def normalize(expr, env=None):
 
 
 def _normalize(expr, env):
+    if isinstance(expr, App) and env is not None:
+        # A head with a rule -- a recursor, an accelerator -- gets its
+        # arguments before its cases are normalised.  A case is a lambda,
+        # and normalising it first works under its binders, where `eqb m n`
+        # has variables and opens into `eqb`'s recursor; the literal that
+        # iota then substitutes meets that recursor rather than `eqb`, and at
+        # 2^62 walks 2^62 steps.  So the rule is tried with every argument
+        # normalised except a lambda, which is passed as written; if it
+        # fires, its result is normalised, cases applied by then.  If not,
+        # the ordinary path below.  Only the order of reduction moves.
+        rhead, rargs = spine(expr)
+        opened = rhead if isinstance(rhead, Lambda) else None
+        if isinstance(rhead, Var):
+            d = decl_of(env, rhead.name)
+            if d is not None and getattr(d, 'rule', None) is not None:
+                early = [a if isinstance(a, Lambda) else normalize(a, env)
+                         for a in rargs]
+                fired = d.rule(env, early)
+                if fired is not None:
+                    return normalize(fired, env)
+            elif d is not None and isinstance(d.value, Lambda):
+                opened = d.value
+        if opened is not None:
+            # A defined head, or a lambda, takes every argument it has at
+            # once -- normal order -- rather than one at a time with the
+            # rest of its body normalised under binders in between: that
+            # interval is where `Int.leb`'s `Int.ltb b a` met `b` as a
+            # variable and opened into recursors on it.
+            body, k = opened, 0
+            while isinstance(body, Lambda) and k < len(rargs):
+                body = instantiate(body.body, rargs[k])
+                k += 1
+            for extra in rargs[k:]:
+                body = App(body, extra)
+            return normalize(body, env)
     if isinstance(expr, App):
-        func = normalize(expr.func, env)
+        # A defined head is opened, not normalised: its value's body is
+        # instantiated with the argument and *then* normalised.  Normalising
+        # the value first works under its binders, where every argument is
+        # still a variable -- so `eqb m n` in a definition's body opened into
+        # `eqb`'s recursor, and the literal substituted afterwards met the
+        # recursor rather than `eqb`, which the accelerator would have
+        # computed at once; at 2^62 the recursor walks 2^62 steps.  A lambda
+        # at the head -- a recursor's case, say, reached by iota -- is
+        # likewise applied before it is normalised.  Only the
+        # order of reduction moves; every order gives a term definitionally
+        # equal to the input, which is all the kernel relies on.
+        head = expr.func
+        opened = head if isinstance(head, Lambda) else None
+        if env is not None and isinstance(head, Var):
+            d = decl_of(env, head.name)
+            # a declaration with a rule (an accelerator, a recursor) is
+            # reduced by its rule, which must see its arguments
+            if d is not None and getattr(d, 'rule', None) is None:
+                opened = d.value
+        func = opened if isinstance(opened, Lambda) \
+            else normalize(head, env)
         arg = normalize(expr.arg, env)
         if isinstance(func, Lambda):
             return normalize(instantiate(func.body, arg), env)

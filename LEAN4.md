@@ -593,3 +593,41 @@ in the specification's form. Each run also checks that the statements are
 the hand model's, that the model under them is the Rust's, and that a Rust
 with the size check deleted is refused at the bridge -- and only for want
 of that guard. `make memmap_rs`.
+
+## Integers
+
+The prelude has `Int` as Lean has it: `Int.ofNat n` for n and
+`Int.negSucc n` for -(n + 1), with `int_neg`, `int_add`, `int_sub`,
+`int_mul`, `int_ltb`, `int_leb`, `int_eqb` (not `Int.add`: exported into a
+Lean namespace, `Int.add`'s own body would resolve `add` to itself). Each
+operation is a case split on its arguments' shapes that lands on `Nat`
+arithmetic and an `if` on a `Nat` comparison; the selftest computes each
+against Python's integers on a grid out to ±2^62.
+
+The fragment reads `'Int'`, literals `Int(5)` and `Int(-5)`, unary minus and
+`!=`; `+ - *` and the comparisons choose the integer operation when an
+operand is an integer. `by_int_cases` splits each `x : Int` by `Int.ind`
+into its two shapes, after which every integer operation reduces to what
+`by_bounds` already reasons about; `by_integers` is the two together. New
+lemmas: `sub_le_sub_right` (x <= y gives x - k <= y - k), `zero_add_le`, and
+`ltb_succ_leb` -- `a < b` read as `a + 1 <= b` through a lemma rather than
+by unfolding, which a literal too large to walk leaves folded.
+
+**Evaluation order.** Integers exposed that normalisation evaluated a
+recursor's cases, and a definition's body, before their arguments arrived:
+under those binders `eqb m n` had variables and opened into its recursor,
+and a literal substituted afterwards walked that recursor -- 2^62 steps at
+OCaml's `min_int`. `lean4.normalize` now tries a head's rule with its lambda
+arguments unnormalised, and opens a defined head (or a lambda) with every
+argument it has at once. Only the order of reduction moved.
+
+**Lean gets its own `Nat`.** `leanexport` gives Lean the kernel's `Nat` as
+Lean's (`abbrev Nat := _root_.Nat` -- the same `zero`, `succ` and recursor),
+whose literals Lean holds in binary, and `leb`/`add` through `Nat.ble` and
+`Nat.add`, which satisfy the kernel's defining equations definitionally.
+Exported as its own unary type, a 63-bit bound was 2^62 `succ`s the moment
+Lean unfolded it, and Lean overflowed any stack. Nothing Python computes is
+trusted by this: Lean trusts its own kernel. The whole corpus was rechecked
+under it -- 91 of 91 Rust theorems, the 9 founding theorems, and the five
+hand-model files -- with no axioms. `export(.., native=False)` is the unary
+form, kept for comparison.

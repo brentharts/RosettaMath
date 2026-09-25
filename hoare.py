@@ -82,6 +82,7 @@ class ContractError(KernelError):
 
 NAT = Var('Nat')
 BOOL = Var('Bool')
+INT = Var('Int')
 TYPE0 = Universe(1)
 PROP = Universe(0)
 
@@ -1349,7 +1350,99 @@ def prelude(env=None, fast=True):
                'n', NAT, app('Nat.ind', Mt, base_t, step_t, Var('n')))))))
 
     arithmetic_lemmas(env)
+    int_prelude(env)
     return env
+
+
+INT_OPS = ('int_neg', 'int_add', 'int_sub', 'int_mul', 'int_ltb',
+           'int_leb', 'int_eqb', 'int_subNatNat', 'int_negOfNat')
+
+
+def int_literal(k):
+    """The integer k as a term: `Int.ofNat k`, or `Int.negSucc (-k - 1)`."""
+    if k >= 0:
+        return App(Var('Int.ofNat'), numeral(k))
+    return App(Var('Int.negSucc'), numeral(-k - 1))
+
+
+def int_prelude(env):
+    r"""The integers, as Lean has them: `ofNat n` for n, `negSucc n` for
+    -(n + 1).  Every operation is a case split on its arguments' shapes
+    that lands on `Nat` arithmetic and an `if` on a `Nat` comparison --
+    so that once each integer variable is split into its two shapes
+    (`by_int_cases`), what is left is a goal `by_bounds` already knows.
+
+    Named `int_add` .. `int_eqb`, not `Int.add`: exported to Lean inside a
+    namespace, `Int.add`'s own body would resolve `add` to itself.
+
+    Not trusted: these are definitions like any other, and the kernel
+    checks their types; what they *mean* is pinned by the selftest, which
+    computes each against Python's integers over a grid.
+    """
+    ofn = lambda n: App(Var('Int.ofNat'), n)
+    negs = lambda n: App(Var('Int.negSucc'), n)
+    # `n + 1`, not `succ n`: the accelerator computes it when n is a
+    # literal, where `succ LIT` would be walked down one step at a time
+    succ_ = lambda n: app('add', n, numeral(1))
+    ite = lambda ty, c, a, b: app('ite', ty, c, a, b)
+    m, n, a, b = Var('m'), Var('n'), Var('a'), Var('b')
+    inductive(env, 'Int', [('Int.ofNat', [NAT]), ('Int.negSucc', [NAT])])
+
+    def cases1(name, ty_out, on_of, on_neg):
+        """name : Int -> ty_out, by cases."""
+        define(env, name, arrow(INT, ty_out), Lambda('a', INT, app(
+            'Int.rec', Lambda('_', INT, ty_out),
+            Lambda('m', NAT, on_of(m)), Lambda('m', NAT, on_neg(m)),
+            a)))
+
+    def cases2(name, ty_out, oo, on, no, nn):
+        """name : Int -> Int -> ty_out, by cases on both."""
+        inner = lambda f, g: Lambda('m', NAT, app(
+            'Int.rec', Lambda('_', INT, ty_out),
+            Lambda('n', NAT, f(m, n)), Lambda('n', NAT, g(m, n)), b))
+        define(env, name, arrow(INT, arrow(INT, ty_out)),
+               Lambda('a', INT, Lambda('b', INT, app(
+                   'Int.rec', Lambda('_', INT, ty_out),
+                   inner(oo, on), inner(no, nn), a))))
+
+    # m - n as an integer, from two naturals
+    define(env, 'int_subNatNat', arrow(NAT, arrow(NAT, INT)),
+           Lambda('m', NAT, Lambda('n', NAT, ite(
+               INT, app('leb', n, m), ofn(app('sub', m, n)),
+               negs(app('sub', app('sub', n, m), numeral(1)))))))
+    # -k, from a natural
+    define(env, 'int_negOfNat', arrow(NAT, INT),
+           Lambda('m', NAT, ite(INT, app('eqb', m, numeral(0)),
+                                ofn(numeral(0)),
+                                negs(app('sub', m, numeral(1))))))
+    cases1('int_neg', INT, lambda m: app('int_negOfNat', m),
+           lambda m: ofn(succ_(m)))
+    cases2('int_add', INT,
+           lambda m, n: ofn(app('add', m, n)),
+           lambda m, n: app('int_subNatNat', m, succ_(n)),
+           lambda m, n: app('int_subNatNat', n, succ_(m)),
+           lambda m, n: negs(succ_(app('add', m, n))))
+    define(env, 'int_sub', arrow(INT, arrow(INT, INT)),
+           Lambda('a', INT, Lambda('b', INT, app(
+               'int_add', a, app('int_neg', b)))))
+    cases2('int_mul', INT,
+           lambda m, n: ofn(app('mul', m, n)),
+           lambda m, n: app('int_negOfNat', app('mul', m, succ_(n))),
+           lambda m, n: app('int_negOfNat', app('mul', succ_(m), n)),
+           lambda m, n: ofn(app('mul', succ_(m), succ_(n))))
+    cases2('int_ltb', BOOL,
+           lambda m, n: app('ltb', m, n),
+           lambda m, n: Var('false'),
+           lambda m, n: Var('true'),
+           lambda m, n: app('ltb', n, m))
+    define(env, 'int_leb', arrow(INT, arrow(INT, BOOL)),
+           Lambda('a', INT, Lambda('b', INT, app(
+               'notb', app('int_ltb', b, a)))))
+    cases2('int_eqb', BOOL,
+           lambda m, n: app('eqb', m, n),
+           lambda m, n: Var('false'),
+           lambda m, n: Var('false'),
+           lambda m, n: app('eqb', m, n))
 
 
 def arithmetic_lemmas(env):
@@ -1586,6 +1679,75 @@ def arithmetic_lemmas(env):
                'h1', holds(leb_(b, a)), Lambda(
                    'h2', holds(app('ltb', sub_(a, b), s_)), step3))))))
 
+    # x <= y gives x - k <= y - k.  Induction on k, generalising x and y;
+    # at 0 both sides are `sub_zero` away from the hypothesis; at k + 1, x = 0
+    # gives 0 on the left, and x = x' + 1 forces y = y' + 1 (y = 0 is
+    # refuted), when both sides step down to the hypothesis at (k, x', y').
+    X, Y, K = Var('x'), Var('y'), Var('k')
+    M = Lambda('k', NAT, Pi('x', NAT, Pi('y', NAT, arrow(
+        holds(leb_(X, Y)), holds(leb_(sub_(X, K), sub_(Y, K)))))))
+    z0 = numeral(0)
+    # base: carry h : x <= y along y = y - 0, then along x = x - 0
+    h1 = app('Eq.ind', NAT, Y,
+             Lambda('_w', NAT, Lambda('_e', eqn(Y, Var('_w')),
+                                      holds(leb_(X, Var('_w'))))),
+             Var('h'), sub_(Y, z0),
+             app('symm', NAT, sub_(Y, z0), Y, app('sub_zero', Y)))
+    h2 = app('Eq.ind', NAT, X,
+             Lambda('_w', NAT, Lambda('_e', eqn(X, Var('_w')),
+                                      holds(leb_(Var('_w'), sub_(Y, z0))))),
+             h1, sub_(X, z0),
+             app('symm', NAT, sub_(X, z0), X, app('sub_zero', X)))
+    base = Lambda('x', NAT, Lambda('y', NAT, Lambda('h', holds(leb_(X, Y)),
+                                                    h2)))
+    x2, y2 = Var('x2'), Var('y2')
+    Bx = Lambda('x', NAT, Pi('y', NAT, arrow(
+        holds(leb_(X, Y)), holds(leb_(sub_(X, succ_(K)), sub_(Y, succ_(K)))))))
+    By = Lambda('y', NAT, arrow(
+        holds(leb_(succ_(x2), Y)),
+        holds(leb_(sub_(succ_(x2), succ_(K)), sub_(Y, succ_(K))))))
+    step = Lambda('k', NAT, Lambda('ih', App(M, K), app(
+        'Nat.ind', Bx,
+        # x = 0: 0 - (k+1) is 0, and 0 <= anything
+        Lambda('y', NAT, Lambda('_h', holds(leb_(z0, Y)), yes)),
+        Lambda('x2', NAT, Lambda('_i', App(Bx, x2), Lambda('y', NAT, app(
+            'Nat.ind', By,
+            Lambda('h', holds(leb_(succ_(x2), z0)),
+                   app('absurd', holds(leb_(sub_(succ_(x2), succ_(K)),
+                                            sub_(z0, succ_(K)))), Var('h'))),
+            Lambda('y2', NAT, Lambda('_j', App(By, y2), Lambda(
+                'h', holds(leb_(succ_(x2), succ_(y2))),
+                app(Var('ih'), x2, y2, Var('h'))))),
+            Y)))))))
+    # a < b is a + 1 <= b by definition -- but by a definition the kernel
+    # leaves folded when b is a literal too large to walk, so the edge that
+    # reads a `<` fact as a `<=` one goes through this, checked once with
+    # variables, where unfolding `ltb` costs nothing
+    A_, B_ = Var('a'), Var('b')
+    define(env, 'ltb_succ_leb',
+           Pi('a', NAT, Pi('b', NAT, arrow(
+               holds(app('ltb', A_, B_)), holds(leb_(succ_(A_), B_))))),
+           Lambda('a', NAT, Lambda('b', NAT, Lambda(
+               'h', holds(app('ltb', A_, B_)), Var('h')))))
+
+    # 0 + n <= n, from add_zero_left: `0 + n` is not `n` by computation
+    # (addition recurses on its second argument), and an integer sum with a
+    # zero side -- `0 - x` for a negative x, split -- is exactly this
+    N_ = Var('n')
+    define(env, 'zero_add_le', Pi('n', NAT, holds(leb_(add_(z0, N_), N_))),
+           Lambda('n', NAT, app(
+               'Eq.ind', NAT, N_,
+               Lambda('_w', NAT, Lambda('_e', eqn(N_, Var('_w')),
+                                        holds(leb_(Var('_w'), N_)))),
+               app('leb_refl', N_), add_(z0, N_),
+               app('symm', NAT, add_(z0, N_), N_,
+                   app('add_zero_left', N_)))))
+
+    define(env, 'sub_le_sub_right',
+           Pi('k', NAT, Pi('x', NAT, Pi('y', NAT, arrow(
+               holds(leb_(X, Y)), holds(leb_(sub_(X, K), sub_(Y, K))))))),
+           Lambda('k', NAT, app('Nat.ind', M, base, step, K)))
+
     # a Bool that went false, as `Holds (notb x)`
     x_ = Var('x')
     define(env, 'false_notb',
@@ -1715,6 +1877,7 @@ BYTES = App(Var('List'), NAT)          # a string is a list of bytes
 STRS = App(Var('List'), BYTES)
 
 TYPE_NAMES = {'Nat': NAT, 'Bool': BOOL, 'int': NAT, 'bool': BOOL,
+              'Int': INT,
               'Array': BYTES, 'Bytes': BYTES, 'str': BYTES, 'Strs': STRS}
 
 # name -> ([argument types], result type), for calls the fragment understands
@@ -1737,6 +1900,7 @@ PRELUDE_ENV = None      # built below, once the tables above exist
 
 BINOPS = {ast.Add: 'add', ast.Sub: 'sub', ast.Mult: 'mul', ast.Mod: 'modb',
           ast.FloorDiv: 'divb'}
+INT_BINOPS = {ast.Add: 'int_add', ast.Sub: 'int_sub', ast.Mult: 'int_mul'}
 COMPARES = {ast.Lt: ('ltb', False), ast.Gt: ('ltb', True),
             ast.LtE: ('leb', False), ast.GtE: ('leb', True),
             ast.Eq: ('eqb', False)}
@@ -1843,7 +2007,10 @@ class ImpToLean:
                 return BOOL
             self.fail(node, f"'{node.id}' is not bound here")
         if isinstance(node, ast.BinOp):
-            return NAT
+            return INT if self.is_int(node.left) or self.is_int(node.right) \
+                else NAT
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            return INT
         if isinstance(node, (ast.Compare, ast.BoolOp)):
             return BOOL
         if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.Not):
@@ -1861,6 +2028,8 @@ class ImpToLean:
             if isinstance(node.func, ast.Name):
                 if node.func.id in ('len', 'alen'):
                     return NAT
+                if node.func.id == 'Int':
+                    return INT
                 if node.func.id == 'all_le':
                     return BOOL
                 if node.func.id == 'cons':
@@ -1873,6 +2042,17 @@ class ImpToLean:
             self.fail(node, "the result type of this call is not declared; "
                             "add it to SIGNATURES")
         self.fail(node, f"cannot give a type to {type(node).__name__}")
+
+    def is_int(self, node):
+        return same_type(self.type_of_expr(node), INT)
+
+    def int_operand(self, node):
+        """An operand of integer arithmetic: an `Int` as it is, a `Nat`
+        as `Int.ofNat` of it, so `x - len(xs)` mixes as it would in Rust
+        after a cast."""
+        if self.is_int(node):
+            return self.expr(node)
+        return App(Var('Int.ofNat'), self.expr(node))
 
     def field_of(self, node):
         """The record a field access is reaching into, and the field's type."""
@@ -1918,12 +2098,24 @@ class ImpToLean:
                 out = app('cons', inner, self.expr(item), out)
             return out
 
+        if isinstance(node, ast.BinOp) and (self.is_int(node.left) or
+                                            self.is_int(node.right)):
+            op = INT_BINOPS.get(type(node.op))
+            if op is None:
+                self.fail(node, f"{type(node.op).__name__} on integers is "
+                                f"not in this fragment yet")
+            return app(op, self.int_operand(node.left),
+                       self.int_operand(node.right))
+
         if isinstance(node, ast.BinOp):
             op = BINOPS.get(type(node.op))
             if op is None:
                 self.fail(node, f"{type(node.op).__name__} has no meaning in "
                                 f"this fragment")
             return app(op, self.expr(node.left), self.expr(node.right))
+
+        if isinstance(node, ast.UnaryOp) and isinstance(node.op, ast.USub):
+            return app('int_neg', self.int_operand(node.operand))
 
         if isinstance(node, ast.UnaryOp):
             if isinstance(node.op, ast.Not):
@@ -1947,15 +2139,24 @@ class ImpToLean:
         if isinstance(node, ast.Compare):
             if len(node.ops) != 1:
                 self.fail(node, "chained comparison: write it as `and`")
-            entry = COMPARES.get(type(node.ops[0]))
+            negate = isinstance(node.ops[0], ast.NotEq)
+            entry = COMPARES.get(type(node.ops[0])) if not negate \
+                else ('eqb', False)
             if entry is None:
                 self.fail(node, f"{type(node.ops[0]).__name__} is not a "
                                 f"decidable comparison here")
             name, flip = entry
-            left, right = self.expr(node.left), self.expr(node.comparators[0])
+            if self.is_int(node.left) or self.is_int(node.comparators[0]):
+                name = 'int_' + name
+                left = self.int_operand(node.left)
+                right = self.int_operand(node.comparators[0])
+            else:
+                left = self.expr(node.left)
+                right = self.expr(node.comparators[0])
             if flip:
                 left, right = right, left
-            return app(name, left, right)
+            out = app(name, left, right)
+            return app('notb', out) if negate else out
 
         if isinstance(node, ast.IfExp):
             ty = self.type_of_expr(node.body)
@@ -1980,6 +2181,17 @@ class ImpToLean:
             if not isinstance(node.func, ast.Name):
                 self.fail(node, "only a plain name may be called")
             name = node.func.id
+            if name == 'Int':
+                # `Int(5)`, `Int(-5)`: an integer literal, as the Rust lift
+                # writes one wherever the Rust type is signed
+                a = node.args[0] if len(node.args) == 1 else None
+                if isinstance(a, ast.UnaryOp) and \
+                        isinstance(a.op, ast.USub) and \
+                        isinstance(a.operand, ast.Constant):
+                    return int_literal(-a.operand.value)
+                if isinstance(a, ast.Constant) and isinstance(a.value, int):
+                    return int_literal(a.value)
+                self.fail(node, "Int(..) takes an integer literal")
             if name in ('len', 'alen'):
                 if len(node.args) != 1:
                     self.fail(node, "len takes one argument")
@@ -2590,6 +2802,9 @@ def _placeholder_for(tree):
         return ast.Constant(value=False), name
     if same_type(target, NAT):
         return ast.Constant(value=0), name
+    if same_type(target, INT):
+        return ast.Call(func=ast.Name(id='Int', ctx=ast.Load()),
+                        args=[ast.Constant(value=0)], keywords=[]), name
     return ast.List(elts=[], ctx=ast.Load()), name
 
 
@@ -3600,6 +3815,10 @@ def _simplify_bool(term):
                 if a == Var('false'):
                     term = args[1]
                     continue
+            if n == 'sub' and len(args) == 2 and args[1] == numeral(1) \
+                    and _is(args[0], 'succ', 1) is not None:
+                # (x + 1) - 1 is x - 0 by computation
+                return app('sub', _simplify_bool(args[0].arg), numeral(0))
             if n == 'add' and len(args) == 2 and args[1] == numeral(1):
                 # `x + 1` is `succ x` by computation (`add` recurses on its
                 # second argument), and `x < y` is `succ x <= y`: one key
@@ -3657,7 +3876,7 @@ def _le_edges(facts):
                 edges.append((args[0], args[1], pf))
             elif (args := _is(b, 'ltb', 2)) is not None:
                 x, y = args
-                edges.append((_succ_of(x), y, pf))
+                edges.append((_succ_of(x), y, app('ltb_succ_leb', x, y, pf)))
                 edges.append((x, y, app('lt_le', x, y, pf)))
             elif (args := _is(b, 'eqb', 2)) is not None:
                 x, y = args
@@ -3684,7 +3903,7 @@ def _le_edges(facts):
             elif (xy := _is(g, 'leb', 2)) is not None:
                 x, y = xy
                 lt = app('not_le_lt', x, y, pf)
-                edges.append((_succ_of(y), x, lt))
+                edges.append((_succ_of(y), x, app('ltb_succ_leb', y, x, lt)))
                 edges.append((y, x, app('lt_le', y, x, lt)))
     return edges
 
@@ -3778,9 +3997,37 @@ def _prove_le(env, a, b, edges, ranges, depth=6):
             if nth is not None and nth[2].key() == xs.key() \
                     and nth[1] == numeral(0):
                 yield m, app('nth_all_le', xs, m, nth[3], pf)
+        diff = _is(x, 'sub', 2)
+        if diff is not None:
+            # a - k <= a: truncating subtraction never exceeds what it took
+            # from -- an integer sum with a negative part, once split, is one
+            yield diff[0], app('sub_le', diff[0], diff[1])
+            # and a - k <= b - k from a <= b, for each bound of a
+            for lo, hi, pf in edges:
+                if lo.key() == diff[0].key():
+                    yield (_simplify_bool(app('sub', hi, diff[1])),
+                           app('sub_le_sub_right', diff[1], diff[0], hi, pf))
+            inner = _is(diff[0], 'sub', 2)
+            if inner is not None:
+                # (a - j) - k <= a - k, the bound of a - j being a
+                yield (_simplify_bool(app('sub', inner[0], diff[1])),
+                       app('sub_le_sub_right', diff[1], diff[0], inner[0],
+                           app('sub_le', inner[0], inner[1])))
         parts = _is(x, 'add', 2)
+        if parts is not None and parts[0] == numeral(0):
+            yield parts[1], app('zero_add_le', parts[1])
         if parts is not None:
+            # a sum below the sum of bounds: u <= hu and n <= hn give
+            # u + n <= hu + hn, by add_le_add (either side may stay put)
             u, n = parts
+            ups = lambda t: [(t, app('leb_refl', t))] + [
+                (hi, pf) for lo, hi, pf in edges if lo.key() == t.key()]
+            for hu, pu in ups(u):
+                for hn, pn in ups(n):
+                    if hu.key() == u.key() and hn.key() == n.key():
+                        continue
+                    yield (app('add', hu, hn),
+                           app('add_le_add', u, hu, n, hn, pu, pn))
             for lo, hi, pf in edges:
                 diff = _is(hi, 'sub', 2)
                 if diff is None:
@@ -3860,6 +4107,72 @@ def _open_step(env, name, args):
     return normalize(app(step, x, folded), None)        # beta only
 
 
+def _iota_int(term):
+    """`Int.rec C a b (Int.ofNat x)` as `a x`, and `.. (Int.negSucc x)` as
+    `b x`, beta-reduced, everywhere in `term`: iota, by hand, for the one
+    recursor the integer operations are written with.  Definitionally the
+    input."""
+    head, args = L.spine(term)
+    args = [_iota_int(a) for a in args]
+    if isinstance(head, Var) and head.name == 'Int.rec' and len(args) >= 4:
+        chead, cargs = L.spine(args[3])
+        if isinstance(chead, Var) and len(cargs) == 1 and \
+                chead.name in ('Int.ofNat', 'Int.negSucc'):
+            case = args[1] if chead.name == 'Int.ofNat' else args[2]
+            out = normalize(app(case, cargs[0], *args[4:]), None)  # beta
+            return _iota_int(out)
+    if isinstance(term, Binder):
+        return term.rebuild(_iota_int(term.var_type), _iota_int(term.body))
+    return app(head, *args) if args else head
+
+
+def by_int_cases(env, goal, tactic):
+    r"""Prove a goal over integers by its shapes: each `x : Int` binder is
+    split by `Int.ind` into `Int.ofNat n` and `Int.negSucc n`, and `tactic`
+    proves each goal left over natural numbers.  With every integer a
+    constructor, each integer operation (`int_add` .. `int_leb`) reduces to
+    `Nat` arithmetic and `if`s on `Nat` comparisons -- what `by_bounds`
+    reasons about.  2^k goals for k integers: fine for the functions a
+    contract is written on, and the kernel checks every one."""
+    pre, body = [], goal
+    while isinstance(body, Pi):
+        if same_type(body.var_type, INT):
+            break
+        name = body.var_name
+        if name == '_' or any(name == n for n, _ in pre):
+            name = f'_pre{len(pre)}'
+        pre.append((name, body.var_type))
+        body = L.instantiate(body.body, Var(name))
+    if not isinstance(body, Pi):
+        return tactic(env, goal)
+    xname = body.var_name if body.var_name not in ('_',) else '_x'
+    rest = L.instantiate(body.body, Var(xname))
+    at = lambda t: L.instantiate(L.abstract(rest, xname), t)
+    cases = []
+    for ctor in ('Int.ofNat', 'Int.negSucc'):
+        n = f'{xname}_{"n" if ctor == "Int.ofNat" else "m"}'
+        sub = Pi(n, NAT, at(App(Var(ctor), Var(n))))
+        for pname, pty in reversed(pre):
+            sub = Pi(pname, pty, sub)
+        cases.append((n, by_int_cases(env, sub, tactic)))
+    pvars = [Var(p) for p, _ in pre]
+    motive = Lambda(xname, INT, rest)
+    term = app('Int.ind', motive,
+               *[Lambda(n, NAT, app(pf, *(pvars + [Var(n)])))
+                 for n, pf in cases], Var(xname))
+    term = Lambda(xname, INT, term)
+    for pname, pty in reversed(pre):
+        term = Lambda(pname, pty, term)
+    return prove(goal, term, env, verbose=False)
+
+
+def by_integers(env, goal, unfolding=(), limit=64, facts=(), steps=()):
+    """`by_bounds`, after `by_int_cases`: a goal about integers."""
+    return by_int_cases(env, goal, lambda e, g: by_bounds(
+        e, g, unfolding=set(unfolding) | set(INT_OPS), limit=limit,
+        facts=facts, steps=steps))
+
+
 def _open_steps(env, term, names):
     """Every `name .. (succ x)` in `term`, for `name` in `names`, opened
     one step (see `_open_step`)."""
@@ -3905,12 +4218,23 @@ def by_bounds(env, goal, unfolding=(), limit=64, verbose=False,
     names = set(unfolding)
     steps = set(steps)
 
+    def settle(t):
+        """Unfold the named definitions and reduce `Int.rec` on constructors,
+        to a fixpoint: one unfolding exposes the next (`int_leb` opens to
+        `int_ltb`, which opens to a case split on its arguments' shapes)."""
+        for _ in range(16):
+            nxt = reduce_projections(_iota_int(unfold(t, env, names)))
+            if nxt.key() == t.key():
+                return t
+            t = nxt
+        return t
+
     def prep(t):
         # `steps` name specifications defined by recursion on their last
         # argument: at `succ x` each is opened one step, so that the guard
         # it adds at `x` is there to split on
-        return _simplify_bool(_open_steps(env, _simplify_bool(
-            reduce_projections(unfold(t, env, names))), steps))
+        return _simplify_bool(_open_steps(env, _simplify_bool(settle(
+            reduce_projections(t))), steps))
 
     binders, body = [], goal
     while isinstance(body, Pi):
@@ -4017,7 +4341,7 @@ def by_bounds(env, goal, unfolding=(), limit=64, verbose=False,
         return None
 
     def leaf(claim, facts):
-        claim = _simplify_bool(claim)
+        claim = _simplify_bool(settle(claim))
         inner = _is(claim, 'Holds', 1)
         if inner is not None and normalize(inner[0], env) == Var('true'):
             return app('refl', BOOL, Var('true'))
@@ -4141,8 +4465,8 @@ def by_bounds(env, goal, unfolding=(), limit=64, verbose=False,
         while True:
             # decided `ite`s out first, so that two copies of one call --
             # one reached through a substitution, one not -- are one key
-            claim = _simplify_bool(_open_steps(env, _simplify_bool(claim),
-                                               steps))
+            claim = _simplify_bool(_open_steps(env, _simplify_bool(
+                settle(claim)), steps))
             scrutinee = _first_open_ite(claim)
             if scrutinee is None:
                 break
@@ -6113,6 +6437,50 @@ def selftest():
        normalize(closed, PRELUDE_ENV) == F)
     refuses("an unknown bound is refused",
             lambda: from_crust({'align': 16}, 'ptr'), "unknown contract bound")
+
+    # -- integers: each operation against Python's, at the 63-bit edges too
+    def int_value(t):
+        head, args = L.spine(normalize(t, PRELUDE_ENV))
+        if isinstance(head, Var) and len(args) == 1:
+            k = L.as_numeral(args[0])
+            if head.name == 'Int.ofNat':
+                return k
+            if head.name == 'Int.negSucc' and k is not None:
+                return -k - 1
+        return head.name if isinstance(head, Var) and not args else None
+    grid = [-3, -1, 0, 1, 3, 2 ** 62 - 1, -(2 ** 62)]
+    wrong = 0
+    for xv in grid:
+        for yv in grid:
+            X_, Y_ = int_literal(xv), int_literal(yv)
+            for op, want in (('int_add', xv + yv), ('int_sub', xv - yv),
+                             ('int_mul', xv * yv)):
+                wrong += int_value(app(op, X_, Y_)) != want
+            for op, want in (('int_ltb', xv < yv), ('int_leb', xv <= yv),
+                             ('int_eqb', xv == yv)):
+                wrong += int_value(app(op, X_, Y_)) != \
+                    ('true' if want else 'false')
+    ok("integer arithmetic agrees with Python's on a grid to +-2^62",
+       wrong == 0)
+
+    def int_theorem(src, ensures):
+        env = prelude()
+        proc = read_procedure(src, env, None, ensures)
+        return by_integers(env, proc.obligation, unfolding={proc.name})
+    absolute = ("def iabs(x: 'Int') -> 'Int':\n    if x < Int(0):\n"
+                "        return -x\n    return x\n")
+    ok("|x| >= 0 over the integers",
+       int_theorem(absolute, ["result >= Int(0)"]) is not None)
+    refuses("|x| >= 1 is refused (x = 0)",
+            lambda: int_theorem(absolute, ["result >= Int(1)"]), "")
+    ranged = ("def s(a: 'Int', b: 'Int') -> 'Int':\n    assert a >= Int(0) "
+              "and a <= Int(10) and b >= Int(-3) and b <= Int(4)\n"
+              "    return a + b\n")
+    ok("a sum of ranged integers is in the summed range",
+       int_theorem(ranged, ["result >= Int(-3) and result <= Int(14)"])
+       is not None)
+    refuses("... and not one tighter",
+            lambda: int_theorem(ranged, ["result <= Int(13)"]), "")
 
     print(f"{checks[0]} checks, "
           f"{'all passed' if checks[0] == checks[1] else f'{checks[0]-checks[1]} FAILED'}")

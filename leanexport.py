@@ -239,9 +239,34 @@ def is_prop(env, type_):
         return False
 
 
+# Declarations given to Lean as its own natural numbers and their arithmetic,
+# rather than as written.  The kernel's `Nat` is Lean's `Nat` in shape --
+# `zero`, `succ`, a recursor on them -- so it is exported as that type, whose
+# literals Lean's kernel holds in binary.  Exported as its own unary type, a
+# literal near 2^62 was 2^62 `succ`s the moment Lean unfolded it, and a
+# signed 63-bit range is exactly such a literal.  `leb` and `add` go through
+# `Nat.ble` and `Nat.add`, which Lean computes on big numbers natively and
+# which satisfy the kernel's defining equations *definitionally* (`ble`
+# recurses on both arguments as `leb` does; `add` on its second): a proof
+# that unfolds `leb (succ a) (succ b)` to `leb a b` still checks.  `sub` keeps
+# its own definition: Lean's `Nat.sub` recurses differently, so the unfolding
+# a proof relies on would not match.  Nothing here is Python arithmetic: what
+# Lean trusts is its own kernel.
+NATIVE = {
+    'Nat': 'abbrev Nat : Type := _root_.Nat',
+    'add': ('noncomputable def add :\n    Nat → Nat → Nat :=\n'
+            '  fun (m : Nat) (n : Nat) => _root_.Nat.add m n'),
+    'leb': ('noncomputable def leb :\n    Nat → Nat → Bool :=\n'
+            '  fun (m : Nat) (n : Nat) => @_root_.Bool.rec (fun _ => Bool) '
+            'Bool.false Bool.true (_root_.Nat.ble m n)'),
+}
+
+
 def declaration(cat, name):
     """One declaration of Lean 4 source."""
     env = cat.env
+    if name in NATIVE and cat.native:
+        return NATIVE[name]
     if cat.kind(name) == 'inductive':
         former = L.type_of(env, name)
         pr = LeanPrinter(cat)
@@ -289,14 +314,16 @@ instance (n : _root_.Nat) : OfNat Nat n := ⟨ofNat n⟩
 """
 
 
-def export(env, roots, values=None, extra_checks=()):
-    """Lean 4 source declaring the roots and everything they depend on."""
+def export(env, roots, values=None, extra_checks=(), native=True):
+    """Lean 4 source declaring the roots and everything they depend on.
+    `native` gives Lean its own `Nat` (see NATIVE); False, the unary one."""
     cat = Catalogue(env, values)
+    cat.native = native
     order = dependencies(cat, roots)
     chunks = [PREAMBLE]
     for name in order:
         chunks.append(declaration(cat, name))
-        if name == 'Nat':
+        if name == 'Nat' and not native:
             chunks.append(NUMERALS)
     chunks.extend(extra_checks)
     chunks.append('end RM\n')

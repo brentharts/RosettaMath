@@ -631,3 +631,17 @@ trusted by this: Lean trusts its own kernel. The whole corpus was rechecked
 under it -- 91 of 91 Rust theorems, the 9 founding theorems, and the five
 hand-model files -- with no axioms. `export(.., native=False)` is the unary
 form, kept for comparison.
+
+**Division and recursion.** `int_div`/`int_mod` truncate toward zero,
+with `divb_le` and `modb_le` bounding a quotient and a remainder by the
+dividend. `by_bounds` now also: instantiates *schema* hypotheses
+`forall a.., C(a) -> P(a, g a)` (a recursive call's contract) at each
+`g t` whose condition the facts prove; splits a stuck integer term on its
+shape, and a stuck natural-number term on zero/successor, recording the
+equation as a fact; finds contradictions between spellings of one
+comparison and between a comparison gone false and the ordering facts; and
+settles claims and simplifies them together to a fixpoint. New lemmas:
+`notb_false_holds`, `succ_le_succ`, `le_succ_succ`, `eq_le` -- steps that
+had leaned on unfolding `leb`, which a literal too large to walk leaves
+folded, now go through these. `int_negOfNat` is by cases, so `-(i + 1)` is
+`negSucc i` rather than `negSucc (i - 0)`.

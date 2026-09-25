@@ -645,3 +645,28 @@ settles claims and simplifies them together to a fixpoint. New lemmas:
 had leaned on unfolding `leb`, which a literal too large to walk leaves
 folded, now go through these. `int_negOfNat` is by cases, so `-(i + 1)` is
 `negSucc i` rather than `negSucc (i - 0)`.
+
+**Enums.** The source's own inductive types go through the same tactics:
+`by_int_cases` splits a binder of such a type by `T.ind` on its
+constructors (the fields a split introduces are not split again -- a
+list's tail would never end -- since recursion is argued by a variant),
+and `settle` reduces any `T.rec` on a constructor by the kernel's iota
+rule. Recursive fields are declared with `REC`, so `T.rec` carries the
+induction hypotheses Lean's own recursor has, and exported terms line up
+with Lean's. `STAND_INS` lets a caller name a constant of a type it
+declares, for the value an early return starts `result` at. New lemma:
+`le_add_left` (b <= a + b), the bound for a tree's right subtree.
+
+**Mutual inductive types.** `lean4.mutual_inductive(env, [(T, ctors)..])`
+declares types that refer to each other (a field of a group type written
+`MREC('T')`): each `T.rec`/`T.ind` quantifies a motive per type of the
+group, then a case per constructor of every type in declaration order,
+each taking its fields and then an induction hypothesis per group-typed
+field at *that* field's type's motive; iota recurses through the field's
+own type's recursor with the same motives and cases. This is Lean's shape
+for a `mutual` block, and `leanexport` emits the group as one; the kernel
+selftest checks computation across the group and refusal of ill-typed
+constructions. No parameters or indices -- the restriction, stated. The
+tactics split a group type with its own recursor (the other types' motive
+`TrueP`, their cases `trivial`). New lemma: `ne_zero_ge_one`, reading a
+guard `x = 0` gone false as `1 <= x`.

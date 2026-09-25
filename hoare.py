@@ -1808,6 +1808,39 @@ def arithmetic_lemmas(env):
                holds(leb_(A_, B_)), holds(leb_(succ_(A_), succ_(B_)))))),
            Lambda('a', NAT, Lambda('b', NAT, Lambda(
                'h', holds(leb_(A_, B_)), Var('h')))))
+    # b <= a + b: le_add_right at (b, a), carried along a + b = b + a --
+    # the bound on a tree's right subtree, where the left is le_add_right
+    define(env, 'le_add_left',
+           Pi('a', NAT, Pi('b', NAT, holds(leb_(B_, app('add', A_, B_))))),
+           Lambda('a', NAT, Lambda('b', NAT, app(
+               'Eq.ind', NAT, app('add', B_, A_),
+               Lambda('_w', NAT, Lambda('_e', app('Eq', NAT, app(
+                   'add', B_, A_), Var('_w')), holds(leb_(B_, Var('_w'))))),
+               app('le_add_right', B_, A_), app('add', A_, B_),
+               app('add_comm', B_, A_)))))
+    # x = 0 false gives 1 <= x: at 0 the hypothesis is true = false; at
+    # k + 1, 1 <= k + 1 is 0 <= k, which computes
+    X_ = Var('x')
+    define(env, 'ne_zero_ge_one',
+           Pi('x', NAT, arrow(app('Eq', BOOL, app('eqb', X_, numeral(0)),
+                                  Var('false')),
+                              holds(leb_(numeral(1), X_)))),
+           Lambda('x', NAT, app(
+               'Nat.ind',
+               Lambda('y', NAT, arrow(app('Eq', BOOL, app(
+                   'eqb', Var('y'), numeral(0)), Var('false')),
+                   holds(leb_(numeral(1), Var('y'))))),
+               Lambda('h', app('Eq', BOOL, Var('true'), Var('false')),
+                      app('absurd', holds(leb_(numeral(1), numeral(0))),
+                          app('symm', BOOL, Var('true'), Var('false'),
+                              Var('h')))),
+               Lambda('k', NAT, Lambda('_ih', arrow(app(
+                   'Eq', BOOL, app('eqb', Var('k'), numeral(0)),
+                   Var('false')), holds(leb_(numeral(1), Var('k')))),
+                   Lambda('_h', app('Eq', BOOL, app(
+                       'eqb', succ_(Var('k')), numeral(0)), Var('false')),
+                       app('refl', BOOL, Var('true'))))),
+               X_)))
     # a = b gives a <= b: leb_refl carried along the equation
     define(env, 'eq_le',
            Pi('a', NAT, Pi('b', NAT, arrow(
@@ -1982,6 +2015,10 @@ def arithmetic_lemmas(env):
 
 BYTES = App(Var('List'), NAT)          # a string is a list of bytes
 STRS = App(Var('List'), BYTES)
+
+# type name -> a nullary function giving a value of it, for types a caller
+# declares (rustprove's enums): what an early return starts `result` at
+STAND_INS = {}
 
 TYPE_NAMES = {'Nat': NAT, 'Bool': BOOL, 'int': NAT, 'bool': BOOL,
               'Int': INT,
@@ -2912,6 +2949,10 @@ def _placeholder_for(tree):
         return ast.Constant(value=False), name
     if same_type(target, NAT):
         return ast.Constant(value=0), name
+    if name in STAND_INS:
+        # a type the caller declared -- an enum -- with a constant it named
+        return ast.Call(func=ast.Name(id=STAND_INS[name], ctx=ast.Load()),
+                        args=[], keywords=[]), name
     if same_type(target, INT):
         return ast.Call(func=ast.Name(id='Int', ctx=ast.Load()),
                         args=[ast.Constant(value=0)], keywords=[]), name
@@ -4020,6 +4061,15 @@ def _le_edges(facts):
             continue
         if eq is not None and eq[0] == BOOL and eq[2] == Var('false'):
             g = eq[1]
+            eq0 = _is(_simplify_bool(g), 'eqb', 2)
+            if eq0 is not None and numeral(0) in (eq0[0], eq0[1]):
+                # x = 0 gone false: 1 <= x
+                x_ = eq0[0] if eq0[1] == numeral(0) else eq0[1]
+                if eq0[0] == numeral(0):
+                    pass       # eqb 0 x: not the lemma's shape; left alone
+                else:
+                    edges.append((numeral(1), x_,
+                                  app('ne_zero_ge_one', x_, pf)))
             neg = _is(_simplify_bool(g), 'notb', 1)
             if neg is not None:
                 # notb x = false: x holds -- a guard `a >= b` on integers,
@@ -4119,6 +4169,12 @@ def _prove_le_direct(env, a, b, edges, ranges, depth=6):
         if ba_ is not None and depth > 1:
             if x.key() == ba_[0].key():
                 return app('le_add_right', ba_[0], ba_[1])
+            if x.key() == ba_[1].key():
+                return app('le_add_left', ba_[0], ba_[1])
+            right = _prove_le(env, x, ba_[1], edges, ranges, depth - 1)
+            if right is not None:
+                return app('leb_trans', x, ba_[1], b, right,
+                           app('le_add_left', ba_[0], ba_[1]))
             below = _prove_le(env, x, ba_[0], edges, ranges, depth - 1)
             if below is not None:
                 return app('leb_trans', x, ba_[0], b, below,
@@ -4309,6 +4365,106 @@ def _iota_int(term):
     return app(head, *args) if args else head
 
 
+def _is_enum_type(env, ty):
+    """An inductive type of the source's own -- an enum ocaml2rust wrote --
+    rather than one of the prelude's."""
+    return isinstance(ty, Var) and ty.name not in (
+        'Nat', 'Int', 'Bool', 'Int', 'List') and \
+        getattr(L.decl_of(env, ty.name), 'kind', None) == 'inductive' and \
+        bool(_constructors(env, ty.name))
+
+
+def _split_enum_binder(env, goal, pre, body, tactic, keep=frozenset()):
+    """`by_int_cases`'s split for an enum binder: by `T.ind`, one goal per
+    constructor over its fields; the induction hypotheses a recursive field
+    brings are not needed -- recursion is argued by the variant.  For a
+    type of a mutual group, `T.ind` takes a motive per type of the group
+    and a case per constructor of each: the others' motive is `TrueP`, and
+    their cases `trivial`."""
+    tname = body.var_type.name
+    group = getattr(L.decl_of(env, tname), 'mutual', None) or (tname,)
+    xname = body.var_name if body.var_name != '_' else '_x'
+    rest = L.instantiate(body.body, Var(xname))
+    at = lambda t: L.instantiate(L.abstract(rest, xname), t)
+    motive = Lambda(xname, body.var_type, rest)
+    motive_of = {t: (motive if t == tname else
+                     Lambda('_', Var(t), Var('TrueP'))) for t in group}
+    minors = []
+    for t in group:
+        for cname, ftypes in _constructors(env, t):
+            fnames = [f'{xname}_{cname.split(".")[-1]}{i}'
+                      for i in range(len(ftypes))]
+            if t == tname:
+                val = app(cname, *map(Var, fnames)) if fnames else Var(cname)
+                sub = at(val)
+                for fn_, ft in reversed(list(zip(fnames, ftypes))):
+                    sub = Pi(fn_, ft, sub)
+                for pname, pty in reversed(pre):
+                    sub = Pi(pname, pty, sub)
+                # a field of an enum type is not split again: the recursive
+                # field of a list would be split without end
+                pf = by_int_cases(env, sub, tactic, keep | {
+                    f for f, ft in zip(fnames, ftypes)
+                    if _is_enum_type(env, ft)})
+                case = app(pf, *([Var(p) for p, _ in pre] +
+                                 [Var(f) for f in fnames]))
+            else:
+                case = Var('trivial')
+            for i, ft in reversed(list(enumerate(ftypes))):
+                if isinstance(ft, Var) and ft.name in motive_of:
+                    case = Lambda(f'_ih{i}', App(motive_of[ft.name],
+                                                 Var(fnames[i])), case)
+            for fn_, ft in reversed(list(zip(fnames, ftypes))):
+                case = Lambda(fn_, ft, case)
+            minors.append(case)
+    term = app(f'{tname}.ind', *[motive_of[t] for t in group], *minors,
+               Var(xname))
+    term = Lambda(xname, body.var_type, term)
+    for pname, pty in reversed(pre):
+        term = Lambda(pname, pty, term)
+    return prove(goal, term, env, verbose=False)
+
+
+def _iota_any(term, env):
+    """Every `T.rec .. (C a..)` -- any recursor on a constructor -- one
+    iota step, by the kernel's own rule, then beta: what `_iota_int` does
+    for the integers, for an enum's type too."""
+    if isinstance(term, Binder):
+        return term.rebuild(_iota_any(term.var_type, env),
+                            _iota_any(term.body, env))
+    if not isinstance(term, App):
+        return term
+    head, args = L.spine(term)
+    args = [_iota_any(a, env) for a in args]
+    term = app(head, *args) if args else head
+    if isinstance(head, Var) and head.name.endswith('.rec') and \
+            head.name not in ('Int.rec', 'Nat.rec', 'Bool.rec'):
+        try:
+            step = L.reduce_head(term, env)
+        except L.KernelError:
+            step = None
+        if step is not None:
+            return _iota_any(normalize(step, None), env)
+    return term
+
+
+def _constructors(env, tname):
+    """(name, [field types]) of each constructor of the inductive `tname`,
+    in declaration order."""
+    out = []
+    for name in env:
+        d = L.decl_of(env, name)
+        if getattr(d, 'kind', None) != 'constructor':
+            continue
+        ty, fields = d.type, []
+        while isinstance(ty, Pi):
+            fields.append(ty.var_type)
+            ty = ty.body
+        if isinstance(ty, Var) and ty.name == tname:
+            out.append((name, fields))
+    return out
+
+
 def _below_by_adding(x, t):
     """A proof of x <= t when t is x under layers of `succ` and `+ c`, one
     `leb_succ` or `le_add_right` per layer; else None."""
@@ -4439,7 +4595,7 @@ def _subst_vars(t, avars, args):
     return t
 
 
-def by_int_cases(env, goal, tactic):
+def by_int_cases(env, goal, tactic, keep=frozenset()):
     r"""Prove a goal over integers by its shapes: each `x : Int` binder is
     split by `Int.ind` into `Int.ofNat n` and `Int.negSucc n`, and `tactic`
     proves each goal left over natural numbers.  With every integer a
@@ -4449,7 +4605,9 @@ def by_int_cases(env, goal, tactic):
     contract is written on, and the kernel checks every one."""
     pre, body = [], goal
     while isinstance(body, Pi):
-        if same_type(body.var_type, INT):
+        if same_type(body.var_type, INT) or (
+                _is_enum_type(env, body.var_type) and
+                body.var_name not in keep):
             break
         name = body.var_name
         if name == '_' or any(name == n for n, _ in pre):
@@ -4458,6 +4616,8 @@ def by_int_cases(env, goal, tactic):
         body = L.instantiate(body.body, Var(name))
     if not isinstance(body, Pi):
         return tactic(env, goal)
+    if _is_enum_type(env, body.var_type) and body.var_name not in keep:
+        return _split_enum_binder(env, goal, pre, body, tactic, keep)
     xname = body.var_name if body.var_name not in ('_',) else '_x'
     rest = L.instantiate(body.body, Var(xname))
     at = lambda t: L.instantiate(L.abstract(rest, xname), t)
@@ -4467,7 +4627,7 @@ def by_int_cases(env, goal, tactic):
         sub = Pi(n, NAT, at(App(Var(ctor), Var(n))))
         for pname, pty in reversed(pre):
             sub = Pi(pname, pty, sub)
-        cases.append((n, by_int_cases(env, sub, tactic)))
+        cases.append((n, by_int_cases(env, sub, tactic, keep)))
     pvars = [Var(p) for p, _ in pre]
     motive = Lambda(xname, INT, rest)
     term = app('Int.ind', motive,
@@ -4536,8 +4696,8 @@ def by_bounds(env, goal, unfolding=(), limit=64, verbose=False,
         to a fixpoint: one unfolding exposes the next (`int_leb` opens to
         `int_ltb`, which opens to a case split on its arguments' shapes)."""
         for _ in range(16):
-            nxt = _fold_literals(reduce_projections(_iota_int(
-                unfold(t, env, names))))
+            nxt = _fold_literals(reduce_projections(_iota_any(_iota_int(
+                unfold(t, env, names)), env)))
             if nxt.key() == t.key():
                 return t
             t = nxt

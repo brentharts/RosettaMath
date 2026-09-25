@@ -67,6 +67,9 @@ class Catalogue:
                 self._read_inductive(name)
 
     def _read_inductive(self, name):
+        group = getattr(L.decl_of(self.env, name), 'mutual', None)
+        if group:
+            return self._read_mutual(name, group)
         rec = L.type_of(self.env, f'{name}.rec')
         params = 0
         body = rec
@@ -92,6 +95,34 @@ class Catalogue:
         self.ctors[name] = ctors
         for c in ctors:
             self.ctor_owner[c] = name
+
+    def _read_mutual(self, name, group):
+        """A type of a mutual group: its constructors are the cases whose
+        conclusion is its own motive, C_(its place in the group)."""
+        body = L.type_of(self.env, f'{name}.rec')
+        motives = []
+        while isinstance(body, Pi) and body.var_name.startswith('C_'):
+            motives.append(body.var_name)
+            body = instantiate(body.body, Var(body.var_name))
+        mine = motives[list(group).index(name)]
+        ctors = []
+        while isinstance(body, Pi):
+            concl = body.var_type
+            while isinstance(concl, Pi):
+                concl = instantiate(concl.body, Var(concl.var_name))
+            head, args = L.spine(concl)
+            if not (isinstance(head, Var) and head.name in motives and args):
+                break
+            if head.name == mine:
+                built, _ = L.spine(args[-1])
+                ctors.append(built.name)
+            body = instantiate(body.body, Var('_'))
+        self.nparams[name] = 0
+        self.ctors[name] = ctors
+        for c in ctors:
+            self.ctor_owner[c] = name
+        self.groups = getattr(self, 'groups', {})
+        self.groups[name] = tuple(group)
 
     def kind(self, name):
         return L.as_decl(name, self.env[name]).kind
@@ -223,6 +254,8 @@ def dependencies(cat, roots):
         if cat.kind(name) == 'inductive':
             for c in cat.ctors[name]:
                 terms.append(L.type_of(cat.env, c))
+            for sibling in getattr(cat, 'groups', {}).get(name, ()):
+                stack.append(sibling)          # a mutual group goes whole
         v = cat.value(name)
         if v is not None:
             terms.append(v)
@@ -267,6 +300,20 @@ def declaration(cat, name):
     env = cat.env
     if name in NATIVE and cat.native:
         return NATIVE[name]
+    group = getattr(cat, 'groups', {}).get(name)
+    if cat.kind(name) == 'inductive' and group:
+        # one `mutual .. end` block, at the group's first member
+        if name != group[0]:
+            return ''
+        blocks = []
+        for member in group:
+            pr = LeanPrinter(cat)
+            lines = [f'  inductive {member} : Type where']
+            for c in cat.ctors[member]:
+                short = cat.lean_name(c).split('.')[-1]
+                lines.append(f'    | {short} : {pr.write(L.type_of(env, c))}')
+            blocks.append('\n'.join(lines))
+        return 'mutual\n' + '\n'.join(blocks) + '\nend'
     if cat.kind(name) == 'inductive':
         former = L.type_of(env, name)
         pr = LeanPrinter(cat)

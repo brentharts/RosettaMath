@@ -1010,6 +1010,104 @@ def inductive(env, name, constructors, params=(), indices=(), level=1):
     return env
 
 
+class MREC:
+    """A field of a mutual inductive's constructor whose type is one of the
+    group's: `MREC('stmt')` in `expr`'s `Block(stmt, expr)`."""
+
+    def __init__(self, name):
+        self.name = name
+
+
+def mutual_inductive(env, types, level=1):
+    r"""Declare inductive types that refer to each other, their
+    constructors, and their recursors -- as Lean's `mutual ... end` does:
+
+        mutual_inductive(env, [
+            ('expr', [('expr.Num', [INT]),
+                      ('expr.Block', [MREC('stmt'), MREC('expr')])]),
+            ('stmt', [('stmt.Skip', []), ('stmt.Eval', [MREC('expr')])])])
+
+    Each `T.rec` quantifies one motive per type of the group, then one case
+    per constructor of every type in declaration order, then the scrutinee
+    of type T.  A case takes its constructor's fields, then an induction
+    hypothesis for each field of a group type, at *that* type's motive.
+    `T.ind` is the same into Prop.  No parameters or indices: the one
+    restriction, stated.  A group of one is `inductive` with REC.
+    """
+    names = [t for t, _ in types]
+    for t, ctors in types:
+        declare(env, t, Universe(level), kind='inductive')
+    field_type = lambda f: Var(f.name) if isinstance(f, MREC) else f
+    for t, ctors in types:
+        for cname, fields in ctors:
+            ctype = Var(t)
+            for i, f in reversed(list(enumerate(fields))):
+                ctype = Pi(f'a{i}', field_type(f), ctype)
+            declare(env, cname, ctype, kind='constructor')
+    motives = [f'C_{i + 1}' for i in range(len(names))]
+    motive_of = dict(zip(names, motives))
+    all_ctors = [(t, cname, fields) for t, ctors in types
+                 for cname, fields in ctors]
+
+    def minor(t, cname, fields):
+        """forall fields, IHs -> C_t (cname fields)"""
+        fvars = [Var(f'a{i}') for i in range(len(fields))]
+        out = App(Var(motive_of[t]), app_all(Var(cname), fvars))
+        for i, f in reversed(list(enumerate(fields))):
+            if isinstance(f, MREC):
+                out = arrow(App(Var(motive_of[f.name]), fvars[i]), out)
+        for i, f in reversed(list(enumerate(fields))):
+            out = Pi(f'a{i}', field_type(f), out)
+        return out
+
+    for suffix, target in (('rec', Universe(1)), ('ind', Universe(0))):
+        for j, t in enumerate(names):
+            body = Pi('t', Var(t), App(Var(motives[j]), Var('t')))
+            for tt, cname, fields in reversed(all_ctors):
+                body = arrow(minor(tt, cname, fields), body)
+            for m, tt in reversed(list(zip(motives, names))):
+                body = Pi(m, arrow(Var(tt), target), body, implicit=True)
+            declare(env, f'{t}.{suffix}', body,
+                    rule=_mutual_rule(suffix, names, all_ctors),
+                    kind='recursor')
+    for t in names:
+        decl_of(env, t).mutual = tuple(names)
+    return env
+
+
+def app_all(f, args):
+    for a in args:
+        f = App(f, a)
+    return f
+
+
+def _mutual_rule(suffix, names, all_ctors):
+    """Iota for a mutual recursor: the case of the scrutinee's constructor,
+    its fields, and for each field of a group type that type's recursor
+    applied to the same motives and cases -- the induction hypothesis."""
+    nm, nc = len(names), len(all_ctors)
+
+    def rule(env, args):
+        if len(args) < nm + nc + 1:
+            return None
+        motives, cases = args[:nm], args[nm:nm + nc]
+        scrutinee, rest = args[nm + nc], args[nm + nc + 1:]
+        head, cargs = spine(normalize(scrutinee, env))
+        if not isinstance(head, Var):
+            return None
+        for case, (_t, cname, fields) in zip(cases, all_ctors):
+            if head.name != cname or len(cargs) != len(fields):
+                continue
+            out = app_all(case, cargs)
+            for a, f in zip(cargs, fields):
+                if isinstance(f, MREC):
+                    out = App(out, app_all(Var(f'{f.name}.{suffix}'),
+                                           list(motives) + list(cases) + [a]))
+            return app_all(out, rest)
+        return None
+    return rule
+
+
 def applied(name, params, indices):
     """T p1 .. pn i1 .. ik, as it appears in a constructor's result."""
     out = Var(name)
@@ -3097,6 +3195,28 @@ def selftest():
     check('a literal prints as its digits', str(numeral(4096)) == '4096')
     check('a negative literal is refused', raises(lambda: NatLit(-1),
                                                   'negative'))
+
+    print('mutual inductive types')
+    menv = dict(GLOBAL_ENV)
+    mutual_inductive(menv, [
+        ('ev', [('ev.z', []), ('ev.s', [MREC('od')])]),
+        ('od', [('od.s', [MREC('ev')])])])
+    nat_ = Var('Nat')
+    motives = [Lambda('_', Var('ev'), nat_), Lambda('_', Var('od'), nat_)]
+    one_more = lambda t: Lambda('a0', Var(t), Lambda('i', nat_, App(
+        Var('succ'), Var('i'))))
+    cases = [numeral(0), one_more('od'), one_more('ev')]
+    three = App(Var('od.s'), App(Var('ev.s'), App(Var('od.s'),
+                                                  Var('ev.z'))))
+    count = app_all(Var('od.rec'), motives + cases + [three])
+    check('a mutual recursor computes across the group',
+          normalize(count, menv) == numeral(3))
+    check('each case takes its field at the field type\'s motive',
+          'C_2' in str(type_of(menv, 'ev.rec')) and
+          raises(lambda: type_check(menv, App(Var('ev.s'), Var('ev.z')))))
+    check('a recursor applied to the other type is refused',
+          raises(lambda: type_check(menv, app_all(
+              Var('ev.rec'), motives + cases + [three]))))
 
     failed = [label for label, ok in checks if not ok]
     print('\n%d checks, %s' % (len(checks),

@@ -4241,6 +4241,13 @@ def _prove_le_direct(env, a, b, edges, ranges, depth=6):
         parts = _is(x, 'add', 2)
         if parts is not None and parts[0] == numeral(0):
             yield parts[1], app('zero_add_le', parts[1])
+        if parts is not None and read_numeral(parts[0]) is not None and \
+                read_numeral(parts[1]) is None:
+            # c + x is x + c, by add_comm: `1 + count` against a bound
+            # written `length + 1`, which is what addition computes to
+            flipped = _simplify_bool(app('add', parts[1], parts[0]))
+            yield flipped, app('eq_le', x, app('add', parts[1], parts[0]),
+                               app('add_comm', parts[0], parts[1]))
         if parts is not None:
             # a sum below the sum of bounds: u <= hu and n <= hn give
             # u + n <= hu + hn, by add_le_add (either side may stay put)
@@ -4703,6 +4710,18 @@ def by_bounds(env, goal, unfolding=(), limit=64, verbose=False,
             t = nxt
         return t
 
+    def fixpoint(t):
+        """settle and simplify until neither changes anything: deciding an
+        `if` can expose a constructor for `settle` to reduce, and the other
+        way round"""
+        for _ in range(16):
+            nxt = _simplify_bool(_open_steps(env, _simplify_bool(settle(t)),
+                                             steps))
+            if nxt.key() == t.key():
+                return t
+            t = nxt
+        return t
+
     def prep(t):
         # `steps` name specifications defined by recursion on their last
         # argument: at `succ x` each is opened one step, so that the guard
@@ -4804,6 +4823,9 @@ def by_bounds(env, goal, unfolding=(), limit=64, verbose=False,
     def carried(facts, g, value, h, ty=BOOL):
         """Each fact that mentions `g`, with `value` written in for it and
         the proof carried along `h : Eq ty g value`."""
+        # the original is kept beside its moved form: a later step may match
+        # on its spelling (`push_keeps_sp_ok` does); the facts pass below
+        # does not split the same term twice on one path (`on_path`)
         out = list(facts)
         counter[0] += 1
         z = f'_z{counter[0]}'
@@ -4814,7 +4836,7 @@ def by_bounds(env, goal, unfolding=(), limit=64, verbose=False,
             motive = Lambda(z, ty, Lambda(
                 '_e', app('Eq', ty, g, Var(z)),
                 replace_subterm(prop, g, Var(z))))
-            out.append((_simplify_bool(settle(moved)),
+            out.append((fixpoint(moved),
                         app('Eq.ind', ty, g, motive, pf, value, h)))
         return out
 
@@ -5066,6 +5088,8 @@ def by_bounds(env, goal, unfolding=(), limit=64, verbose=False,
             out.append(a)
         return out
 
+    on_path = []           # terms the facts pass split, on this branch
+
     def instances(claim, facts, depth):
         """Facts from the schemas, at the arguments `claim` applies their
         functions to, where the facts prove each instance's condition."""
@@ -5091,12 +5115,7 @@ def by_bounds(env, goal, unfolding=(), limit=64, verbose=False,
             # settling and simplifying feed each other -- deciding an inner
             # `if` can expose a constructor for `settle` to reduce -- so
             # both run until neither changes anything
-            for _ in range(16):
-                nxt = _simplify_bool(_open_steps(env, _simplify_bool(
-                    settle(claim)), steps))
-                if nxt.key() == claim.key():
-                    break
-                claim = nxt
+            claim = fixpoint(claim)
             scrutinee = _first_open_ite(claim)
             if scrutinee is None:
                 break
@@ -5117,6 +5136,23 @@ def by_bounds(env, goal, unfolding=(), limit=64, verbose=False,
                 stuck = stuck_nat(claim)
                 if stuck is not None and depth < limit:
                     return split_nat(stuck, claim, facts, depth)
+                # the claim has nothing left to split, but a fact may: a
+                # guard `b <= max - used` holds an `if` (whether `used` fits
+                # under `max`) the claim never mentions, and until it is
+                # split the guard says nothing
+                if depth < limit:
+                    for find, how in ((_first_open_ite, split),
+                                      (stuck_int, split_int),
+                                      (stuck_nat, split_nat)):
+                        for prop, _pf in facts:
+                            g = find(prop)
+                            if g is None or g.key() in on_path:
+                                continue
+                            on_path.append(g.key())
+                            try:
+                                return how(g, claim, facts, depth)
+                            finally:
+                                on_path.pop()
                 # a fact `a or b` the leaf could not use whole: split on `a`,
                 # so one branch has `a` and the other has `b`
                 if depth >= limit:

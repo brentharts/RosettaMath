@@ -143,9 +143,15 @@ def check(certs, out_dir, lean=None, jobs=None):
 def prove_everything(prover):
     """Ask `prover` for every contract and every panic obligation, so that
     each one it settles leaves a certificate.  Returns the open ones."""
+    from shivyc.rustproof import LiftError
     open_ = []
     for name in sorted(n for n in prover.lifted if n in prover.own):
-        fn = prover.lifted[name]
+        try:
+            fn = prover.lifted[name]
+        except LiftError:
+            continue      # not lifted -- a helper modelled by its template
+        if fn is None:
+            continue
         if fn.ensures and not prover.contract(name):
             open_.append((name, 'ensures ' + ' and '.join(fn.ensures)))
         for label, ok in prover.safety(name):

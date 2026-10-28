@@ -355,6 +355,7 @@ test:
 	$(PYTHON) rosettamath.py
 	$(PYTHON) rosettaphys.py --selftest
 	$(PYTHON) rosettalean.py --selftest
+	$(PYTHON) rosettaym.py --selftest
 	$(PYTHON) rosettapaper.py --selftest
 	$(PYTHON) rosettaui.py --selftest
 	$(PYTHON) lean4.py --selftest
@@ -362,6 +363,12 @@ test:
 # What the knowledge base currently covers, graph and joins included.
 census:
 	$(PYTHON) rosettaphys.py
+
+# The Yang-Mills laboratory (ymlab) checked against the library: set YMLAB_DIR
+# or keep a yang-mills-mass-gap-lab checkout beside this directory.  Without
+# it the bridge reports that and checks nothing.
+yangmills:
+	$(PYTHON) rosettaym.py
 
 # Every join the graph offers, as a conjecture the micro-kernel has checked.
 conjectures:
@@ -420,7 +427,7 @@ clean:
 	rm -rf __pycache__ /tmp/rosettaui-cache
 	rm -f /tmp/neomath.aux /tmp/neomath.log /tmp/neomath.out /tmp/neomath.tex
 
-.PHONY: memmap_rs rust_lean default help install install-all check-deps ui test census \
+.PHONY: memmap_rs rust_lean default help install install-all check-deps ui test census yangmills \
 	conjectures collisions physpaper proofs \
 	render-test pdf paper leanproof crustos_eq rustproof_paper clean \
 	install_apple install-apple install_apple-all \

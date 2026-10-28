@@ -29,6 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0,'../')
 import rosettaphys as P
 import rosettalean as RL
+import rosettaym as Y
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUTPUT = os.path.join(HERE, 'rosettaphys.tex')
@@ -176,6 +177,12 @@ Constructions \cite{coquand1988} checker whose statement language is
 \cite{hartshorn2026second} hands the same terms to Lean~4 \cite{demoura2021},
 so a second kernel can be asked what the first already answered.
 
+The library has since taken on work that is not the author's. Its lattice gauge
+theory group (Section~\ref{sec:lattice}) is drawn from the Yang--Mills Mass Gap
+Laboratory of Elsbernd \cite{elsbernd2026}: %s of its entries name the
+function in that code which they describe, and a bridge module puts the same
+numbers through the library's algebra and through the code and compares them.
+
 All three treat notation as something to be \emph{translated}. This paper
 treats it as something to be \emph{interrogated}, starting from an observation
 the project's own documentation has made since the beginning, in an article
@@ -206,7 +213,8 @@ at build time, because a paper about a knowledge base is a second copy of it,
 and the second copy is the one that goes stale.
 """ % (P.grand(), words(terms, 'equation').capitalize(),
        words(len(fams), 'quantity', 'quantities'),
-       len(RL.grand_conjecture().variables))
+       len(RL.grand_conjecture().variables),
+       number(len(P.cited(Y.REFERENCE))))
 
 
 def graph_section():
@@ -745,6 +753,315 @@ caught here and nowhere else.
        len(P.EQUATIONS))
 
 
+FIELD = 'Lattice gauge theory'
+
+
+def _ratio(x):
+    return '%.4f' % x
+
+
+def _error(x):
+    return '0' if x == 0 else '%.1e' % x
+
+
+def lattice_section():
+    """The first group whose provenance is another person's code.
+
+    What is claimed about the laboratory is generated from the laboratory: the
+    table of results is read out of its committed campaign, and every
+    agreement between it and the library is a number returned by
+    rosettaym.checks().  When ymlab is not on the machine building the paper
+    the section says so and prints nothing it could not have measured.
+    """
+    eqs = P.equations_in(FIELD)
+    cited = P.cited(Y.REFERENCE)
+    refused = [e for e in eqs if P.algebraic(e['latex']) is not None]
+    here = set()
+    for e in eqs:
+        here.update(P.READINGS.get(e['name'], {}).values())
+    elsewhere = set()
+    for e in P.EQUATIONS:
+        if e['field'] != FIELD:
+            elsewhere.update(P.READINGS.get(e['name'], {}).values())
+    fresh = sorted(here - elsewhere)
+    names = {e['name'] for e in eqs}
+    joins = [d for d in P.all_joins()
+             if any(s.equation['name'] in names for s in d.steps)]
+    pure = [d for d in joins
+            if all(s.equation['name'] in names for s in d.steps)]
+    tension = P.GRAPH.edge_between(P.GRAPH.find('Area law', 'equation'),
+                                   P.GRAPH.find('String tension', 'equation'))
+    refused_join = (P.join('Area law', 'String tension') is None
+                    and P.join('Creutz string tension',
+                               'String tension') is None)
+
+    head = r"""
+\section{A group whose source is somebody else's code}
+\label{sec:lattice}
+
+Everything in the library so far was entered by its author, from a textbook or
+from his own earlier work. The last group is different, and the difference is
+what is being tested: %s were drawn from the Yang--Mills Mass Gap
+Laboratory of Elsbernd \cite{elsbernd2026}, a finite-lattice $SU(2)$ and
+$SU(3)$ simulation package with its own test suite, and %s of them carry a
+\code{source} naming the function they describe.
+
+That field was introduced for a modest reason---two monotile inflation factors
+that looked contradictory until each said which matrix it came from---and it
+turns out to be the right place to record a stronger claim. A source of the form
+``this equation is what that function computes'' is checkable. The tilings could
+only be re-derived; the laboratory can be \emph{run}.
+
+The laboratory is explicit about what it is, and so is this paper. It is a
+numerical study of gauge theory on small periodic lattices. It does not
+construct the continuum four-dimensional theory, and it does not prove a
+positive mass gap, which is what the Clay problem asks. Nothing below is
+evidence about that problem. What is described is a smaller thing: a knowledge
+base and a body of working code agreeing, to machine precision, about what a
+handful of formulas mean.
+
+The group has %d entries and %d readings. Of the quantities it reads, %s are
+read by no other entry: %s. %s of the %d are refused by the algebra of
+Section~\ref{sec:algebra}, being sums, integrals or hatted operators; the rest
+can be rearranged and so can be joined.
+""" % (
+        words(len(cited), 'entry', 'entries').capitalize(),
+        number(len(cited)),
+        len(eqs), sum(len(P.READINGS.get(e['name'], {})) for e in eqs),
+        number(len(fresh)).capitalize(),
+        ', '.join(r'\emph{%s}' % esc(q) for q in fresh),
+        words(len(refused), 'entry', 'entries').capitalize(), len(eqs))
+
+    if not Y.available():
+        return head + r"""
+\subsection{Checks against the code}
+
+The laboratory was not found on the machine that built this document, so no
+comparison is printed. Set \code{YMLAB\_DIR} to a checkout of it and rebuild;
+\code{python3 rosettaym.py --selftest} runs the same comparisons from the
+terminal.
+"""
+
+    results = Y.checks()
+    check_rows = '\n'.join(
+        r'\code{%s} & %s & %s \\' % (esc(c.equation), esc(c.what),
+                                      _error(c.error))
+        for c in results)
+    gap = Y.unchecked()
+
+    run = Y.published_campaign()
+    same = Y.determinism()
+    table = Y.headline(run)
+    cfg = run['config']
+    env = run['environment']
+    rows = []
+    for (beta, label), row in sorted(
+            table.items(), key=lambda kv: (kv[0][0],
+                                           kv[1]['overrelaxation_sweeps'])):
+        rows.append(r'%s & \code{%s} & %.2f & %.2f & %.2f & %.2f & %s \\'
+                    % (('%g' % beta) if label == 'M' else '', esc(label),
+                       row['mean_plaquette_tau_int'],
+                       row['mean_scalar_tau_int'],
+                       row['mean_plaquette_ess_per_second'],
+                       row['mean_scalar_ess_per_second'],
+                       _ratio(row['mean_scalar_efficiency_ratio_vs_metropolis'])))
+    best = Y.best_schedules(run)
+    plaq_all_m = all(b['plaquette']['schedule_label'] == 'M'
+                     for b in best.values())
+    wins = [(beta, b['scalar']['schedule_label'])
+            for beta, b in sorted(best.items())
+            if b['scalar']['schedule_label'] != 'M']
+    cell = Y.aggregation(run=run)
+    dirty = [r for r in Y.published_runs() if r['git'].get('dirty', True)]
+    dirty_cell = Y.aggregation(run=dirty[0]) if dirty else None
+
+    body = r"""
+\subsection{Checks against the code}
+
+Each check takes an equation from the library, lets the library's own
+algebra---the reader, the rearranger and the evaluator of
+Section~\ref{sec:algebra}---work out what it predicts for some numbers, and
+puts the same numbers through the laboratory function the entry names. A
+misprinted exponent in the library's \LaTeX{} would therefore show up as a
+wrong number here and not as a pass. Table~\ref{tab:checks} gives the relative
+difference for each; where it reads ``worst case'' the comparison is over every
+chain in the laboratory's committed campaign.
+
+\begin{table}[h]
+\centering
+\scriptsize
+\begin{tabular}{p{3.6cm}p{8.2cm}r}
+\toprule
+Entry & What was compared & Difference \\
+\midrule
+%s
+\bottomrule
+\end{tabular}
+\caption{The library against the laboratory, from \code{rosettaym.checks()}.
+Differences are relative to the laboratory's value; ``0'' is exact agreement.
+%s of the %s entries that cite the laboratory are covered%s.}
+\label{tab:checks}
+\end{table}
+
+\subsection{The published result}
+
+The laboratory's final study compares four update schedules for $SU(2)$:
+one Metropolis sweep alone, and one Metropolis sweep followed by one, two or
+four microcanonical overrelaxation sweeps. The lattice is $%s$, the bare couplings
+are $\beta=%s$, and each condition is run from %s seeds for %s measured updates.
+Table~\ref{tab:campaign} is read from the run in the laboratory's repository
+that was made from a clean checkout (it was produced on %s %s with numpy~%s);
+nothing in it is transcribed.
+
+\begin{table}[h]
+\centering
+\scriptsize
+\begin{tabular}{rlrrrrr}
+\toprule
+$\beta$ & Schedule & $\tau_{\mathrm{int}}$ plaq. & $\tau_{\mathrm{int}}$ scalar
+& ESS/s plaq. & ESS/s scalar & Scalar ratio vs M \\
+\midrule
+%s
+\bottomrule
+\end{tabular}
+\caption{The overrelaxation campaign of the laboratory \cite{elsbernd2026}:
+mean integrated autocorrelation time $\tau_{\mathrm{int}}$ (in updates), mean
+effective samples per second, and the paired scalar efficiency ratio against
+Metropolis, as defined by the entries \code{Integrated autocorrelation time},
+\code{Sampling efficiency} and \code{Efficiency ratio}.}
+\label{tab:campaign}
+\end{table}
+
+%s%s
+
+The point the study makes is a methodological one and the library can state it
+exactly. The autocorrelation time is measured in updates and the efficiency in
+seconds, and they are different quantities: the first is a property of the
+chain and the seed, the second also of the machine. %s
+
+\subsection{Two ways to summarise one cell}
+
+The laboratory's paired ratio is the mean, over %s seeds, of per-seed ratios,
+each taken against the Metropolis chain begun from the same configuration. At
+$\beta=%g$ for the scalar observable and the \code{%s} schedule that is
+$%s$. The other obvious summary---the schedule's mean efficiency divided by
+Metropolis's mean efficiency---is $%s$ for the same cell. Both are defensible,
+they answer slightly different questions, and they are not the same number.
+Neither is a statement about the continuum, and with %s seeds neither is
+precise; the point is only that a reader who quotes one should know the other.%s
+
+\subsection{What the group refused}
+
+The string tension that appears in the area law of a Wilson loop and the string
+tension of string theory are both an inverse area, both written $\sigma$ or $T$,
+and both called ``the string tension''. A flux tube between static charges is
+modelled as a string, and in that model the two are related; whether the model
+is exact is a research question and not a notational one. The library therefore
+holds them as two quantities, \emph{confining string tension} and \emph{string
+tension}, and the graph does not join them: %s The edge between the two entries
+says why: ``%s''.
+
+The same repair appears twice more. A horizon is an area and so is a Wilson loop,
+which would have joined Bekenstein--Hawking entropy to the area law exactly as
+Section~\ref{sec:geometry} found a tiling patch joined to it; the loop area is
+declared as its own quantity, as the patch area was. And a Wilson loop is not a
+microstate count although both are written $W$. That this had to be done by
+hand again is not a surprise, and it is the same finding.
+
+\subsection{What the group joined}
+
+%s of the %s joins that involve the group are within it. Two of them are the
+reason it exists:
+
+%s
+
+\subsection{Reproducing a chain}
+
+\code{python3 rosettaym.py -\/-reproduce} thermalises one starting configuration
+here and runs two schedules again, then compares with the published records.
+It is slow, and its result depends on the machine, so this document does not
+include it unless it is built with \code{ROSETTAPAPER\_REPRODUCE=1}.%s
+""" % (
+        check_rows,
+        number(len(cited) - len(gap)).capitalize(), number(len(cited)),
+        ('; not covered: ' + ', '.join(esc(g) for g in gap)) if gap else '',
+        r'\times'.join(str(e) for e in cfg['shape']),
+        ', '.join('%g' % b for b in cfg['betas']),
+        number(len(cfg['seeds'])), cfg['measurement_updates'],
+        esc(str(env.get('platform_system', '?'))),
+        esc(str(env.get('platform_machine', '?'))),
+        esc(str(env.get('numpy_version', '?'))),
+        '\n'.join(rows),
+        ('Plain Metropolis had the highest mean plaquette efficiency at every '
+         'coupling. ' if plaq_all_m else
+         'Plain Metropolis did not have the highest mean plaquette efficiency '
+         'at every coupling. '),
+        ('The scalar observable was won by a schedule other than Metropolis '
+         'at ' + ', '.join(r'$\beta=%g$ (\code{%s})' % (b, esc(l))
+                           for b, l in wins) + '.'
+         if wins else
+         'Metropolis had the highest mean scalar efficiency at every '
+         'coupling.'),
+        (('%s runs of this configuration are in the repository. Their '
+          'autocorrelation times differ by at most %s and their effective '
+          'samples per second by up to %.1f\\%%, which is exactly what the '
+          'distinction predicts.')
+         % (number(same['runs']).capitalize(),
+            '%g' % same['max_tau_difference'],
+            100 * same['max_ess_per_second_relative'])) if same else
+        'Only one run of this configuration is in the repository.',
+        number(cell['seeds']), cell['beta'], esc(cell['schedule']),
+        _ratio(cell['mean_of_paired_ratios']),
+        _ratio(cell['ratio_of_mean_efficiencies']), number(cell['seeds']),
+        ((' A second run of the same configuration, made from an uncommitted '
+          'tree, gives %s for the paired ratio; the clean run is the one '
+          'quoted here, and the rule that chooses it is in '
+          r'\code{rosettaym.published\_campaign()}.')
+         % _ratio(dirty_cell['mean_of_paired_ratios'])) if dirty_cell else '',
+        ('\\code{join} returns nothing for either pairing.' if refused_join
+         else 'the join was not refused, and that is a bug.'),
+        esc(tension.note) if tension is not None else '',
+        number(len(pure)).capitalize(), number(len(joins)),
+        '\n\n'.join(
+            r'\[ %s \]' % d.latex() + '\n\n\\noindent ' + d.prose(math='$%s$')
+            for d in _showcase_lattice_joins()),
+        _reproduction_text())
+    return head + body
+
+
+def _showcase_lattice_joins():
+    out = []
+    for names in [('Effective sample size', 'Sampling efficiency'),
+                  ('Area law', 'Creutz string tension')]:
+        found = P.join(*names)
+        if found is not None:
+            out.append(found)
+    return out
+
+
+def _reproduction_text():
+    """The live comparison, only when asked for."""
+    if not os.environ.get('ROSETTAPAPER_REPRODUCE'):
+        return ''
+    got = Y.reproduce()
+    if got is None:
+        return ''
+    lines = []
+    for r in got['rows']:
+        gap = abs(r['scalar_tau_here'] - r['scalar_tau_published']) \
+            / r['scalar_tau_published']
+        lines.append(r'The \code{%s} chain at $\beta=%g$, seed %d, gave a '
+                     r'scalar $\tau_{\mathrm{int}}$ of %.6f against %.6f '
+                     r'published (%s); its runtime was %.1f\,s here and '
+                     r'%.1f\,s there.'
+                     % (esc(r['schedule']), got['beta'], got['seed'],
+                        r['scalar_tau_here'], r['scalar_tau_published'],
+                        'identical to rounding' if gap < 1e-9 else
+                        'a difference of %.0f\\%%' % (100 * gap),
+                        r['runtime_here'], r['runtime_published']))
+    return '\n\n' + '\n'.join(lines)
+
+
 def lean_section():
     conj = RL.conjecture(P.join('Boltzmann entropy',
                                 'Bekenstein-Hawking entropy'))
@@ -800,17 +1117,26 @@ def reproducibility():
 \section*{Reproducibility --- Source Code}
 
 \url{https://github.com/brentharts/RosettaMath}
+\newline
+\url{%s}
+\newline
+(the laboratory of Section~\ref{sec:lattice}: found in \code{YMLAB\_DIR}, or in
+a \code{yang-mills-mass-gap-lab} directory beside this one)
 
 \begin{lstlisting}[language={}]
 python3 rosettaphys.py             the census: nodes, edges, joins, collisions
 python3 rosettaphys.py --selftest  %d entries, the graph, and the algebra
 python3 rosettalean.py             every join, as a checked conjecture
 python3 rosettalean.py --selftest  the bridge, end to end
+python3 rosettaym.py               the Yang-Mills laboratory, checked against the library
+python3 rosettaym.py --selftest    %d comparisons, and the published campaign
+python3 rosettaym.py --reproduce   rerun one chain pair here (slow)
 python3 rosettapaper.py            regenerate this document
 make test                          all of the above, plus the kernel
 make collisions                    the table in Section 4
 \end{lstlisting}
-""" % (len(P.SYMBOLS) + len(P.CONCEPTS) + len(P.EQUATIONS))
+""" % (P.REFERENCES[Y.REFERENCE]['url'],
+       len(P.SYMBOLS) + len(P.CONCEPTS) + len(P.EQUATIONS), len(Y.checks()))
 
 
 def appendices():
@@ -826,6 +1152,8 @@ def appendices():
     source_rows = '\n'.join(
         r'%s & \code{%s} \\' % (esc(eq.label), esc(src))
         for eq, src in P.sourced())
+    computed = [eq for eq, _src in P.sourced() if P.reference_for(eq) is None]
+    coded = [eq for eq, _src in P.sourced() if P.reference_for(eq) is not None]
     return r"""
 \appendix
 \footnotesize
@@ -847,14 +1175,20 @@ Equation & Statement & Readings \\
 \section{Entries derived rather than quoted}
 \label{app:sources}
 
-Most of the library can be checked against a textbook. %s cannot: their values
-were computed, and an entry that says only which Wikipedia article explains the
-idea does not say where its number came from. Those entries carry a
-\code{source} naming the matrix or function it was computed from.
+Most of the library can be checked against a textbook. %s cannot, for one of
+two reasons. %s are computed: their values came from a matrix or a function, and
+an entry that says only which Wikipedia article explains the idea does not say
+where its number came from. Those entries carry a \code{source} naming the
+matrix or function it was computed from.
 \newline
-\url{https://github.com/brentharts/spectre} 
+\url{https://github.com/brentharts/spectre}
 \newline
 \url{https://github.com/brentharts/CICY}
+
+The other %s describe code rather than compute from it: the lattice gauge
+theory entries drawn from the laboratory of Elsbernd \cite{elsbernd2026}, whose
+\code{source} names the function the equation states. Section~\ref{sec:lattice}
+checks each against that function.
 
 The field exists because of a near-miss. Two of the substitutions below give
 different inflation factors for the aperiodic monotile---$\phi^4$ for the hat
@@ -866,7 +1200,7 @@ tilings group made exactly that mistake.
 \begin{longtable}{p{4.4cm}p{10cm}}
 \toprule
 \tiny
-Entry & Computed from \\
+Entry & Source \\
 \midrule
 \endhead
 %s
@@ -887,8 +1221,28 @@ neither is claimed.
 \end{lstlisting}
 """ % ('\n'.join(rows),
        words(len(P.sourced()), 'entry', 'entries').capitalize(),
+       words(len(computed), 'entry', 'entries').capitalize(),
+       words(len(coded), 'entry', 'entries'),
        source_rows, lean)
 
+
+def _bibitem(key):
+    """A reference from the knowledge base, as a \\bibitem.
+
+    The key is the one the prose cites, and the fields come from
+    rosettaphys.REFERENCES, so the paper and the graph cite one thing.
+    """
+    ref = P.REFERENCES[key]
+    title = esc(ref['title']).replace('Yang-Mills', 'Yang--Mills')
+    sub = esc(ref['subtitle'])
+    given, surname = ref['authors'].split()[0], ref['authors'].split()[-1]
+    return (r"\bibitem{%s} %s, %s. (%d). %s: %s. %s" "\n"
+            r"\url{%s}" "\n\n"
+            % (key, esc(surname), esc(given[0]), ref['year'], title, sub,
+               esc(ref['note']), ref['url']))
+
+
+ELSBERND = _bibitem(Y.REFERENCE)
 
 BIBLIOGRAPHY = r"""
 \begin{thebibliography}{99}
@@ -921,6 +1275,12 @@ Controlled Natural Language. \emph{ITP 2024}.
 \end{document}
 """
 
+# The one reference that comes from the knowledge base rather than from this
+# file: rosettaphys.REFERENCES is where it is defined, so the bibliography
+# cannot say something the graph does not.
+BIBLIOGRAPHY = BIBLIOGRAPHY.replace(r'\end{thebibliography}',
+                                    ELSBERND + r'\end{thebibliography}')
+
 
 # ---------------------------------------------------------------- assembly
 
@@ -935,6 +1295,7 @@ def document():
         readings_section(),
         composition_section(),
         geometry_section(),
+        lattice_section(),
         lean_section(),
         reproducibility(),
         appendices(),
@@ -1001,6 +1362,49 @@ def selftest():
           all(esc(src) in text for _eq, src in P.sourced()))
     check('both monotile inflation factors are present and distinguished',
           '4 + \\sqrt{15}' in text and '7 + 3 \\sqrt{5}' in text)
+
+    print('the lattice gauge theory group, and its source')
+    lattice = P.equations_in(Y.FIELD)
+    check('the section is present', r'\label{sec:lattice}' in text)
+    check('the laboratory is cited and the reference is defined',
+          r'\cite{%s}' % Y.REFERENCE in text
+          and r'\bibitem{%s}' % Y.REFERENCE in text)
+    check('the author is credited by name in the bibliography',
+          P.REFERENCES[Y.REFERENCE]['authors'].split()[-1] in
+          text.split(r'\bibitem{%s}' % Y.REFERENCE)[-1])
+    check('the knowledge base and the paper cite one URL',
+          P.REFERENCES[Y.REFERENCE]['url'] in text)
+    check('the group is counted correctly',
+          str(len(lattice)) in text)
+    flat = ' '.join(text.split())
+    check('the scope is stated: it does not touch the mass-gap problem',
+          'does not prove a positive mass gap' in flat
+          and 'Nothing below is evidence about that problem' in flat)
+    check('every entry citing the laboratory is in the source appendix',
+          all(esc(src) in text for eq, src in P.sourced()
+              if P.reference_for(eq)))
+    check('no local path to the laboratory leaks into the document',
+          Y.locate() is None or Y.locate() not in text)
+    if Y.available():
+        results = Y.checks()
+        cell = Y.aggregation()
+        check('every comparison against the code is printed',
+              all(esc(c.equation) in text for c in results))
+        check('the headline ratio is printed, to four places',
+              _ratio(cell['mean_of_paired_ratios']) in text)
+        check('and so is the other way of summarising it',
+              _ratio(cell['ratio_of_mean_efficiencies']) in text)
+        check('the confining and fundamental string tensions are not joined',
+              P.join('Area law', 'String tension') is None
+              and 'confining string tension' in text)
+        check('the campaign table has a row for every schedule at every beta',
+              text.count(r'\code{M+1OR}') >= len(Y.published_campaign()
+                                                 ['config']['betas']))
+        check('the published run used is a clean one',
+              not Y.published_campaign()['git'].get('dirty', True))
+    else:
+        check('without the laboratory the section says so',
+              'was not found on the machine' in text)
 
     print('the numbers are the live ones')
     check('the equation count matches the library',

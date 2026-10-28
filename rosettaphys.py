@@ -1133,6 +1133,82 @@ answer comes back as a number that will not move.
                                  'Minimal surface condition',
                                  'Nambu-Goto action', 'Gauss-Bonnet theorem'])
 
+add_concept('Lattice gauge theory and the Wilson action', 'Gauge theory', """
+A gauge theory on a lattice puts the matter on the sites and the gauge field
+on the links between them. The field is not a vector at each point but a group
+element on each edge, which is what carries a charge from one site to the next,
+and the action is built from the smallest closed loops those edges make.
+
+That is Wilson's construction, and what it buys is exact gauge invariance. A
+gauge transformation rotates the internal orientation at every site, and the
+trace of a closed loop of links does not notice, so the action is unchanged
+by it identically and not just in a limit. The price is that the continuum has
+to be recovered: the lattice spacing is sent to zero while the bare coupling is
+tuned, and nothing in a single finite simulation says how close that limit is.
+
+This group of entries is drawn from the Yang-Mills Mass Gap Laboratory by
+Michael Elsbernd, a finite-lattice SU(2) and SU(3) code base with its own
+validation suite. It does not claim to solve the Clay mass-gap problem, and
+neither does anything here. What it provides is code that computes the
+Wilson action, Wilson loops, Creutz ratios and correlators, each with tests,
+and each entry that comes from it names the function it was checked against.
+""", 'Lattice_gauge_theory', ['\\beta', 'U', 'S', '\\dagger', '\\sigma', '\\chi'],
+    ['Lattice coupling', 'Wilson plaquette action', 'Yang-Mills action',
+     'Link gauge transformation', 'Creutz ratio', 'Area law',
+     'Creutz string tension'])
+
+add_concept('What a lattice can say about a mass gap', 'Gauge theory', """
+A mass gap is a statement that the lightest state above the vacuum has positive
+energy. On a lattice it is read off a correlator: in Euclidean time the
+correlator of a gauge-invariant operator falls off exponentially, and the rate
+of fall is the mass of the lightest state the operator couples to. The effective
+mass, the logarithm of the ratio of successive time slices, is that rate
+measured locally, and a plateau in it is what a spectroscopy calculation hopes
+to find.
+
+Everything about that is finite. The lattice has a few sites in each direction,
+so the correlator is periodic and the state it finds is the lightest one that
+fits; the spacing is not zero; and the mass comes out as a pure number in units
+of the inverse spacing, which has to be given a physical value by matching some
+other quantity. A plateau on such a lattice is a result about that lattice.
+
+The Clay problem asks for something else: a rigorous construction of the
+four-dimensional continuum theory and a proof that its gap is positive. A
+finite-lattice calculation, however careful, is not that, and the laboratory
+these entries came from says so in its first paragraph. The distinction is kept
+here because a knowledge base that joined the two statements would be making
+the one mistake the subject is built to avoid.
+""", 'Mass_gap', ['\\sigma', '\\hbar', '\\chi'],
+    ['Lattice effective mass', 'Euclidean correlator decay',
+     'Mass gap in physical units'])
+
+add_concept('Sampling efficiency is not autocorrelation', 'Statistics', """
+A Markov chain that moves a gauge field around is judged by how many
+independent samples it produces. The integrated autocorrelation time counts
+updates per independent sample, and the effective sample size is the number of
+updates over twice that. Both are measured in updates, and neither knows what
+an update costs.
+
+Michael Elsbernd's study of microcanonical overrelaxation turned on exactly
+that. Overrelaxation moves a link along a surface of constant action, which
+tends to shorten the autocorrelation time, but each extra sweep takes
+wall-clock time. Dividing the effective sample size by the measured runtime
+gives the quantity that matters to someone running the simulation, and the
+study found that a schedule can lower the autocorrelation time and still lose on
+that measure. Plain Metropolis was the most efficient tested schedule for the
+plaquette at every coupling tried; for a scalar glueball-style composite one
+overrelaxation sweep per Metropolis sweep won at the largest coupling tested.
+
+The result is finite, small and implementation dependent, on one lattice shape
+and three bare couplings, and the study says so. The part that is not a
+matter of taste is the logic: a quantity measured in updates and a quantity
+measured in seconds are different quantities, and this library keeps them as
+such. The autocorrelation time reproduces to the last digit between runs. The
+efficiency does not, because the runtime belongs to the machine.
+""", 'Effective_sample_size', ['\\tau', '\\eta', '\\rho'],
+    ['Integrated autocorrelation time', 'Effective sample size',
+     'Sampling efficiency', 'Efficiency ratio'])
+
 
 # ---------------------------------------------------------------- equations
 #
@@ -1991,6 +2067,206 @@ EQUATIONS = [
                    'meaning anything. It is where this group rejoins ordinary '
                    'physics: the Boltzmann constant appears, and the quantity '
                    'on the left is the same temperature as in the gas laws.'),
+
+    # ---------------------------------------------- lattice gauge theory
+    #
+    # The first group whose provenance is somebody else's code.  Michael
+    # Elsbernd's yang-mills-mass-gap-lab (ymlab) is a finite-lattice SU(2) and
+    # SU(3) Wilson-action laboratory, and most of what is below is a statement
+    # that ymlab computes: its `source` names the function, so the entry says
+    # where the number was checked and rosettaym.py can go and check it.
+    #
+    # Two entries have no source and that is on purpose.  The lattice coupling
+    # beta = 2N / g^2 and the continuum Yang-Mills action are textbook
+    # relations that ymlab never states: it takes beta as a given and never
+    # mentions g.  Giving them a ymlab source would claim a check nobody made.
+    #
+    # The group is also where this library first has to keep two uses of one
+    # word apart.  The string tension of a confining gauge theory is read off
+    # the area law of a Wilson loop; the string tension of string theory is
+    # 1 / (2 pi alpha').  They are both called sigma or T, both have the
+    # dimension of an inverse area, and whether they are the same thing is a
+    # research question, not a notational one.  So they are different
+    # quantities here -- 'confining string tension' and 'string tension' --
+    # and READINGS is what stops the graph joining them.
+
+    equation(name='Lattice coupling', field='Lattice gauge theory',
+             latex=r'\beta = \frac{2 N}{g^2}',
+             slug='Lattice_gauge_theory',
+             must=['beta', 'N', 'g', 'S:frac', 'S:sup2'], nice=[],
+             blurb='The one parameter of a pure gauge lattice, written as an '
+                   'inverse coupling: large beta is weak coupling, and the '
+                   'continuum limit is beta going to infinity. For SU(2) it '
+                   'is 4 / g^2. The laboratory this group was drawn from '
+                   'treats beta as given and scans it, which is the honest '
+                   'thing to do on a lattice: the bare coupling is an input, '
+                   'and what it means in physical units is a result.'),
+    equation(name='Wilson plaquette action', field='Lattice gauge theory',
+             latex=r'S_W = \beta \sum_p \left( 1 - \frac{1}{N} \Re \mathrm{Tr}\, U_p \right)',
+             slug='Wilson_loop',
+             source='Elsbernd09/yang-mills-mass-gap-lab: '
+                    'ymlab.wilson_action.wilson_action(), N = 2',
+             must=['S', 'beta', 'U', 'S:sum', 'S:frac'],
+             nice=['N', 'p', 'Re', 'S:sub'],
+             blurb='Sum, over every elementary square of the lattice, of how '
+                   'far the product of the four links around it is from the '
+                   'identity. A smooth field has plaquettes near one and '
+                   'costs nothing; a rough one is penalised. Written with the '
+                   'link variables rather than a field strength, which is the '
+                   'point: gauge invariance is exact, not recovered in a '
+                   'limit, because the trace of a closed loop does not change '
+                   'under a gauge transformation.'),
+    equation(name='Yang-Mills action', field='Lattice gauge theory',
+             latex=r'S = \frac{1}{4 g^2} \int d^4x \, F^a_{\mu\nu} F^{a\,\mu\nu}',
+             slug='Yang%E2%80%93Mills_theory',
+             must=['S', 'g', 'F', 'S:int', 'S:frac'],
+             nice=['mu', 'nu', 'S:sub', 'S:sup'],
+             blurb='The continuum action the lattice one approximates: the '
+                   'square of the field strength, integrated, with the '
+                   'coupling out front. It looks like Maxwell\'s with an '
+                   'index a on F, and the difference is entirely in what F '
+                   'contains: for a non-Abelian group it has a term '
+                   'quadratic in the potential, so the field interacts with '
+                   'itself, and that is the whole difficulty of the mass-gap '
+                   'problem.'),
+    equation(name='Link gauge transformation', field='Lattice gauge theory',
+             latex=r'U_\mu(x) \to G(x) U_\mu(x) G^\dagger(x + \hat{\mu})',
+             slug='Gauge_theory',
+             source='Elsbernd09/yang-mills-mass-gap-lab: '
+                    'ymlab.gauge_transformations.transform_link()',
+             must=['U', 'G', 'mu', 'dagger', 'to'], nice=['x', 'S:hat'],
+             blurb='A link variable lives between two sites, so a gauge '
+                   'transformation acts at both ends: G where it starts and '
+                   'the inverse of G where it ends. Every observable worth '
+                   'computing is unchanged by this, and a program can test '
+                   'that directly -- transform the whole lattice at random '
+                   'and see whether the action moves. It is the check that '
+                   'catches a wrong sign in a staple.'),
+    equation(name='Creutz ratio', field='Lattice gauge theory',
+             latex=r'\chi = -\ln \frac{W_{RT} W_{R-1,T-1}}{W_{R,T-1} W_{R-1,T}}',
+             slug='Wilson_loop',
+             source='Elsbernd09/yang-mills-mass-gap-lab: '
+                    'ymlab.creutz.creutz_ratio_from_values()',
+             must=['chi', 'W', 'ln', 'S:frac'], nice=['R', 'T', 'S:sub'],
+             blurb='A ratio of four Wilson loops built so that the perimeter '
+                   'and corner contributions cancel and only the area term '
+                   'survives. If the loops fall off with their area it is the '
+                   'string tension; if they fall off with their perimeter it '
+                   'is zero. It needs both sides of the ratio positive, which '
+                   'noisy loops often are not, and an implementation has to '
+                   'say what it does then rather than take a logarithm of '
+                   'noise.'),
+    equation(name='Area law', field='Lattice gauge theory',
+             latex=r'W = \exp(-\sigma A)',
+             slug='Wilson_loop',
+             source='Elsbernd09/yang-mills-mass-gap-lab: '
+                    'tests/test_creutz.py test_creutz_ratio_from_exact_area_law()',
+             must=['W', 'sigma', 'A', 'exp'], nice=[],
+             blurb='A Wilson loop that decays with the area it encloses, '
+                   'which is the lattice criterion for confinement: the '
+                   'energy of a pair of static charges grows linearly with '
+                   'their separation. The constant in the exponent is the '
+                   'confining string tension. A synthetic loop built to obey '
+                   'this exactly is what a Creutz-ratio routine has to '
+                   'recover to be trusted on real data.'),
+    equation(name='Creutz string tension', field='Lattice gauge theory',
+             latex=r'\chi = \sigma a^2',
+             slug='Wilson_loop',
+             source='Elsbernd09/yang-mills-mass-gap-lab: '
+                    'ymlab.creutz.estimate_string_tension()',
+             must=['chi', 'sigma', 'a', 'S:sup2'], nice=[],
+             blurb='For an exact area law the Creutz ratio is the string '
+                   'tension in lattice units, and multiplying by the lattice '
+                   'spacing squared is what puts it back into the units of '
+                   'an inverse area. The laboratory this comes from averages '
+                   'valid Creutz ratios and calls the result "string-tension '
+                   'like", which is the right amount of caution: it is an '
+                   'estimate on one finite lattice at one bare coupling.'),
+    equation(name='Lattice effective mass', field='Lattice gauge theory',
+             latex=r'm_{eff} = \ln \frac{C_{t}}{C_{t+1}}',
+             slug='Effective_mass_(solid-state_physics)',
+             source='Elsbernd09/yang-mills-mass-gap-lab: '
+                    'ymlab.mass_gap.effective_mass()',
+             must=['m', 'C', 'ln', 'S:frac'], nice=['t', 'S:sub'],
+             blurb='The mass a correlator seems to have between one time '
+                   'slice and the next, in units of the lattice spacing. If '
+                   'one state dominates it is flat; if several do it drifts '
+                   'down towards the lightest as t grows. Reading the plateau '
+                   'is the whole art of lattice spectroscopy, and a plateau '
+                   'is a claim about a finite lattice, not about the '
+                   'continuum.'),
+    equation(name='Euclidean correlator decay', field='Lattice gauge theory',
+             latex=r'C_{t} = A_0 \exp(-m_{L} t)',
+             slug='Correlation_function_(quantum_field_theory)',
+             source='Elsbernd09/yang-mills-mass-gap-lab: '
+                    'ymlab.mass_gap.exponential_decay()',
+             must=['C', 'A', 'm', 'exp', 't'], nice=['S:sub', 'm_L'],
+             blurb='In Euclidean time a correlator of a gauge-invariant '
+                   'operator falls off exponentially, at a rate set by the '
+                   'lightest state the operator couples to. That rate is the '
+                   'mass, and a positive one for the lightest state is what '
+                   'a mass gap means. Here it is a fit parameter on a '
+                   'periodic lattice of a few sites, and nothing more.'),
+    equation(name='Mass gap in physical units', field='Lattice gauge theory',
+             latex=r'E_{gap} = \frac{\hbar c \, m_{L}}{a}',
+             slug='Mass_gap',
+             must=['E', 'hbar', 'c', 'a', 'S:frac'],
+             nice=['m', 'S:sub', 'm_L'],
+             blurb='A mass measured on the lattice is a pure number, because '
+                   'the lattice has no units but its own spacing. Putting it '
+                   'in joules needs the spacing in metres, and the spacing '
+                   'is not an input: it is fixed afterwards by matching one '
+                   'measured quantity. That is why a lattice number without '
+                   'its scale-setting is not yet a physical statement, and '
+                   'why the continuum mass gap is a limit, not a value.'),
+    equation(name='Integrated autocorrelation time', field='Lattice gauge theory',
+             latex=r'\tau = \frac{1}{2} + \sum_{t=1}^{t_c} \rho_t',
+             slug='Autocorrelation',
+             source='Elsbernd09/yang-mills-mass-gap-lab: '
+                    'ymlab.diagnostics.integrated_autocorrelation_time()',
+             must=['tau', 'rho', 'S:sum', 'S:frac'], nice=['t', 'S:sub'],
+             blurb='How many updates of a Markov chain it takes to produce '
+                   'one independent sample, with the sum cut off where the '
+                   'estimate would start adding noise. The half is the lag '
+                   'zero term. Slow decorrelation near the continuum limit '
+                   'is the reason lattice simulation is expensive, and the '
+                   'reason there is a literature on update algorithms.'),
+    equation(name='Effective sample size', field='Lattice gauge theory',
+             latex=r'N_{eff} = \frac{N}{2 \tau}',
+             slug='Effective_sample_size',
+             source='Elsbernd09/yang-mills-mass-gap-lab: '
+                    'ymlab.diagnostics.effective_sample_size()',
+             must=['N', 'tau', 'S:frac'], nice=['S:sub', 'N_eff'],
+             blurb='A chain of N correlated samples carries as much '
+                   'information about the mean as N over two tau independent '
+                   'ones. It is what turns "I ran a million sweeps" into a '
+                   'statement about error bars, and it is the numerator of '
+                   'the efficiency below.'),
+    equation(name='Sampling efficiency', field='Lattice gauge theory',
+             latex=r'\eta = \frac{N_{eff}}{t_{wall}}',
+             slug='Effective_sample_size',
+             source='Elsbernd09/yang-mills-mass-gap-lab: '
+                    'ymlab.research_campaign.run_schedule_chain()',
+             must=['eta', 'N', 'S:frac'], nice=['t', 'S:sub', 'N_eff'],
+             blurb='Independent samples per second of wall-clock time. It '
+                   'divides the same effective sample size by a measured '
+                   'runtime, and the runtime is the part that makes it '
+                   'machine dependent: a different computer gives a '
+                   'different number, which is why the autocorrelation time '
+                   'reproduces exactly and this does not.'),
+    equation(name='Efficiency ratio', field='Lattice gauge theory',
+             latex=r'R = \frac{\eta_{OR}}{\eta_{M}}',
+             slug='Overrelaxation',
+             source='Elsbernd09/yang-mills-mass-gap-lab: '
+                    'ymlab.research_campaign.summarize_campaign()',
+             must=['R', 'eta', 'S:frac'], nice=['S:sub'],
+             blurb='The efficiency of a hybrid schedule against plain '
+                   'Metropolis, taken pair by pair from the same starting '
+                   'configuration. Above one means the extra overrelaxation '
+                   'sweeps paid for themselves. The finding this group '
+                   'rests on is that it can be below one while the '
+                   'autocorrelation time is also lower: fewer updates per '
+                   'independent sample is not the same as less time.'),
 ]
 
 EQUATION_FAMILIES = [
@@ -3103,6 +3379,108 @@ add_quantity('spacetime dimension', '1',
              'be dimensionally impeccable and entirely meaningless.',
              'Dimension_(vector_space)')
 
+# -- lattice gauge theory ---------------------------------------------------
+#
+# Most of these are dimensionless, which is the point of a lattice: it has no
+# units but its own spacing.  They are kept as separate quantities anyway,
+# because 'dimensionless' is exactly the reading that would let a lattice
+# string tension join a Regge slope.
+add_quantity('inverse coupling', '1',
+             'The lattice parameter beta, which is 2N over the gauge coupling '
+             'squared: large for weak coupling. A bare input of a simulation, '
+             'not a measured quantity.', 'Lattice_gauge_theory')
+add_quantity('gauge coupling', '1',
+             'The strength with which a gauge field couples to itself and to '
+             'matter. Not constant: it runs with the energy scale, which is '
+             'why the lattice coupling has to be tuned to reach a continuum '
+             'limit.', 'Coupling_constant')
+add_quantity('color count', '1',
+             'The N of SU(N): two for the weak-isospin-like toy case the '
+             'laboratory simulates, three for the strong interaction.',
+             'Special_unitary_group')
+add_quantity('lattice action', '1',
+             'The Wilson action, a pure number in units of Planck\'s constant. '
+             'Kept apart from the continuum action because one is a sum over '
+             'squares and the other an integral over spacetime, and the '
+             'statement that they agree is a limit.', 'Wilson_loop')
+add_quantity('plaquette variable', '1',
+             'The ordered product of the four link variables around an '
+             'elementary square: the smallest closed loop on the lattice.',
+             'Lattice_gauge_theory')
+add_quantity('link variable', '1',
+             'The group element that carries a charge along one edge of the '
+             'lattice, standing in for the exponential of the gauge field '
+             'integrated along it.', 'Lattice_gauge_theory')
+add_quantity('gauge transformation', '1',
+             'A group element attached to a site, rotating the internal '
+             'orientation there. Nothing observable depends on it.',
+             'Gauge_theory')
+add_quantity('gauge field strength', 'L^-2',
+             'The curvature of the gauge field, in natural units. For a '
+             'non-Abelian group it contains a commutator of the potentials as '
+             'well as their derivatives.', 'Field_strength')
+add_quantity('wilson loop', '1',
+             'The trace of the product of link variables around a closed '
+             'rectangle, averaged. How it decays with the size of the '
+             'rectangle is the lattice test for confinement.', 'Wilson_loop')
+add_quantity('loop area', 'L^2',
+             'The area enclosed by a Wilson loop, in lattice units on a '
+             'lattice. Kept apart from area for the reason patch area and '
+             'tile area are: a horizon and a Wilson loop are both areas, and '
+             'equating them is dimensionally impeccable and meaningless.',
+             'Wilson_loop')
+add_quantity('creutz ratio', '1',
+             'A ratio of four Wilson loops in which perimeter and corner '
+             'terms cancel, leaving an estimate of the string tension in '
+             'lattice units.', 'Wilson_loop')
+add_quantity('confining string tension', 'L^-2',
+             'The constant in the area law of a Wilson loop: the energy per '
+             'unit length of the flux tube between static charges. Not the '
+             'same quantity as the string tension of string theory, however '
+             'similar the name and the dimension.', 'Confinement')
+add_quantity('lattice spacing', 'L',
+             'The distance between neighbouring sites. Not an input of the '
+             'simulation but fixed afterwards, by matching one measured '
+             'quantity to its physical value.', 'Lattice_gauge_theory')
+add_quantity('lattice mass', '1',
+             'A mass in units of the inverse lattice spacing, which is what '
+             'a correlator on a lattice measures. Multiplying by the '
+             'spacing\'s inverse is what makes it physical.',
+             'Lattice_QCD')
+add_quantity('time slice', '1',
+             'A Euclidean time coordinate counted in lattice spacings: an '
+             'index, not a duration. Kept apart from time because a lattice '
+             'mass times a time slice is dimensionless and a mass times a '
+             'time is only so in natural units.', 'Lattice_gauge_theory')
+add_quantity('correlator', '1',
+             'The expectation of an operator at one Euclidean time against '
+             'another, connected so that the vacuum drops out.',
+             'Correlation_function_(quantum_field_theory)')
+add_quantity('amplitude', '1',
+             'The overlap of an operator with the state that dominates its '
+             'correlator, squared.', 'Amplitude')
+add_quantity('autocorrelation', '1',
+             'The normalised covariance of a Markov chain with a copy of '
+             'itself shifted by some number of updates: one at no shift, '
+             'decaying towards zero.', 'Autocorrelation')
+add_quantity('autocorrelation time', '1',
+             'The number of updates it takes the chain to forget where it '
+             'was, measured in updates rather than seconds. That distinction '
+             'is the whole of the sampling-efficiency result.',
+             'Autocorrelation')
+add_quantity('sample count', '1',
+             'How many measurements were taken, correlated or not.',
+             'Sample_size_determination')
+add_quantity('effective sample size', '1',
+             'How many independent measurements a correlated chain is worth.',
+             'Effective_sample_size')
+add_quantity('sampling efficiency', 'T^-1',
+             'Effective samples per second of wall-clock time.',
+             'Effective_sample_size')
+add_quantity('efficiency ratio', '1',
+             'One schedule\'s sampling efficiency over another\'s, paired '
+             'from a common starting configuration.', 'Overrelaxation')
+
 # ---------------------------------------------------------------- readings
 #
 # What each equation's letters denote.  Keyed by equation name, then by the
@@ -3261,6 +3639,46 @@ READINGS = {
     'Hagedorn temperature': {
         'T_H': 'temperature', 'pi': 'pi', 'alpha_prime': 'regge slope',
         'k_B': 'boltzmann constant'},
+    'Lattice coupling': {
+        'beta': 'inverse coupling', 'N': 'color count',
+        'g': 'gauge coupling'},
+    'Wilson plaquette action': {
+        'S_W': 'lattice action', 'beta': 'inverse coupling',
+        'N': 'color count', 'U_p': 'plaquette variable'},
+    'Yang-Mills action': {
+        'S': 'action', 'g': 'gauge coupling', 'F': 'gauge field strength'},
+    'Link gauge transformation': {
+        'U': 'link variable', 'G': 'gauge transformation'},
+    'Creutz ratio': {
+        'chi': 'creutz ratio', 'W_RT': 'wilson loop',
+        'W_R1T1': 'wilson loop', 'W_RT1': 'wilson loop',
+        'W_R1T': 'wilson loop'},
+    'Area law': {
+        'W': 'wilson loop', 'sigma': 'confining string tension',
+        'A': 'loop area'},
+    'Creutz string tension': {
+        'chi': 'creutz ratio', 'sigma': 'confining string tension',
+        'a': 'lattice spacing'},
+    'Lattice effective mass': {
+        'm_eff': 'lattice mass', 'C_t': 'correlator', 'C_t1': 'correlator'},
+    'Euclidean correlator decay': {
+        'C_t': 'correlator', 'A_0': 'amplitude', 'm_L': 'lattice mass',
+        't': 'time slice'},
+    'Mass gap in physical units': {
+        'E_gap': 'energy', 'hbar': 'reduced planck constant',
+        'c': 'speed of light', 'm_L': 'lattice mass',
+        'a': 'lattice spacing'},
+    'Integrated autocorrelation time': {
+        'tau': 'autocorrelation time', 'rho_t': 'autocorrelation'},
+    'Effective sample size': {
+        'N_eff': 'effective sample size', 'N': 'sample count',
+        'tau': 'autocorrelation time'},
+    'Sampling efficiency': {
+        'eta': 'sampling efficiency', 'N_eff': 'effective sample size',
+        't_wall': 'time'},
+    'Efficiency ratio': {
+        'R': 'efficiency ratio', 'eta_OR': 'sampling efficiency',
+        'eta_M': 'sampling efficiency'},
 }
 
 
@@ -3691,6 +4109,55 @@ LINKS = [
      'counting string states is counting microstates, and they grow '
      'exponentially with energy -- fast enough that above this temperature the '
      'sum defining the partition function stops converging'),
+
+    # -- lattice gauge theory ---------------------------------------------
+
+    ('Yang-Mills action', LIMIT_OF, 'Wilson plaquette action',
+     'as the lattice spacing goes to zero the sum over squares becomes the '
+     'integral of the squared field strength, with the coupling out front -- '
+     'a statement about a limit that no finite lattice reaches'),
+    ('Lattice coupling', DEFINES, 'Wilson plaquette action',
+     'beta is the only parameter the plaquette sum has, and writing it as 2N '
+     'over g squared is what ties the lattice to the continuum coupling'),
+    ('Link gauge transformation', DEFINES, 'Wilson plaquette action',
+     'the trace of a closed loop of links is unchanged by a gauge '
+     'transformation, which is why a sum of such traces is a legitimate '
+     'action and a sum of single links would not be'),
+    ('Wilson plaquette action', DEFINES, 'Creutz ratio',
+     'the plaquette is the smallest Wilson loop; the same trace over larger '
+     'rectangles is what a Creutz ratio is built from'),
+    ('Creutz string tension', SPECIALISES, 'Creutz ratio',
+     'for loops that obey the area law exactly the ratio is the string '
+     'tension in lattice units; for real data it is an estimate of it'),
+    ('Area law', DEFINES, 'Creutz string tension',
+     'the exponent of the area law is the quantity the Creutz ratio is '
+     'trying to isolate, with the perimeter terms cancelled'),
+    ('String tension', FIELD, 'Area law',
+     'a confining flux tube is modelled as a string, and in that model the '
+     'tension is the confining string tension -- but whether the model is '
+     'exact is a research question, so the two stay distinct quantities and '
+     'are not joined'),
+    ('Lattice effective mass', DEFINES, 'Euclidean correlator decay',
+     'the logarithm of successive time slices recovers the decay rate, and is '
+     'flat exactly when a single state dominates the correlator'),
+    ('Euclidean correlator decay', DEFINES, 'Mass gap in physical units',
+     'the decay rate is the mass in lattice units; multiplying by hbar c over '
+     'the spacing is what turns it into an energy'),
+    ('Mass gap in physical units', SPECIALISES, 'Mass-energy equivalence',
+     'the gap is the rest energy of the lightest state, E = m c^2 with the '
+     'mass being the one the correlator measures'),
+    ('Mass gap in physical units', FIELD, 'Compton wavelength',
+     'the same mass read as a length: the range over which the lightest '
+     'state can mediate anything, which is why a gap means short-range'),
+    ('Integrated autocorrelation time', DEFINES, 'Effective sample size',
+     'tau is how many correlated updates it takes to make one independent '
+     'one, so it is what the sample count is divided by'),
+    ('Effective sample size', DEFINES, 'Sampling efficiency',
+     'the efficiency divides this by the measured runtime, which is the one '
+     'step that makes it machine dependent'),
+    ('Sampling efficiency', DEFINES, 'Efficiency ratio',
+     'the ratio of two schedules\' efficiencies from a common starting '
+     'configuration; above one means the extra sweeps paid for themselves'),
 ]
 
 
@@ -4578,6 +5045,60 @@ def sourced():
     return [(eq, eq['source']) for eq in EQUATIONS if eq.get('source')]
 
 
+# ------------------------------------------------------------- references
+#
+# Where a body of work outside this repository supplied entries, the work is
+# named once, here, and the entries that came from it say so through their
+# `source`.  A source reads 'owner/repo: where'; a reference is identified by
+# the 'owner/repo' part.  Nothing is stored twice: the paper's bibliography,
+# the appendix and the concept articles all read this table, so a citation
+# cannot be corrected in one place and left wrong in another.
+#
+# The two repositories behind the tilings group are not here.  They were
+# computed from, not written up, and the paper already cites them by address.
+
+REFERENCES = {
+    'elsbernd2026': {
+        'authors': 'Michael Elsbernd',
+        'title': 'Observable-Dependent Computational Efficiency of '
+                 'Microcanonical Overrelaxation in Finite-Lattice SU(2) '
+                 'Yang-Mills Simulation',
+        'subtitle': 'A Paired Effective-Sample-Size-per-Second Study Across '
+                    'Bare Wilson Couplings',
+        'year': 2026,
+        'repo': 'Elsbernd09/yang-mills-mass-gap-lab',
+        'url': 'https://github.com/Elsbernd09/yang-mills-mass-gap-lab',
+        'manuscript': 'docs/final_research_paper.md',
+        'note': 'Yang-Mills Mass Gap Laboratory (ymlab): software and '
+                'manuscript. A finite-lattice study; it does not claim to '
+                'solve the Clay mass-gap problem.',
+    },
+}
+
+
+def reference_for(entry):
+    """The reference an entry's `source` names, as a key, or None."""
+    source = entry.get('source') if hasattr(entry, 'get') else None
+    if not source:
+        return None
+    for key, ref in REFERENCES.items():
+        if source.startswith(ref['repo'] + ':'):
+            return key
+    return None
+
+
+def cited(key):
+    """Every equation that came from the reference `key`."""
+    return [eq for eq in EQUATIONS if reference_for(eq) == key]
+
+
+def cite_text(key):
+    """A reference as one plain-text line, for a caption or a terminal."""
+    ref = REFERENCES[key]
+    return '%s (%d). %s: %s. %s' % (ref['authors'], ref['year'], ref['title'],
+                                     ref['subtitle'], ref['url'])
+
+
 def fields():
     """Every field of physics or maths an equation is filed under."""
     out = []
@@ -4607,6 +5128,7 @@ def census():
         'equation fields': len(fields()),
         'equation families': len(EQUATION_FAMILIES),
         'constants': len(CONSTANTS),
+        'references': len(REFERENCES),
     }
 
 
@@ -4635,11 +5157,15 @@ _ARITHMETIC = {
 }
 
 
+_FUNCTIONS = {'sqrt': math.sqrt, 'ln': math.log, 'log': math.log,
+              'exp': math.exp}
+
+
 def evaluate(term, known=()):
     """A Term as a float, given values for the names it uses.
 
     Raises rather than guessing.  A name with no value, a function other than
-    a square root, or anything opaque means the term is not determined, and a
+    sqrt, ln, log or exp, or anything opaque means the term is not determined, and a
     caller that wanted a number should be told so rather than handed one.
     """
     if isinstance(term, Num):
@@ -4649,9 +5175,12 @@ def evaluate(term, known=()):
             raise NotDetermined(term.name)
         return known[term.name]
     if isinstance(term, Call):
-        if term.func != 'sqrt':
+        # log is the natural logarithm here, as it is in S = k_B log W and in
+        # every entry of this library that uses it.  A base-ten reading would
+        # have to be declared, and none of the entries declares one.
+        if term.func not in _FUNCTIONS:
             raise NotDetermined(term.func)
-        return math.sqrt(evaluate(term.arg, known))
+        return _FUNCTIONS[term.func](evaluate(term.arg, known))
     if isinstance(term, Op):
         return _ARITHMETIC[term.op]([evaluate(a, known) for a in term.args])
     raise NotDetermined(type(term).__name__)
@@ -4801,6 +5330,40 @@ def _check_equations(fail):
         if entry is not None and not entry.get('source'):
             fail('%s states an inflation factor without saying which '
                  'substitution matrix it came from' % name)
+
+
+def _check_references(fail):
+    """A reference is named once, and everything that cites it can be found."""
+    for key, ref in REFERENCES.items():
+        for field in ('authors', 'title', 'year', 'repo', 'url'):
+            if not ref.get(field):
+                fail('reference %r: empty %s' % (key, field))
+        if ref['repo'] not in ref['url']:
+            fail('reference %r: url %r does not point at %r'
+                 % (key, ref['url'], ref['repo']))
+    # every entry that names a referenced repository must resolve to it, and
+    # the lattice group is the one that has to: its provenance is the point
+    for eq in EQUATIONS:
+        source = eq.get('source') or ''
+        for key, ref in REFERENCES.items():
+            if ref['repo'] in source and reference_for(eq) != key:
+                fail('%s names %s but is not recognised as citing it -- the '
+                     'source must read "%s: where"'
+                     % (eq.label, ref['repo'], ref['repo']))
+    for key in REFERENCES:
+        if not cited(key):
+            fail('reference %r is cited by no entry' % key)
+    # the articles built on a reference must credit it by name, so a reader
+    # of the concept alone is told whose work it summarises
+    surname = REFERENCES['elsbernd2026']['authors'].split()[-1]
+    for title in ('Lattice gauge theory and the Wilson action',
+                  'Sampling efficiency is not autocorrelation'):
+        if surname not in CONCEPTS[title]['body']:
+            fail('concept %r does not credit %s' % (title, surname))
+    for eq in cited('elsbernd2026'):
+        if eq['field'] != 'Lattice gauge theory':
+            fail('%s cites the laboratory but is filed under %s'
+                 % (eq.label, eq['field']))
 
 
 def _check_graph(fail):
@@ -5018,11 +5581,39 @@ def _check_readings(fail):
     # and the collisions we know about must still be caught
     for a, b, q in [('Boltzmann entropy', 'Work done by a force', 'W'),
                     ('Planck relation', 'Gravitational potential energy', 'h'),
-                    ('Ideal gas law', "Ohm's law", 'V')]:
+                    ('Ideal gas law', "Ohm's law", 'V'),
+                    # a horizon is an area and so is a Wilson loop
+                    ('Bekenstein-Hawking entropy', 'Area law', 'A'),
+                    # a Wilson loop is not a microstate count
+                    ('Boltzmann entropy', 'Area law', 'W'),
+                    # the confining string tension is not Stefan-Boltzmann
+                    ('Stefan-Boltzmann law', 'Area law', 'sigma'),
+                    # a sample count is not a tile count
+                    ('Spectre count recurrence', 'Effective sample size', 'N')]:
         if agree(a, b, q):
             fail('%s and %s should not agree about %s' % (a, b, q))
         if join(a, b, pivot=q) is not None:
             fail('%s and %s were joined on %s anyway' % (a, b, q))
+
+    # The lattice string tension and the string tension of string theory are
+    # both an inverse area and both written sigma or T.  Whether they are one
+    # thing is a research question, so the graph must not decide it by joining
+    # them.  And the joins this group exists for must still be there, or the
+    # readings have been tightened until the group is inert.
+    for a, b in [('Area law', 'String tension'),
+                 ('Creutz string tension', 'String tension'),
+                 ('Area law', 'Nambu-Goto action')]:
+        if join(a, b) is not None:
+            fail('%s and %s were joined: a confining string tension is not '
+                 'the tension of a fundamental string' % (a, b))
+    for a, b, q in [('Area law', 'Creutz string tension', 'sigma'),
+                    ('Creutz ratio', 'Creutz string tension', 'chi'),
+                    ('Effective sample size', 'Sampling efficiency', 'N_eff'),
+                    ('Euclidean correlator decay',
+                     'Mass gap in physical units', 'm_L')]:
+        found = join(a, b)
+        if found is None or found.pivot != q:
+            fail('%s and %s should join on %s and do not' % (a, b, q))
 
 
 
@@ -5072,6 +5663,7 @@ def selftest():
     _check_tables(fail)
     _check_concepts(fail)
     _check_equations(fail)
+    _check_references(fail)
     _check_graph(fail)
     _check_derivations(fail)
     _check_algebra(fail)

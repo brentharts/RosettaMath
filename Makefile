@@ -356,6 +356,10 @@ test:
 	$(PYTHON) rosettaphys.py --selftest
 	$(PYTHON) rosettalean.py --selftest
 	$(PYTHON) rosettaym.py --selftest
+	$(PYTHON) rosettaoai.py --selftest
+	$(PYTHON) rosettacicy.py --selftest
+	$(PYTHON) rosettaspectre.py --selftest
+	$(PYTHON) rosettanariai.py --selftest
 	$(PYTHON) rosettapaper.py --selftest
 	$(PYTHON) rosettaui.py --selftest
 	$(PYTHON) lean4.py --selftest
@@ -369,6 +373,28 @@ census:
 # it the bridge reports that and checks nothing.
 yangmills:
 	$(PYTHON) rosettaym.py
+
+# The OpenAI-math fork's physics tools, checked against the library.  Needs
+# build/data there (`make models`); without it only the closed forms run.
+openaimath:
+	$(PYTHON) rosettaoai.py
+
+# CICY's one-loop couplings and generation count, checked against the library.
+# Needs texttable; without CICY on disk only the library side runs.
+cicy:
+	$(PYTHON) rosettacicy.py
+
+# The spectre repository's substitution matrix, tile areas and evidence ledger,
+# checked against the library, and the Hat constant by three routes.  Needs
+# numpy, sympy and matplotlib; CICY is optional.
+spectre:
+	$(PYTHON) rosettaspectre.py
+
+# nariai's single-source-of-truth constants (inflation factors, gap-label
+# recurrence, growth rate), checked against the library, and its substitution
+# matrix against the spectre repository's.  Needs only numpy.
+nariai:
+	$(PYTHON) rosettanariai.py
 
 # Every join the graph offers, as a conjecture the micro-kernel has checked.
 conjectures:
@@ -427,7 +453,7 @@ clean:
 	rm -rf __pycache__ /tmp/rosettaui-cache
 	rm -f /tmp/neomath.aux /tmp/neomath.log /tmp/neomath.out /tmp/neomath.tex
 
-.PHONY: memmap_rs rust_lean default help install install-all check-deps ui test census yangmills \
+.PHONY: memmap_rs rust_lean default help install install-all check-deps ui test census yangmills openaimath cicy spectre nariai \
 	conjectures collisions physpaper proofs \
 	render-test pdf paper leanproof crustos_eq rustproof_paper clean \
 	install_apple install-apple install_apple-all \

@@ -1105,7 +1105,10 @@ was computed from. That is what the `source` field is for.
 """, 'Wang_tile', [], ['Golden ratio', 'Penrose tile ratio',
                        'Inflation quadratic', 'Spectre inflation quadratic',
                        'Spectre inflation factor', 'Hat inflation quadratic',
-                       'Hat constant as a golden power'])
+                       'Hat constant as a golden power',
+                       'Spectre linear inflation',
+                       'Spectre linear-area relation',
+                       'Spectre gap-label recurrence'])
 
 add_concept('Area as an action', 'Extremal geometry', """
 A soap film spanning a wire loop has no memory, no dynamics and nothing to
@@ -1208,6 +1211,53 @@ efficiency does not, because the runtime belongs to the machine.
 """, 'Effective_sample_size', ['\\tau', '\\eta', '\\rho'],
     ['Integrated autocorrelation time', 'Effective sample size',
      'Sampling efficiency', 'Efficiency ratio'])
+
+add_concept('Asymptotic freedom on a lattice', 'Statistical mechanics', """
+Some lattice models get weaker at short distance, and that is what lets them
+be read as continuum theories. The two-dimensional O(N) sigma model for N of
+three or more is the cheapest example: its coupling runs to zero as the
+lattice spacing does, and the correlation length therefore grows
+exponentially in the inverse temperature, like exp(2 pi beta / (N - 2)), not
+like a power. A mass in lattice units is then not a free number but a
+dependent one, fixed by how far the bare coupling has been pushed.
+
+Four-dimensional Yang-Mills theory has the same structure with a different
+exponent, which is why the O(N) model is the standard toy for it. The group of
+entries here is drawn from a fork of an OpenAI manuscript collection whose
+physics tools reproduce the textbook forms (Monte Carlo for the O(N) mass, the
+Kosterlitz flow, the Bloch magnon density, the spin-one gap) next to the
+repository's own statements. They are illustrations, they do not re-prove
+the manuscripts, and nothing here constructs four-dimensional Yang-Mills.
+""", 'Asymptotic_freedom', ['\\beta', 'm', '\\xi'],
+    ['O(N) lattice model', 'Asymptotic-freedom mass scaling',
+     'Second-moment correlation length', 'Kosterlitz coupling flow',
+     'Kosterlitz fugacity flow'])
+
+add_concept('Running couplings and what unification predicts', 'Gauge theory', """
+A gauge coupling is not a constant: it runs with the energy scale, and at one
+loop its inverse runs linearly in the logarithm of the scale, with a slope b
+fixed by the particles that can circulate in loops. Negative b means the
+coupling grows in the infrared, which is asymptotic freedom and, for the strong
+force, the reason there is a proton at all.
+
+If three couplings meet at one scale, eliminating that scale and the common
+value leaves a single relation among the three measured couplings, and the
+only theory input is the three b. It is a prediction, and a discriminating one,
+but it has a blind spot worth remembering: a complete generation adds the same
+amount to every b, so the prediction cannot see how many generations there
+are. What it is sensitive to is the incomplete multiplets, which are the part
+of a spectrum an index cannot count.
+
+This group is drawn from CICY, a toolkit that computes such coefficients
+exactly from the topology of a compactification and says plainly which links
+of the chain to the measured numbers it cannot close. It is also where the
+lattice scale of the Yang-Mills group comes from: the dimensional-transmutation
+exponent here is the same expression as the lattice-spacing exponent there.
+""", 'Beta_function_(physics)', ['\\alpha', '\\Lambda'],
+    ['One-loop running', 'Unification prediction',
+     'Dimensional transmutation', 'One-loop coefficient (QCD)',
+     'One-loop coefficient (SUSY)', 'Electromagnetic coupling at the Z',
+     'Thomson limit'])
 
 
 # ---------------------------------------------------------------- equations
@@ -1815,15 +1865,25 @@ EQUATIONS = [
                    'commoner one shifted by a generation.'),
     equation(name='Spectre count recurrence', field='Tilings',
              latex=r"N'' = 8 N' - N", slug='Substitution_tiling',
-             source='brentharts/spectre: spectre_tile_counter.py',
+             source='brentharts/spectre: spectre_tile_counter.py, '
+                    'chirality_e8.substitution_matrix()',
              must=['N'], nice=[],
-             blurb='Tile counts obey a second-order linear recurrence whose '
-                   'characteristic polynomial is the inflation quadratic -- '
-                   'the numbers run 1, 8, 63, 496, 3905, 30744. Two generations '
-                   'of history are enough to determine the next, which is what '
-                   'makes the count an integer sequence rather than a rounded '
-                   'power, and the ratio of consecutive terms tends to the '
-                   'inflation factor.'),
+             blurb='The count of a tile species by generation obeys a '
+                   'second-order linear recurrence whose characteristic '
+                   'polynomial is the inflation quadratic -- for six of the '
+                   'nine species, exactly, from any starting tile once at '
+                   'most two generations have passed (the factor of lambda '
+                   'to the fifth in the characteristic polynomial is a '
+                   'transient, and it is gone by then). Started '
+                   'from a Delta the Gamma counts run 1, 8, 63, 496, 3905, '
+                   '30744. The other three species, Xi, Pi and Psi, do not: '
+                   'the matrix also has the eigenvalues plus and minus one, '
+                   'and those leave a constant, or an alternating, offset in '
+                   'the recurrence for them, which the code handles with '
+                   'auxiliary sequences. So "tile counts obey this '
+                   'recurrence" is true of most species and false of three, '
+                   'and the ratio of consecutive terms tends to the '
+                   'inflation factor for all of them.'),
     equation(name='Spectre tile area', field='Tilings',
              latex=r'A = 2 \sqrt{3} a^2 + 3 a b + \sqrt{3} b^2',
              slug='Einstein_problem', source='brentharts/spectre: spectre.get_spectre_points()',
@@ -1841,6 +1901,68 @@ EQUATIONS = [
                    'root three, and the spectre with both edges equal has '
                    'three plus three root three -- three different areas from '
                    'one formula, which is what makes the family a family.'),
+
+    equation(name='Spectre linear inflation', field='Tilings',
+             latex=r'\ell = \frac{\sqrt{6} + \sqrt{10}}{2}',
+             slug='Substitution_tiling',
+             source='brentharts/nariai: nariai_constants.py, derived from the substitution matrix',
+             must=['ell', 'S:sqrt', 'S:frac'], nice=[],
+             blurb='The factor by which one round of substitution multiplies '
+                   'a length, about 2.806. It is the square root of the area '
+                   'factor, and it lives in a quartic field rather than the '
+                   'quadratic one: its minimal polynomial is x^4 - 8x^2 + 1, '
+                   'and the closed form is a sum of two surds that look '
+                   'unrelated to four plus root fifteen until you square '
+                   'them. Which of the two inflation factors a calculation '
+                   'wants is not a detail -- lengths scale by this one and '
+                   'areas, tile counts and gap labels by its square.'),
+    equation(name='Spectre linear-area relation', field='Tilings',
+             latex=r'\mu = \ell^{2}', slug='Substitution_tiling',
+             source='brentharts/nariai: nariai_constants.py, derived from the substitution matrix',
+             must=['mu', 'ell', 'S:sup2'], nice=[],
+             blurb='Areas scale as the square of lengths, so the area '
+                   'inflation factor is the square of the linear one. The '
+                   'content is in what the two are used for: tile counts and '
+                   'the gap labels of the spectrum are powers of the area '
+                   'factor, and feeding the linear factor into a sum of '
+                   'those powers gives a wrong answer even when the linear '
+                   'factor itself is right.'),
+    equation(name='Spectre linear quartic', field='Tilings',
+             latex=r'\ell^{4} = 8 \ell^{2} - 1', slug='Substitution_tiling',
+             source='brentharts/nariai: nariai_constants.py, derived from the substitution matrix',
+             must=['ell'], nice=[],
+             blurb='The quartic satisfied by the linear inflation factor. It '
+                   'is the inflation quadratic with the square of the '
+                   'unknown substituted for the unknown, which is the '
+                   'relation between the two factors read as a polynomial: '
+                   'the quartic has roots plus and minus the linear factor '
+                   'and plus and minus its reciprocal.'),
+    equation(name='Spectre gap-label recurrence', field='Tilings',
+             latex=r"G'' = 8 G' - G", slug='Substitution_tiling',
+             source='brentharts/nariai: nariai_constants.py, derived from the substitution matrix',
+             must=['G'], nice=[],
+             blurb='The labels of the gaps in the spectrum of an operator on '
+                   'the tiling live in the ring generated by the reciprocal '
+                   'of the area factor, and successive powers of that '
+                   'reciprocal obey the same second-order recurrence as the '
+                   'tile counts, which grow like powers of the factor '
+                   'itself. Both are forced by the one quadratic: it is '
+                   'reciprocal, so a root and its inverse satisfy the same '
+                   'relation. A fourth-order recurrence appears in an '
+                   'earlier version of the source, and was a consequence of '
+                   'using a number that is not the inflation factor.'),
+    equation(name='Spectre growth rate', field='Tilings',
+             latex=r'\gamma = \ln \mu', slug='Substitution_tiling',
+             source='brentharts/nariai: nariai_constants.py, derived from the substitution matrix',
+             must=['gamma', 'ln', 'mu'], nice=[],
+             blurb='The rate, per round of substitution, at which the number '
+                   'of tiles grows: about 2.063 nats. It is a growth rate '
+                   'and not an entropy. A primitive substitution tiling is '
+                   'uniquely ergodic and the translation action on it has '
+                   'zero topological entropy, so quoting this number as one '
+                   'is a category error. It is also twice the logarithm of '
+                   'the linear factor, and the two are easy to swap, which '
+                   'doubles any period built from them.'),
 
     # -- the hat, which is a different substitution ------------------------
     #
@@ -2267,6 +2389,211 @@ EQUATIONS = [
                    'rests on is that it can be below one while the '
                    'autocorrelation time is also lower: fewer updates per '
                    'independent sample is not the same as less time.'),
+    equation(name='O(N) lattice model', field='Lattice spin models',
+             latex=r'H = -\beta \sum q_{x} \cdot q_{y}',
+             slug='N-vector_model',
+             source='brentharts/openai_math_yang_mills: tools/on_model_mc.py',
+             must=['H', 'beta', 'q', 'S:sum'], nice=['S:sub'],
+             blurb='Unit vectors on the sites of a lattice, each pair of '
+                   'neighbours rewarded for pointing the same way, with the '
+                   'Gibbs weight exp(-H). For three or more components in two '
+                   'dimensions it has no ordered phase and a finite '
+                   'correlation length at every temperature, which is the '
+                   'property that makes it a toy for a gauge theory.'),
+    equation(name='Asymptotic-freedom mass scaling', field='Lattice spin models',
+             latex=r'm = C \beta^{\frac{1}{N-2}} \exp\left(-\frac{2 \pi \beta}{N-2}\right)',
+             slug='Asymptotic_freedom',
+             source='brentharts/openai_math_yang_mills: tools/on_model_mc.py',
+             must=['m', 'C', 'beta', 'N', 'pi', 'exp', 'S:frac'], nice=[],
+             blurb='The mass of the O(N) model in lattice units, as '
+                   'asymptotic freedom says it should behave at large beta. '
+                   'Only the form is predicted: the constant C is not, and '
+                   'it is corrected by terms in one over beta that are '
+                   'large at the values simulations reach. A simulated ratio '
+                   'of correlation lengths approaches the form from below '
+                   'for a long time, which is a statement about the '
+                   'approach and not a failure of the theory.'),
+    equation(name='Second-moment correlation length', field='Lattice spin models',
+             latex=r'\xi^2 = \frac{\frac{\chi}{F} - 1}{p^2}',
+             slug='Correlation_function_(statistical_mechanics)',
+             source='brentharts/openai_math_yang_mills: tools/on_model_mc.py',
+             must=['xi', 'chi', 'F', 'p', 'S:frac', 'S:sup2'],
+             nice=[],
+             blurb='A correlation length read off a simulation from two '
+                   'numbers: the susceptibility, and the structure factor at '
+                   'the smallest non-zero momentum on a periodic box, whose '
+                   'lattice momentum is p = 2 sin(pi / L) for a box of L '
+                   'sites. It is '
+                   'a mass in the sense of an inverse length, but not the '
+                   'gap of the transfer matrix; the two differ by a factor '
+                   'of order one, so a comparison of shapes is honest and a '
+                   'comparison of constants is not.'),
+    equation(name='Kosterlitz coupling flow', field='Lattice spin models',
+             latex=r'\frac{dx}{dl} = -y^2',
+             slug='Kosterlitz%E2%80%93Thouless_transition',
+             source='brentharts/openai_math_yang_mills: tools/kt_flow.py',
+             must=['x', 'y', 'l', 'S:frac', 'S:sup2'], nice=['d'],
+             blurb='How the stiffness of the planar XY model drifts from the '
+                   'universal-jump value as the length scale grows, driven '
+                   'by the density of vortices. With the next entry it is '
+                   'the whole renormalisation-group picture of the '
+                   'transition, and it conserves x^2 - y^2.'),
+    equation(name='Kosterlitz fugacity flow', field='Lattice spin models',
+             latex=r'\frac{dy}{dl} = -x y',
+             slug='Kosterlitz%E2%80%93Thouless_transition',
+             source='brentharts/openai_math_yang_mills: tools/kt_flow.py',
+             must=['x', 'y', 'l', 'S:frac'], nice=['d'],
+             blurb='How the vortex fugacity runs: it dies away where the '
+                   'stiffness is high and grows where it is low. The '
+                   'correlation length diverges with an essential singularity '
+                   'at the transition, not a power, because the flow takes '
+                   'a time proportional to one over the distance from the '
+                   'critical line to leave it.'),
+    equation(name='Magnon dispersion', field='Lattice spin models',
+             latex=r'\epsilon = 2 \sum \left(1 - \cos k_{a}\right)',
+             slug='Magnon',
+             source='brentharts/openai_math_yang_mills: tools/bloch_law.py',
+             must=['epsilon', 'k', 'cos', 'S:sum'], nice=['S:sub'],
+             blurb='The energy of one spin flip spread over a cubic '
+                   'ferromagnet, in units of the exchange. It vanishes '
+                   'at zero wave number as k squared, and that quadratic '
+                   'edge is why the number of thermally excited magnons '
+                   'grows like a power of temperature.'),
+    equation(name='Bloch magnon density', field='Lattice spin models',
+             latex=r'n = A_{0} x^{-\frac{3}{2}} + A_{1} x^{-\frac{5}{2}}',
+             slug='Bloch%27s_law',
+             source='brentharts/openai_math_yang_mills: tools/bloch_law.py',
+             must=['n', 'A', 'x', 'S:frac'], nice=['S:sub'],
+             blurb='The ideal-magnon density at large inverse temperature: '
+                   'a Bloch term and the first lattice correction. The '
+                   'leading coefficient is Bloch\'s, and the next is '
+                   '3 zeta(5/2) / (128 pi^(3/2)). It is the density of '
+                   'non-interacting magnons only; that it controls the '
+                   'magnetisation deficit is what the manuscript proves, '
+                   'and what this entry does not.'),
+    equation(name='Bilinear-biquadratic chain', field='Lattice spin models',
+             latex=r'H = \sum \left[ \cos\theta \, S_{i} \cdot S_{i+1} + \sin\theta \, \left(S_{i} \cdot S_{i+1}\right)^2 \right]',
+             slug='Heisenberg_model_(quantum)',
+             source='brentharts/openai_math_yang_mills: tools/haldane_gap.py',
+             must=['H', 'theta', 'S', 'cos', 'sin', 'S:sum'], nice=['S:sub', 'S:sup2'],
+             blurb='A ring of spin-one sites with a Heisenberg coupling and '
+                   'a biquadratic one, mixed by an angle. Theta zero is '
+                   'the Heisenberg chain; the tangent of theta equal to a '
+                   'third is the AKLT point, whose ground state is known '
+                   'exactly, which is what makes a numerical check of the '
+                   'code possible.'),
+    equation(name='Spin gap', field='Lattice spin models',
+             latex=r'\Delta = E_{1} - E_{0}',
+             slug='Spin_gap',
+             source='brentharts/openai_math_yang_mills: tools/haldane_gap.py',
+             must=['Delta', 'E', 'S:sub'], nice=[],
+             blurb='The energy to flip one unit of total spin above the '
+                   'ground state. For the spin-one chain on rings of '
+                   'growing length it approaches a positive number from '
+                   'above, which is the Haldane gap; a list of ring sizes '
+                   'is numerical evidence for that and not a bound, and '
+                   'the extrapolation assumes a finite-size form.'),
+    equation(name='One-loop running', field='Gauge unification',
+             latex=r'\frac{1}{\alpha_{i}} = \frac{1}{\alpha_{G}} + \frac{b_{i}}{2 \pi} \ln\frac{M_{G}}{\mu}',
+             slug='Renormalization_group',
+             source='brentharts/CICY: pyCICY.theories.running.beta_coefficients()',
+             must=['alpha', 'b', 'pi', 'ln', 'M', 'mu', 'S:frac'], nice=['S:sub'],
+             blurb='The inverse of a gauge coupling at one loop: the value at '
+                   'the unification scale plus a slope times the logarithm of '
+                   'the ratio of scales. The slope b is a sum over the '
+                   'particles in the spectrum and is the only place the '
+                   'spectrum enters. Negative b is asymptotic freedom.'),
+    equation(name='Unification prediction', field='Gauge unification',
+             latex=r'\frac{1}{\alpha_{3}} = \frac{b_{3} - b_{2}}{b_{1} - b_{2}} \frac{1}{\alpha_{1}} + \frac{b_{1} - b_{3}}{b_{1} - b_{2}} \frac{1}{\alpha_{2}}',
+             slug='Grand_Unified_Theory',
+             source='brentharts/CICY: pyCICY.theories.couplings.predict_alpha3()',
+             must=['alpha', 'b', 'S:frac', 'S:sub'], nice=[],
+             blurb='What is left of three running couplings and one meeting '
+                   'point once the meeting scale and value are eliminated: '
+                   'the strong coupling from the other two. The supersymmetric '
+                   'spectrum lands within about one per cent at one loop and '
+                   'the non-supersymmetric one is out by forty. It is blind '
+                   'to the number of generations, because a generation adds '
+                   'the same amount to every b and only differences enter.'),
+    equation(name='Dimensional transmutation', field='Gauge unification',
+             latex=r'\Lambda = M \exp\left(\frac{2 \pi}{b_{3} \alpha}\right)',
+             slug='Dimensional_transmutation',
+             source='brentharts/CICY: pyCICY.theories.running.lambda_qcd()',
+             must=['Lambda', 'M', 'b', 'alpha', 'pi', 'exp', 'S:frac'], nice=[],
+             blurb='The scale at which a running coupling diverges, set by '
+                   'its value at a higher scale and the one-loop slope. With '
+                   'b negative the exponent is negative and the scale is far '
+                   'below M. Almost all of a proton\'s mass is this scale, '
+                   'not a Yukawa coupling. Only the exponent\'s slope is '
+                   'exact in a compactification: the coupling and the scale '
+                   'are moduli.'),
+    equation(name='One-loop coefficient (QCD)', field='Gauge unification',
+             latex=r'b = -\frac{11}{3} N + \frac{2}{3} n_{f}',
+             slug='Beta_function_(physics)',
+             source='brentharts/CICY: pyCICY.theories.couplings, Standard Model b_3 = -7',
+             must=['b', 'N', 'n', 'S:frac', 'S:sub'], nice=[],
+             blurb='The slope of the inverse coupling of SU(N) with n_f Dirac '
+                   'fundamentals, in the convention where negative means '
+                   'asymptotic freedom. Gauge bosons push it down by eleven '
+                   'thirds of N and each quark flavour pushes it back up by '
+                   'two thirds. With three colours it stays negative up to '
+                   'sixteen flavours.'),
+    equation(name='One-loop coefficient (SUSY)', field='Gauge unification',
+             latex=r'b = -3 N + n_{f}',
+             slug='Beta_function_(physics)',
+             source='brentharts/CICY: pyCICY.theories.running.beta_coefficients()',
+             must=['b', 'N', 'n', 'S:sub'], nice=[],
+             blurb='The same slope when the spectrum is supersymmetric and '
+                   'n_f counts chiral flavour pairs. Three colours and two '
+                   'flavours per generation give minus nine plus twice the '
+                   'number of generations, which stays negative for four '
+                   'generations and turns positive at five: no confinement, '
+                   'no proton.'),
+    equation(name='Electromagnetic coupling at the Z', field='Gauge unification',
+             latex=r'\frac{1}{\alpha_{em}} = \frac{1}{\alpha_{2}} + \frac{5}{3} \frac{1}{\alpha_{1}}',
+             slug='Weinberg_angle',
+             source='brentharts/CICY: pyCICY.theories.couplings.alpha_em_inverse_mz()',
+             must=['alpha', 'S:frac', 'S:sub'], nice=[],
+             blurb='Electromagnetism as the combination of the weak and '
+                   'hypercharge couplings that survives symmetry breaking, '
+                   'with the five thirds that converts the unification '
+                   'normalisation of hypercharge to the usual one. Computed '
+                   'at the Z mass from the two couplings it comes out within '
+                   'a tenth of a per cent of the measurement.'),
+    equation(name='Thomson limit', field='Gauge unification',
+             latex=r'\frac{1}{\alpha_{0}} = \frac{1}{\alpha_{em}} \frac{1}{1 - \epsilon}',
+             slug='Fine-structure_constant',
+             source='brentharts/CICY: pyCICY.theories.couplings.alpha_em_inverse_zero()',
+             must=['alpha', 'epsilon', 'S:frac'], nice=['S:sub'],
+             blurb='The step from the coupling at the Z mass to the '
+                   'fine-structure constant at zero momentum, through a shift '
+                   'epsilon, the Delta alpha of the literature. The shift is '
+                   'measured, not computed: its hadronic part comes from '
+                   'electron-positron data through a dispersion relation '
+                   'because the momenta are non-perturbative. Any derivation '
+                   'of 137 from pure geometry stops here.'),
+    equation(name='Generation count', field='Gauge unification',
+             latex=r'N_{gen} = - \frac{I}{G}',
+             slug='Atiyah%E2%80%93Singer_index_theorem',
+             source='brentharts/CICY: pyCICY.breaking.generations_downstairs()',
+             must=['N', 'I', 'G', 'S:frac'], nice=['S:sub'],
+             blurb='The net number of chiral generations downstairs: minus '
+                   'the index of the bundle upstairs divided by the order of '
+                   'the freely acting group that quotients the manifold. An '
+                   'integer from topology, with no metric anywhere. It counts '
+                   'only the chiral part; vector-like matter, which the '
+                   'couplings are sensitive to, does not appear in an index.'),
+    equation(name='Heterotic anomaly condition', field='Gauge unification',
+             latex=r'W = c_{2}(TX) - c_{2}(V)',
+             slug='Green%E2%80%93Schwarz_mechanism',
+             source='brentharts/CICY: pyCICY.bundles.anomaly()',
+             must=['W', 'c', 'T', 'X', 'V', 'S:sub'], nice=[],
+             blurb='What the bundle leaves of the second Chern class of the '
+                   'tangent bundle has to be an effective class, the class '
+                   'of any five-branes wrapped to make up the difference. '
+                   'Checking it integrated against the Kahler classes is '
+                   'necessary and not sufficient, and the code says which '
+                   'one it did.'),
 ]
 
 EQUATION_FAMILIES = [
@@ -3313,6 +3640,23 @@ add_quantity('tile area', 'L^2',
              'apart from patch area for the reason given there: a tile has a '
              'fixed size and a patch does not, so equating one to the other '
              'would be a statement about nothing.', 'Aperiodic_tiling')
+add_quantity('linear inflation factor', '1',
+             'What one round of substitution multiplies a length by. Its '
+             'square is the inflation factor, which scales areas and tile '
+             'counts. Kept apart from it because the two are used for '
+             'different things and substituting one for the other gives '
+             'plausible wrong answers.', 'Substitution_tiling')
+add_quantity('gap label', '1',
+             'A number labelling a gap in the spectrum of an operator on a '
+             'tiling, taken from a ring built from the inflation factor. Here '
+             'only its arithmetic is recorded; what the labels count is a '
+             'statement about the operator, not about the algebra.',
+             'Aperiodic_tiling')
+add_quantity('tile-count growth rate', '1',
+             'The logarithm of the factor by which the number of tiles grows '
+             'per round of substitution, in nats. A growth rate, not an '
+             'entropy: primitive substitution tilings have zero topological '
+             'entropy.', 'Substitution_tiling')
 add_quantity('genus', '1',
              'The number of handles on a closed orientable surface: nought for '
              'a sphere, one for a torus. In string perturbation theory it is '
@@ -3482,6 +3826,134 @@ add_quantity('efficiency ratio', '1',
              'from a common starting configuration.', 'Overrelaxation')
 
 # ---------------------------------------------------------------- readings
+# -- lattice spin models ------------------------------------------------------
+#
+# Dimensionless again, in units of the lattice spacing or the exchange.  They
+# are kept apart from the gauge-theory quantities on purpose: the inverse
+# temperature of a spin model and the inverse coupling of a gauge theory are
+# both called beta and both large when the fluctuations are small, and a join
+# on that letter would equate two different parameters of two different models.
+add_quantity('spin action', '1',
+             'The energy of a spin configuration in units of the temperature: '
+             'minus the sum of dot products of neighbouring unit vectors, '
+             'times beta.', 'N-vector_model')
+add_quantity('spin inverse temperature', '1',
+             'The beta of a spin model: the coupling between neighbouring '
+             'spins in units of the temperature. Large means nearly aligned. '
+             'Not the inverse coupling of a gauge theory, whatever the '
+             'letter.', 'N-vector_model')
+add_quantity('spin variable', '1',
+             'A unit vector with N components sitting on one site of the '
+             'lattice.', 'N-vector_model')
+add_quantity('component count', '1',
+             'The N of the O(N) model: how many components each spin has. '
+             'Not the number of colours of a gauge group.', 'N-vector_model')
+add_quantity('scaling constant', '1',
+             'The non-universal constant in front of an asymptotic scaling '
+             'form. The form predicts the exponent and not this.',
+             'Asymptotic_freedom')
+add_quantity('correlation length', '1',
+             'The distance over which spins stay correlated, in lattice '
+             'units. The second-moment estimate is one way to measure it and '
+             'is not the transfer-matrix gap.', 'Correlation_length')
+add_quantity('spin susceptibility', '1',
+             'The sum of the spin-spin correlation over the whole lattice, '
+             'per site.', 'Magnetic_susceptibility')
+add_quantity('structure factor', '1',
+             'The spin correlation at the smallest non-zero momentum on a '
+             'periodic box.', 'Structure_factor')
+add_quantity('lattice momentum', '1',
+             'The smallest non-zero momentum on a periodic box of L sites, '
+             '2 sin(pi / L) in inverse lattice spacings.', 'Lattice_(group)')
+add_quantity('stiffness deviation', '1',
+             'How far the stiffness of the XY model is from its universal-jump '
+             'value, in the variable of the Kosterlitz flow.',
+             'Kosterlitz%E2%80%93Thouless_transition')
+add_quantity('vortex fugacity', '1',
+             'The weight of a vortex, in the normalisation of the Kosterlitz '
+             'flow.', 'Kosterlitz%E2%80%93Thouless_transition')
+add_quantity('rg scale', '1',
+             'The logarithm of the length scale, the time of a '
+             'renormalisation-group flow.', 'Renormalization_group')
+add_quantity('magnon energy', '1',
+             'The energy of one spin flip, in units of the exchange.',
+             'Magnon')
+add_quantity('lattice wave number', '1',
+             'A component of the wave vector, in inverse lattice spacings.',
+             'Wave_vector')
+add_quantity('magnon density', '1',
+             'The number of thermally excited magnons per site in the ideal '
+             'gas of non-interacting ones.', 'Magnon')
+add_quantity('scaled inverse temperature', '1',
+             'The product of inverse temperature and spin, the variable the '
+             'magnon density is expanded in.', 'Bloch%27s_law')
+add_quantity('magnon coefficient', '1',
+             'A coefficient in the large-x expansion of the magnon density; '
+             'the first is Bloch\'s.', 'Bloch%27s_law')
+add_quantity('mixing angle', '1',
+             'The angle that mixes the bilinear and biquadratic couplings of '
+             'the spin-one chain.', 'Heisenberg_model_(quantum)')
+add_quantity('spin operator', '1',
+             'The spin-one operator on a site, taken as a vector.',
+             'Spin_(physics)')
+add_quantity('spin hamiltonian', 'M L^2 T^-2',
+             'The energy operator of a spin chain, in units of the exchange.',
+             'Hamiltonian_(quantum_mechanics)')
+add_quantity('spin gap', 'M L^2 T^-2',
+             'The energy of the lowest state with one more unit of total '
+             'spin than the ground state.', 'Spin_gap')
+add_quantity('spin energy level', 'M L^2 T^-2',
+             'An energy eigenvalue of a spin chain in a given sector of '
+             'total spin.', 'Energy_level')
+
+
+# -- gauge unification --------------------------------------------------------
+#
+# The couplings here are alpha, not the g and beta of the lattice group; the
+# two are related by alpha = g^2 / 4 pi but are different quantities, and they
+# are kept apart so that a join on a letter cannot equate a lattice parameter
+# with a running coupling at a scale.
+add_quantity('fine-structure coupling', '1',
+             'A gauge coupling in the form alpha = g^2 / 4 pi, a function of '
+             'the energy scale.', 'Fine-structure_constant')
+add_quantity('beta function coefficient', '1',
+             'The one-loop slope of the inverse coupling against the '
+             'logarithm of the scale. Negative is asymptotic freedom.',
+             'Beta_function_(physics)')
+add_quantity('unification scale', 'M L^2 T^-2',
+             'The energy at which the couplings are taken to meet. A '
+             'modulus in a compactification, not a computed number.',
+             'Grand_Unified_Theory')
+add_quantity('renormalisation scale', 'M L^2 T^-2',
+             'The energy at which a running coupling is evaluated.',
+             'Renormalization_group')
+add_quantity('qcd scale', 'M L^2 T^-2',
+             'The energy at which the one-loop strong coupling diverges.',
+             'QCD_vacuum')
+add_quantity('flavour count', '1',
+             'The number of quark flavours, or of chiral flavour pairs in a '
+             'supersymmetric spectrum.', 'Flavour_(particle_physics)')
+add_quantity('vacuum polarisation shift', '1',
+             'The fractional shift between the electromagnetic coupling at '
+             'the Z mass and at zero momentum. Its hadronic part is measured.',
+             'Fine-structure_constant')
+add_quantity('chiral index', '1',
+             'The index of the bundle: minus the net number of chiral '
+             'generations upstairs. An integer from topology.',
+             'Atiyah%E2%80%93Singer_index_theorem')
+add_quantity('generation count', '1',
+             'The net number of chiral generations.', 'Generation_(particle_physics)')
+add_quantity('symmetry order', '1',
+             'The order of the freely acting group of the quotient.',
+             'Order_(group_theory)')
+add_quantity('fivebrane class', '1',
+             'The class of the five-branes needed to cancel the anomaly; it '
+             'has to be effective.', 'Green%E2%80%93Schwarz_mechanism')
+add_quantity('chern class', '1',
+             'A characteristic class of a bundle, here integrated against a '
+             'Kahler class to give a number.', 'Chern_class')
+
+
 #
 # What each equation's letters denote.  Keyed by equation name, then by the
 # symbol name as the algebra spells it (no backslash, subscript folded in).
@@ -3607,6 +4079,15 @@ READINGS = {
     'Hat chirality ratio': {
         'N_u': 'tile count', 'N_r': 'tile count', 'kappa': 'inflation factor'},
     'Hat tile area': {'A_H': 'tile area'},
+    'Spectre linear inflation': {'ell': 'linear inflation factor'},
+    'Spectre linear-area relation': {
+        'mu': 'inflation factor', 'ell': 'linear inflation factor'},
+    'Spectre linear quartic': {'ell': 'linear inflation factor'},
+    'Spectre gap-label recurrence': {
+        'G_prime_prime': 'gap label', 'G_prime': 'gap label',
+        'G': 'gap label'},
+    'Spectre growth rate': {
+        'gamma': 'tile-count growth rate', 'mu': 'inflation factor'},
     'Euler characteristic of a closed surface': {
         'chi': 'euler characteristic', 'g': 'genus'},
     'Riemann-Hurwitz (unbranched)': {
@@ -3679,6 +4160,63 @@ READINGS = {
     'Efficiency ratio': {
         'R': 'efficiency ratio', 'eta_OR': 'sampling efficiency',
         'eta_M': 'sampling efficiency'},
+    'O(N) lattice model': {
+        'H': 'spin action', 'beta': 'spin inverse temperature',
+        'q_x': 'spin variable', 'q_y': 'spin variable'},
+    'Asymptotic-freedom mass scaling': {
+        'm': 'lattice mass', 'C': 'scaling constant',
+        'beta': 'spin inverse temperature', 'N': 'component count',
+        'pi': 'pi'},
+    'Second-moment correlation length': {
+        'xi': 'correlation length', 'chi': 'spin susceptibility',
+        'F': 'structure factor', 'p': 'lattice momentum'},
+    'Kosterlitz coupling flow': {
+        'x': 'stiffness deviation', 'y': 'vortex fugacity',
+        'l': 'rg scale'},
+    'Kosterlitz fugacity flow': {
+        'x': 'stiffness deviation', 'y': 'vortex fugacity',
+        'l': 'rg scale'},
+    'Magnon dispersion': {
+        'epsilon': 'magnon energy', 'k_a': 'lattice wave number'},
+    'Bloch magnon density': {
+        'n': 'magnon density', 'A_0': 'magnon coefficient',
+        'A_1': 'magnon coefficient', 'x': 'scaled inverse temperature'},
+    'Bilinear-biquadratic chain': {
+        'H': 'spin hamiltonian', 'theta': 'mixing angle',
+        'S_i': 'spin operator', 'S_i1': 'spin operator'},
+    'Spin gap': {
+        'Delta': 'spin gap', 'E_1': 'spin energy level',
+        'E_0': 'spin energy level'},
+    'One-loop running': {
+        'alpha_i': 'fine-structure coupling', 'alpha_G': 'fine-structure coupling',
+        'b_i': 'beta function coefficient', 'pi': 'pi',
+        'M_G': 'unification scale', 'mu': 'renormalisation scale'},
+    'Unification prediction': {
+        'alpha_3': 'fine-structure coupling', 'alpha_2': 'fine-structure coupling',
+        'alpha_1': 'fine-structure coupling',
+        'b_3': 'beta function coefficient', 'b_2': 'beta function coefficient',
+        'b_1': 'beta function coefficient'},
+    'Dimensional transmutation': {
+        'Lambda': 'qcd scale', 'M': 'unification scale',
+        'b_3': 'beta function coefficient', 'alpha': 'fine-structure coupling',
+        'pi': 'pi'},
+    'One-loop coefficient (QCD)': {
+        'b': 'beta function coefficient', 'N': 'color count',
+        'n_f': 'flavour count'},
+    'One-loop coefficient (SUSY)': {
+        'b': 'beta function coefficient', 'N': 'color count',
+        'n_f': 'flavour count'},
+    'Electromagnetic coupling at the Z': {
+        'alpha_em': 'fine-structure coupling', 'alpha_2': 'fine-structure coupling',
+        'alpha_1': 'fine-structure coupling'},
+    'Thomson limit': {
+        'alpha_0': 'fine-structure coupling', 'alpha_em': 'fine-structure coupling',
+        'epsilon': 'vacuum polarisation shift'},
+    'Generation count': {
+        'N_gen': 'generation count', 'I': 'chiral index',
+        'G': 'symmetry order'},
+    'Heterotic anomaly condition': {
+        'W': 'fivebrane class', 'c_2': 'chern class'},
 }
 
 
@@ -4063,6 +4601,17 @@ LINKS = [
      'the same statement for the one-tile system that the golden ratio makes '
      'for the two-tile one: an inflation factor is a quadratic irrational '
      'either way, and the irrationality is the whole obstruction to a period'),
+    ('Spectre linear-area relation', DEFINES, 'Spectre linear inflation',
+     'areas scale as the square of lengths, so the area factor is the square '
+     'of this one'),
+    ('Spectre linear quartic', DEFINES, 'Spectre linear-area relation',
+     'substitute the square of the unknown into the inflation quadratic and '
+     'the quartic is what you have written'),
+    ('Spectre gap-label recurrence', DEFINES, 'Spectre inflation quadratic',
+     'the same characteristic polynomial as the tile counts, applied to '
+     'powers of the reciprocal root instead of the root'),
+    ('Spectre growth rate', SPECIALISES, 'Spectre inflation factor',
+     'the logarithm of the inflation factor, and nothing more than that'),
     ('Hat tile area', SPECIALISES, 'Spectre tile area',
      'the hat is the member of the family with a = 1 and b = root three; '
      'swapping the two lengths gives the turtle and a different area, which '
@@ -4158,6 +4707,25 @@ LINKS = [
     ('Sampling efficiency', DEFINES, 'Efficiency ratio',
      'the ratio of two schedules\' efficiencies from a common starting '
      'configuration; above one means the extra sweeps paid for themselves'),
+    ('O(N) lattice model', DEFINES, 'Asymptotic-freedom mass scaling',
+     'the model is what the scaling form is a statement about: the mass of '
+     'its lightest excitation, as the temperature is lowered'),
+    ('Asymptotic-freedom mass scaling', DEFINES,
+     'Second-moment correlation length',
+     'a simulation tests the scaling form through a correlation length, and '
+     'the second-moment estimate is the one it can afford'),
+    ('Kosterlitz coupling flow', SPECIALISES, 'Kosterlitz fugacity flow',
+     'the two flow equations are one system: the stiffness drives the '
+     'fugacity and the fugacity drives the stiffness'),
+    ('Magnon dispersion', DEFINES, 'Bloch magnon density',
+     'the density is the thermal occupation of the modes this dispersion '
+     'labels, and its small-k form fixes the exponent'),
+    ('Bilinear-biquadratic chain', DEFINES, 'Spin gap',
+     'the gap is a property of the spectrum of this operator on a ring'),
+    ('Spin gap', FIELD, 'Mass gap in physical units',
+     'a spin gap on a lattice and a mass gap in lattice units are both '
+     'energies above a ground state, but one is a finite quantum system and '
+     'the other a field theory, so they stay distinct quantities'),
 ]
 
 
@@ -4780,6 +5348,15 @@ SHORT = {
     'Minimal surface condition': 'minimal',
     'Golden ratio': 'golden ratio',
     'Penrose tile ratio': 'Penrose ratio',
+    'O(N) lattice model': 'O(N) model',
+    'Asymptotic-freedom mass scaling': 'AF mass',
+    'Second-moment correlation length': '2nd-moment xi',
+    'Kosterlitz coupling flow': 'KT flow x',
+    'Kosterlitz fugacity flow': 'KT flow y',
+    'Magnon dispersion': 'magnon disp.',
+    'Bloch magnon density': 'Bloch density',
+    'Bilinear-biquadratic chain': 'spin-1 chain',
+    'Spin gap': 'spin gap',
 }
 
 
@@ -5073,6 +5650,71 @@ REFERENCES = {
                 'manuscript. A finite-lattice study; it does not claim to '
                 'solve the Clay mass-gap problem.',
     },
+    'openai2026': {
+        'authors': 'OpenAI manuscript collection, fork tools by '
+                   'brentharts',
+        'title': 'Physics models for the OpenAI math release',
+        'subtitle': 'fork-level illustrations of entries 215, 216, 268 and '
+                    '271; not part of the OpenAI release',
+        'year': 2026,
+        'repo': 'brentharts/openai_math_yang_mills',
+        'url': 'https://github.com/brentharts/openai_math_yang_mills',
+        'manuscript': 'tools/README.md',
+        'note': 'Python models (Monte Carlo, Kosterlitz flow, Bloch '
+                'density, exact diagonalisation) that reproduce textbook '
+                'forms next to the manuscripts\' statements. They do not '
+                're-prove the manuscripts, and the repository contains no '
+                'Yang-Mills manuscript.',
+    },
+    'cicy2026': {
+        'authors': 'Robin Schneider (pyCICY) and the CICY fork by brentharts',
+        'title': 'Exact Methods in String Theory and QFT',
+        'subtitle': 'from a configuration matrix to a curve on a surface',
+        'year': 2026,
+        'repo': 'brentharts/CICY',
+        'url': 'https://github.com/brentharts/CICY',
+        'manuscript': 'README.md',
+        'note': 'Pure-Python exact-arithmetic toolkit for Calabi-Yau '
+                'topology, heterotic and F-theory model building and the '
+                'one-loop couplings that follow. It states where exactness '
+                'ends: no physical couplings, masses or moduli.',
+    },
+    'nariai2026': {
+        'authors': 'B. S. Hartshorn (nariai repository)',
+        'title': 'Aperiodic Vacuum Structure from BRST Cohomology on the '
+                 'Nariai Background',
+        'subtitle': 'the substitution algebra behind the paper, with its '
+                    'retraction',
+        'year': 2026,
+        'repo': 'brentharts/nariai',
+        'url': 'https://github.com/brentharts/nariai',
+        'manuscript': 'README.md',
+        'note': 'The tiling algebra of the repository -- inflation factors, '
+                'the gap-label recurrence, the growth rate -- is taken from '
+                'its single source of truth, which derives everything from '
+                'the substitution matrix. The repository withdrew an earlier '
+                'inflation factor, 2.5348, that was not the spectre\'s, and '
+                'every entry here uses the corrected ones; the physical '
+                'predictions built on the algebra are not in the library '
+                'and are not claimed.',
+    },
+    'spectre2026': {
+        'authors': 'brent hartshorn et al. (spectre repository)',
+        'title': 'The Spectre and the Hat: exact arithmetic, torsion on the '
+                 'Hat lattice, diffraction',
+        'subtitle': 'what a substitution determines, and what a kernel '
+                    'cannot reach',
+        'year': 2026,
+        'repo': 'brentharts/spectre',
+        'url': 'https://github.com/brentharts/spectre',
+        'manuscript': 'spectre_substrate.tex',
+        'note': 'Exact computations on the Spectre monotile of Smith, '
+                'Myers, Kaplan and Goodman-Strauss and on the Hat, with an '
+                'evidence ledger that grades every fact as derived, counted, '
+                'second-route, quoted, premised or Lean-checked. The tile and '
+                'its substitution are the discoverers\' work; the '
+                'computations on them are this repository\'s.',
+    },
 }
 
 
@@ -5330,6 +5972,83 @@ def _check_equations(fail):
         if entry is not None and not entry.get('source'):
             fail('%s states an inflation factor without saying which '
                  'substitution matrix it came from' % name)
+
+
+# ------------------------------------------------------------- evidence grades
+#
+# Some sources grade their own claims.  The spectre repository keeps a ledger
+# in which every fact is one or more of: derived by exact computation from the
+# quoted substitution matrix (D), counted on a placed tiling (C), re-derived or
+# re-counted by an independent implementation (X), quoted from the literature
+# or a measurement (Q), carrying a modelling premise or open parameter (P),
+# and, separately, proved by the Lean kernel (L).  An entry that comes from such
+# a source can carry the source's own grade, which is stronger than anything
+# this library could say about it: the grade is the author's, and so is the
+# responsibility for it.  Entries from sources that publish no ledger carry
+# none, and the absence says nothing.
+
+EVIDENCE_KINDS = {
+    'D': 'derived by exact computation',
+    'C': 'counted on a placed tiling',
+    'X': 'recomputed by an independent route',
+    'Q': 'quoted from the literature or a measurement',
+    'P': 'rests on a modelling premise',
+}
+
+# entry -> (the source's fact key, its kinds, the Lean theorem or None)
+EVIDENCE = {
+    'Spectre inflation quadratic': ('minpoly', 'D', None),
+    'Spectre inflation factor': ('pell', 'D', 'pell_fundamental_unit'),
+    'Spectre reciprocal pair': ('contraction', 'D', 'contraction_rate'),
+    'Spectre triplet frequency': ('frequencies', 'D',
+                                  'frequencies_are_an_eigenvector'),
+    'Spectre frequency ratio': ('frequencies', 'D',
+                                'frequencies_are_an_eigenvector'),
+    'Spectre count recurrence': ('censuses', 'CX', None),
+    'Spectre tile area': ('area_form', 'D', None),
+    'Hat tile area': ('area_endpoints', 'D', None),
+}
+
+
+def evidence_for(entry):
+    """The source's own grade for an entry, or None.
+
+    Returns a dict with the source's `fact` key, the `kinds` it assigns, the
+    Lean theorem or None, and a plain-text `grade`.  The grade is the
+    source's, not this library's, and an entry without one has simply not been
+    graded by anyone who publishes a ledger.
+    """
+    name = entry['name'] if hasattr(entry, 'get') else entry
+    if name not in EVIDENCE:
+        return None
+    fact, kinds, lean = EVIDENCE[name]
+    words = [EVIDENCE_KINDS[k] for k in kinds]
+    grade = ' and '.join(words)
+    if lean:
+        grade += '; checked by the Lean kernel as %s' % lean
+    return {'fact': fact, 'kinds': kinds, 'lean': lean, 'grade': grade}
+
+
+def _check_evidence(fail):
+    """A grade belongs to an entry that names a source with a ledger."""
+    ref = REFERENCES['spectre2026']
+    for name, (fact, kinds, lean) in EVIDENCE.items():
+        eq = GRAPH.find(name, 'equation')
+        if eq is None:
+            fail('EVIDENCE grades %r, which is not an equation' % name)
+            continue
+        if not (eq.get('source') or '').startswith(ref['repo'] + ':'):
+            fail('%s is graded by the spectre ledger but does not cite it'
+                 % name)
+        if not kinds or any(k not in EVIDENCE_KINDS for k in kinds):
+            fail('%s: unknown evidence kind in %r' % (name, kinds))
+        if lean and ('Q' in kinds or 'P' in kinds):
+            fail('%s: a kernel proof is about arithmetic, so it cannot '
+                 'certify a quoted or premised fact' % name)
+    for eq in cited('spectre2026'):
+        if eq['name'] not in EVIDENCE:
+            fail('%s cites the spectre repository but has no grade from its '
+                 'ledger' % eq.label)
 
 
 def _check_references(fail):
@@ -5606,6 +6325,28 @@ def _check_readings(fail):
         if join(a, b) is not None:
             fail('%s and %s were joined: a confining string tension is not '
                  'the tension of a fundamental string' % (a, b))
+    # Both models call their coupling beta and both are weakly fluctuating at
+    # large beta, and they are different parameters of different models.
+    for a, b in [('Asymptotic-freedom mass scaling', 'Lattice coupling'),
+                 ('O(N) lattice model', 'Lattice coupling'),
+                 ('O(N) lattice model', 'Wilson plaquette action'),
+                 ('Spin gap', 'Mass gap in physical units')]:
+        if join(a, b) is not None:
+            fail('%s and %s were joined: a spin-model parameter is not the '
+                 'parameter of a gauge theory' % (a, b))
+    for a, b in [('One-loop running', 'Lattice coupling'),
+                 ('Unification prediction', 'Lattice coupling'),
+                 ('Dimensional transmutation', 'Lattice coupling')]:
+        if join(a, b) is not None:
+            fail('%s and %s were joined: alpha at a scale is not the '
+                 'lattice inverse coupling' % (a, b))
+    found = join('One-loop coefficient (QCD)', 'Lattice coupling')
+    if found is None or found.pivot != 'N':
+        fail('the one-loop coefficient should join the lattice coupling on '
+             'the number of colours')
+    found = join('Kosterlitz coupling flow', 'Kosterlitz fugacity flow')
+    if found is None:
+        fail('the two Kosterlitz flow equations should join on the scale l')
     for a, b, q in [('Area law', 'Creutz string tension', 'sigma'),
                     ('Creutz ratio', 'Creutz string tension', 'chi'),
                     ('Effective sample size', 'Sampling efficiency', 'N_eff'),
@@ -5664,6 +6405,7 @@ def selftest():
     _check_concepts(fail)
     _check_equations(fail)
     _check_references(fail)
+    _check_evidence(fail)
     _check_graph(fail)
     _check_derivations(fail)
     _check_algebra(fail)

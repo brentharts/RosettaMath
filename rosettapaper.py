@@ -30,6 +30,10 @@ sys.path.insert(0,'../')
 import rosettaphys as P
 import rosettalean as RL
 import rosettaym as Y
+import rosettaoai as OAI
+import rosettacicy as CI
+import rosettaspectre as SP
+import rosettanariai as NR
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUTPUT = os.path.join(HERE, 'rosettaphys.tex')
@@ -182,6 +186,13 @@ theory group (Section~\ref{sec:lattice}) is drawn from the Yang--Mills Mass Gap
 Laboratory of Elsbernd \cite{elsbernd2026}: %s of its entries name the
 function in that code which they describe, and a bridge module puts the same
 numbers through the library's algebra and through the code and compares them.
+
+Yang--Mills theory is where those borrowings meet. Section~\ref{sec:ym} gathers
+what five repositories say about it---the laboratory, a fork of an OpenAI
+mathematics release, CICY, and two on the Spectre monotile---into a second
+generated display, Figure~\ref{fig:grandym}, in which a quantity is equated
+across repositories only where they all state it, and joined by an arrow where
+they state something similar about a different system.
 
 All three treat notation as something to be \emph{translated}. This paper
 treats it as something to be \emph{interrogated}, starting from an observation
@@ -1062,6 +1073,608 @@ def _reproduction_text():
     return '\n\n' + '\n'.join(lines)
 
 
+# ------------------------------------------------- Yang--Mills, five repositories
+
+YM_KEYS = ('elsbernd2026', 'openai2026', 'cicy2026', 'spectre2026',
+           'nariai2026')
+
+# Figures the section draws from the repositories' own output.  They are
+# copied next to the .tex when it is written, never regenerated here: a figure
+# in this paper is what that repository's code produced, and says so.
+FIGURES = {
+    'on_model_mc': ('openai', 'build/figures/on_model_mc.pdf'),
+    'kt_flow': ('openai', 'build/figures/kt_flow.pdf'),
+    'on_local_slopes': ('ymlab', 'results/figures/findings/on_local_slopes.pdf'),
+    'su2_slopes': ('ymlab', 'results/figures/findings/su2_slopes.pdf'),
+}
+
+
+def fill(text, **values):
+    """Substitute @name@ tokens.  LaTeX is full of braces and percent signs,
+    so the prose is written with tokens instead of format specifiers."""
+    for key, value in values.items():
+        text = text.replace('@%s@' % key, str(value))
+    import re
+    left = re.findall(r'@[A-Za-z_0-9]+@', text)
+    if left:
+        raise ValueError('unfilled tokens in the Yang-Mills section: %s' % left)
+    return text
+
+
+def _figure_root(which):
+    return OAI.locate() if which == 'openai' else Y.locate()
+
+
+def figure_source(name):
+    which, rel = FIGURES[name]
+    root = _figure_root(which)
+    path = os.path.join(root, rel) if root else None
+    return path if path and os.path.exists(path) else None
+
+
+def stage_figures(directory):
+    """Copy the available figures to <directory>/figures/; return their names."""
+    import shutil
+    staged = []
+    for name in FIGURES:
+        source = figure_source(name)
+        if source is None:
+            continue
+        target = os.path.join(directory, 'figures')
+        os.makedirs(target, exist_ok=True)
+        shutil.copyfile(source, os.path.join(target, name + '.pdf'))
+        staged.append(name)
+    return staged
+
+
+def _graphic(name, width):
+    if figure_source(name) is None:
+        return ''
+    size = width if '=' in width else 'width=' + width
+    return r'\includegraphics[%s]{figures/%s.pdf}' % (size, name)
+
+
+def _entry_tex(name):
+    return P.GRAPH.find(name, 'equation')['latex']
+
+
+def _bridge_rows():
+    """One row per repository: what cites it, and what its bridge measured."""
+    def closed(module):
+        return module._check_closed_forms()
+
+    runners = {
+        'elsbernd2026': lambda: Y.checks() if Y.available() else None,
+        'openai2026': lambda: OAI.checks(),
+        'cicy2026': lambda: (closed(CI) + CI.checks()) if CI.available() else None,
+        'spectre2026': lambda: (closed(SP) + SP.checks()) if SP.available() else None,
+        'nariai2026': lambda: (closed(NR) + NR.checks()) if NR.available() else None,
+    }
+    rows = []
+    for key in YM_KEYS:
+        try:
+            results = runners[key]()
+        except Exception:
+            results = None
+        ref = P.REFERENCES[key]
+        row = {'key': key, 'tag': ref['tag'], 'repo': ref['repo'],
+               'entries': len(P.cited(key)), 'ran': results is not None}
+        if results:
+            row.update(checks=len(results), ok=all(c.ok for c in results),
+                       worst=max(c.error for c in results))
+        rows.append(row)
+    return rows
+
+
+_FACTS = {}
+
+
+def ym_facts():
+    """Every number the Yang--Mills section quotes, from the repositories."""
+    if _FACTS:
+        return _FACTS
+    facts = {'bridges': _bridge_rows()}
+    try:
+        facts['af'] = OAI.asymptotic_freedom()
+        facts['kt'] = OAI.data('kt_flow')
+        facts['bloch'] = OAI.data('bloch_law')
+        facts['haldane'] = OAI.haldane()
+    except Exception:
+        facts['af'] = facts['kt'] = facts['bloch'] = facts['haldane'] = None
+    facts['ymlab'] = None
+    if Y.available():
+        try:
+            import importlib
+            findings = importlib.import_module('ymlab.findings')
+            facts['ymlab'] = findings.on_comparison()
+        except Exception:
+            facts['ymlab'] = None
+    if CI.available():
+        facts['spot'] = CI.blind_spot()
+        facts['alpha3'] = {}
+        couplings = CI.load()[1]
+        for label, b in (('MSSM', CI.MSSM), ('Standard Model', CI.SM)):
+            inv = CI.predicts('Unification prediction', {
+                'alpha_1': 1.0 / couplings.ALPHA1_INV_MZ,
+                'alpha_2': 1.0 / couplings.ALPHA2_INV_MZ,
+                'b_1': b[0], 'b_2': b[1], 'b_3': b[2]})
+            facts['alpha3'][label] = 1.0 / inv
+        facts['alpha3_measured'] = couplings.ALPHA3_MZ
+    facts['hat'] = SP.hat_three_ways() if SP.available() or CI.available() else None
+    facts['homogeneous'] = SP.homogeneous_species() if SP.available() else None
+    facts['matrix'] = NR.matrix_comparison() if NR.available() else None
+    _FACTS.update(facts)
+    return _FACTS
+
+
+def _table(header, rows, align):
+    return (r'\begin{tabular}{%s}' '\n' r'\toprule' '\n%s \\\\\n' r'\midrule' '\n%s\n'
+            r'\bottomrule' '\n' r'\end{tabular}'
+            % (align, ' & '.join(header), '\n'.join(' & '.join(r) + r' \\' for r in rows)))
+
+
+def _ym_overview(f):
+    members = P.grand_yang_mills_members()
+    links = P.cross_repository_links()
+    terms = sum(len(m) for m in members)
+    nvars = len(RL.grand_conjecture(P.YM_PIVOTS, name='yang_mills').variables)
+    counts = {k: len(P.cited(k)) for k in YM_KEYS}
+    ran = [r for r in f['bridges'] if r['ran']]
+    return fill(r"""
+\clearpage
+\section{Yang--Mills across five repositories}
+\label{sec:ym}
+
+Yang--Mills theory is a thread that runs through more code than one author's,
+and the library now holds entries from five repositories that touch it. The
+laboratory of Elsbernd \cite{elsbernd2026} contributes @ymlab@ entries on the
+lattice theory itself. A fork of an OpenAI mathematics release
+\cite{openai2026} contributes @openai@ entries on the spin models and
+renormalisation-group flows that its manuscripts use as toys for gauge theory.
+CICY \cite{cicy2026}, a Calabi--Yau toolkit, contributes @cicy@ entries on the
+running of the gauge couplings and on the Hat monotile. The last two,
+\texttt{spectre} \cite{spectre2026} and \texttt{nariai} \cite{nariai2026}, are
+about a tiling, and are here because the arithmetic of the Spectre can be put
+beside CICY's arithmetic of the Hat and agrees with it; they are not
+Yang--Mills and the section does not pretend otherwise.
+
+\begin{figure}[!htbp]
+\centering
+\resizebox{0.98\textwidth}{!}{$\displaystyle %s $}
+\caption{\tiny Yang--Mills across the repositories, conjoined. The upper rows
+are identities: a quantity, \texttt{\textbackslash overbrace}d with what it is,
+equal to what each of @terms@ equations from the library says it is, each
+\texttt{\textbackslash underbrace}d with the equation and the repository it
+came from. The lower rows are correspondences, read from the graph's
+@nlinks@ cross-repository links: two equations that say related things about
+different systems, joined by an arrow rather than an equals sign. Generated by
+\code{rosettaphys.grand\_yang\_mills()}; the identities alone, with their
+@nvars@ variables bound once, elaborate to a single proposition through
+\code{rosettalean.grand\_conjecture}.}
+\label{fig:grandym}
+\end{figure}
+
+Figure~\ref{fig:grandym} is to Yang--Mills what Figure~\ref{fig:grand} is to the
+whole library, and it is built the same way: nothing in it was written down as a
+display. The rows are \emph{chosen} (\code{rosettaphys.YM\_PIVOTS}), because
+every family in the library does not fit on a page and because some would
+equate things that are only analogous; what each row \emph{says} is whatever the
+equations declare. The top row is the thread from the lattice to the running of
+the coupling: the lattice coupling $\beta = 2N/g^2$ and the one-loop coefficient
+of the ordinary theory both state the number of colours, so each is solved for
+$N$ and the two are equated. The one-loop coefficient of the supersymmetric
+theory states it too and is left out on purpose, because equating what two
+different theories say about $N$ is a claim about neither. The arrows are
+where the library declines to equate. The exponent of asymptotic freedom in the
+spin model and the exponent of dimensional transmutation in the gauge theory
+have the same shape; the laboratory and the spin model both state a lattice
+mass; the second-moment length is a mass but not in general the transfer-matrix
+gap. Each link carries a note saying in what sense, and Table~\ref{tab:bridges}
+lists what each repository's bridge measured.
+
+\begin{table}[!htbp]
+\centering
+\small
+%s
+\caption{The bridges. \emph{Entries} cite the repository; \emph{checks} are
+comparisons the bridge ran between the library's algebra and the code
+(\code{python3 rosetta<repository>.py}); \emph{worst} is the largest relative
+error among them. A repository that is not on the machine building the paper is
+reported as not run, and nothing is printed for it that could not have been
+measured.}
+\label{tab:bridges}
+\end{table}
+""" % (P.grand_yang_mills(), _table(
+        ['repository', 'entries', 'checks', 'worst', 'status'],
+        [[r'\code{%s}' % esc(r['tag']), str(r['entries']),
+          str(r['checks']) if r['ran'] else '--',
+          ('%.1e' % r['worst']) if r['ran'] else '--',
+          ('all agree' if r['ok'] else 'DISAGREE') if r['ran'] else 'not run']
+         for r in f['bridges']], 'lrrrl')),
+        ymlab=number(counts['elsbernd2026']), openai=number(counts['openai2026']),
+        cicy=number(counts['cicy2026']), terms=terms, nlinks=len(links),
+        nvars=nvars)
+
+
+def _ym_asymptotic(f):
+    af = f['af']
+    yl = f['ymlab']
+    if af is None and yl is None:
+        return r"""
+\subsection{Asymptotic freedom}
+
+Neither the fork's computations nor the laboratory's findings were found on the
+machine that built this document, so no measured slopes are printed here;
+\code{python3 rosettaoai.py} prints them.
+"""
+    text = [fill(r"""
+\subsection{From the lattice toward the continuum: asymptotic freedom}
+\label{sec:ym:af}
+
+A positive mass gap in the continuum needs the lattice mass, in lattice units,
+to go to zero in the right way as the coupling is tuned: $a\,m_{\mathrm{phys}}$
+fixed while $a\to 0$. The theory that makes this plausible is asymptotic
+freedom, and the library states it twice. For the two-dimensional $O(N)$
+models, $N\ge 3$,
+\[ @af@ , \]
+and for a gauge theory the running of the coupling gives
+\[ @tr@ , \qquad @qcd@ , \]
+where the sign of $b$ is what makes the exponent negative. The two exponentials
+have one shape: $2\pi$ times an inverse coupling over a positive one-loop
+coefficient, $N-2$ in the spin model and $|b|$ in the gauge theory. In the
+normalisation $b_0 = |b|/16\pi^2$ and $\alpha = g^2/4\pi$ the gauge exponent
+$2\pi/(|b|\alpha)$ is $1/(2 b_0 g^2)$, which sympy confirms in the laboratory's
+tests. Demanding a fixed physical mass $m_{\mathrm{lat}} = a\,m_{\mathrm{phys}}$
+at spacing $a$ in the $N=3$ form gives
+\[ \ln\frac{1}{a} = 2\pi\beta - \ln\beta - \ln\frac{C}{m_{\mathrm{phys}}} , \]
+so $\beta(a) = \tfrac{1}{2\pi}\ln\tfrac1a + O(\ln\ln\tfrac1a)$: the coupling
+must drift logarithmically as the spacing shrinks, which is the statement that
+the continuum limit sits at infinite $\beta$ \cite{openai2026}. This is the
+same shape as the trajectory the fork's manuscript builds; the script does not
+reproduce that construction, and says so.
+""", af=_entry_tex('Asymptotic-freedom mass scaling'),
+        tr=_entry_tex('Dimensional transmutation'),
+        qcd=_entry_tex('One-loop coefficient (QCD)'))]
+
+    if af:
+        rows = []
+        for n, r in sorted(af.items()):
+            rows.append(['$O(%d)$' % n, '%.2f--%.2f' % r['beta'],
+                         '%.2f' % r['fit_slope'], '%.2f' % r['leading_slope'],
+                         '%.2f' % r['ratio']])
+        graphic = _graphic('on_model_mc', r'0.95\textwidth')
+        onmc_figure = (
+            '\\begin{figure}[!htbp]\n\\centering\n%s\n\\caption{Left: second-moment '
+            'correlation length against $\\beta$ for $O(3)$ and $O(4)$, with the '
+            'asymptotic-freedom form matched at the first point. Right: '
+            '$R_N=\\xi\\,\\beta^{-1/(N-2)}e^{2\\pi\\beta/(N-2)}$, which flattens at '
+            'large $\\beta$ if asymptotic scaling holds; the dotted line is the '
+            "constant in the fork's $O(4)$ transfer-gap formula. Figure produced "
+            "by the fork's \\code{tools/on\\_model\\_mc.py}.}\n"
+            '\\label{fig:onmc}\n\\end{figure}') % graphic if graphic else ''
+        text.append(fill(r"""
+The fork's Wolff Monte Carlo \cite{openai2026} measures the second-moment
+correlation length $\xi^2 = (\chi/F - 1)/p^2$ with $p = 2\sin(\pi/L)$ on
+$L\times L$ tori. Table~\ref{tab:af} compares the fitted slope of
+$\ln\xi + \tfrac{1}{N-2}\ln\beta$ against $\beta$ with the leading
+asymptotic-freedom value. The simulated length grows more slowly than the
+leading form at the couplings reachable here, and the ratio of local slopes
+approaches one from below as $\beta$ grows@yl_on@; no plateau is claimed for
+$O(3)$, whose ratio is still rising at the largest coupling. The inverse
+second-moment length is a mass but not in general the transfer-matrix gap, so
+this tests the shape of the scaling form, not its constant.
+
+\begin{table}[!htbp]
+\centering
+\small
+@table@
+\caption{Fitted slope of $\ln\xi + \tfrac{1}{N-2}\ln\beta$ against $\beta$,
+against the leading asymptotic-freedom value $2\pi/(N-2)$. The last column is
+the ratio of the slope measured between the end points to the slope the
+library's entry predicts between them. From \code{rosettaoai.asymptotic\_freedom()}.}
+\label{tab:af}
+\end{table}
+
+@onmc_figure@
+""", onmc_figure=onmc_figure,
+        table=_table(['model', r'$\beta$', 'fitted', 'leading', 'ratio'],
+                     rows, 'lcccc'),
+        yl_on=(', from $%s$ to $%s$ (O(3)) and from $%s$ to $%s$ (O(4)) in the '
+               'laboratory\'s comparison' % tuple(
+                   '%.2f' % v for n in (3, 4) for v in
+                   (yl['on'][n]['ratio'][0], yl['on'][n]['ratio'][-1]))
+               if yl else '')))
+
+    if yl:
+        factor = yl['factor_two']
+        su = yl['su']
+        sizes = sorted(su)
+        ratios = ', '.join(
+            r'$%d^4$: %s' % (k, ', '.join('%.2f' % x for x in su[k]['ratio']))
+            for k in sizes)
+        last = [su[k]['ratio'][-1] for k in sizes]
+        moved = (len(last) >= 2 and last[-1] > last[0])
+        graphic = _graphic('on_local_slopes', 'height=4.8cm')
+        graphic2 = _graphic('su2_slopes', 'height=4.8cm')
+        figure = (r'\begin{figure}[!htbp]' '\n' r'\centering' '\n'
+                  '%s\\hfill%s\n'
+                  r"""\caption{Local slope $d\ln m/d\beta$ against $\beta$. Left:
+$O(3)$ and $O(4)$ Monte Carlo from the fork against the asymptotic form. Right: the
+SU(2) Metropolis scans of the laboratory, $d\ln\sqrt{\chi(2,2)}/d\beta$ at $4^4$ and
+$6^4$, against the two-loop slope. The SU(2) lattices are small and short and the
+points are far from the line; the $O(N)$ points are closer to theirs. Figures produced
+by the laboratory's \code{scripts/generate\_findings.py}.}""" '\n'
+                  r'\label{fig:slopes}' '\n' r'\end{figure}'
+                  % (graphic, graphic2)) if (graphic and graphic2) else ''
+        text.append(fill(r"""
+The laboratory's own comparison \cite{elsbernd2026} puts a gauge theory beside
+the spin models. Halving the scale takes a change in $\beta$ of
+@halving@, at the couplings named. Each $\beta$ is in its own model's
+normalisation, so these compare how far each model's coupling must move to change
+the scale by the same factor, not how fast one running coupling is against
+another. Its $SU(2)$
+Metropolis scans measure $\sqrt{\chi(2,2)}$, the Creutz ratio, on periodic
+lattices and compare $d\ln\sqrt{\chi}/d\beta$ with the two-loop prediction; the
+measured-to-predicted ratios across the scan are @ratios@. These lattices are
+far from asymptotic scaling: the plaquette is already close to its
+weak-coupling leading term at $\beta\ge 2.8$, but the slope of $\ln\sqrt\chi$
+is at most @best@\% of the two-loop value, and at the largest coupling the
+ratio is @last@, so the larger lattice @moved@. A possible reason is
+strong-coupling and finite-size effects in $\chi(2,2)$ on lattices this small;
+it was not tested here, and nothing in this section is a statement about the
+continuum mass gap.
+
+@figure@
+""", halving=', '.join('$%s$ at $\\beta=%s$ (%.2f)' % (
+                r['model'].split(',')[0], r['model'].split('beta=')[1], r['delta_beta'])
+                for r in factor),
+            ratios=ratios,
+            best=('%.0f' % (100 * max(float(max(su[k]['ratio'])) for k in sizes))),
+            last=' and '.join('%.2f on $%d^4$' % (su[k]['ratio'][-1], k) for k in sizes),
+            moved='moved it toward one' if moved else 'did not move it toward one',
+            figure=figure))
+    return '\n'.join(text)
+
+
+def _ym_kt_bloch_haldane(f):
+    kt, bl, hal = f['kt'], f['bloch'], f['haldane']
+    if kt is None and bl is None and hal is None:
+        return ''
+    text = []
+    if kt:
+        mu_rows = ' \\\\\n'.join('%g & %.3f' % (mu, v) for mu, v in kt['mu_lstar_to_pi'])
+        log_rows = ' \\\\\n'.join('%g & %.5f' % (r, v) for r, v in kt['log_exponent'][:5])
+        graphic = _graphic('kt_flow', r'0.98\textwidth')
+        text.append(fill(r"""
+\subsection{Kosterlitz--Thouless flow}
+\label{sec:ym:kt}
+
+The two-dimensional $XY$ model is the other classic place where a coupling runs,
+and the fork \cite{openai2026} computes the textbook flow exactly. In the
+variables $x = \pi K - 2$ and a vortex fugacity $y$, with $\ell$ the logarithm
+of the length, the library states the two equations
+\[ @dx@ , \qquad @dy@ . \]
+The quantity $x^2 - y^2$ is conserved. On the disordered side
+$x^2 - y^2 = -\mu^2$ and the solution is
+\[ x(\ell) = -\mu\tan(\ell\mu + \theta_0), \qquad
+   y(\ell) = \frac{\mu}{\cos(\ell\mu+\theta_0)} , \]
+and stopping when $y$ reaches one gives the correlation length
+\[ \ln\xi = \ell^*(\mu) = \frac{\arccos\mu + \arccos(\mu/y_0)}{\mu},
+   \qquad \mu\,\ell^* \to \pi \quad (\mu\to 0). \]
+Since $\mu^2\propto T-T_c$ this is the essential singularity
+$\ln\xi \sim \pi/\mu \propto 1/\sqrt{T-T_c}$. On the critical separatrix
+$x = y = 1/(\ell + c)$ the spin scaling dimension is $\eta = 1/(2\pi K)$, so
+with $u = \ell + c$
+\[ \int \eta\,d\ell = \frac{u}{4} - \frac{\ln(2u+1)}{8}
+   \quad\Longrightarrow\quad C(r) \propto r^{-1/4}(\ln r)^{1/8}. \]
+Both exponents match the form quoted in the fork's repository paper; the flow
+does not predict its lattice constants. The fork's script checks symbolically that the solution solves the flow, and
+numerically that the integrated $\ell^*$ matches the closed form to $10^{-6}$;
+Table~\ref{tab:kt} shows the two limits.
+
+\begin{table}[!htbp]
+\centering
+\small
+\begin{tabular}{rc@{\qquad}rc}
+\toprule
+$\mu$ & $\mu\,\ell^*$ & $\ln r$ & $d\ln(r^{1/4}C)/d\ln r$ \\
+\midrule
+@rows@ \\
+\bottomrule
+\end{tabular}
+\caption{Left: $\mu\,\ell^*$ tends to $\pi$ as $\mu\to 0$ (for $y_0 = 0.1$). Right:
+the local exponent of the logarithmic correction on the critical flow tends to
+$1/8$. From the fork's \code{build/data/kt\_flow.json}.}
+\label{tab:kt}
+\end{table}
+
+@graphic@
+""", dx=_entry_tex('Kosterlitz coupling flow'),
+            dy=_entry_tex('Kosterlitz fugacity flow'),
+            rows=' \\\\\n'.join(
+                '%g & %.3f & %g & %.5f' % (a[0], a[1], b[0], b[1])
+                for a, b in zip(kt['mu_lstar_to_pi'], kt['log_exponent'])),
+            graphic=('\\begin{figure}[!htbp]\n\\centering\n%s\n\\caption{Left: '
+                     'Kosterlitz flow with the separatrices $x=\\pm y$ and two '
+                     'disordered-side trajectories. Middle: $\\mu\\ln\\xi$ from the '
+                     'closed form (lines) and from numerical integration (dots) '
+                     'tends to $\\pi$. Right: the local exponent of the '
+                     'logarithmic correction tends to $1/8$. Produced by the '
+                     'fork\'s \\code{tools/kt\\_flow.py}.}\n\\label{fig:kt}\n'
+                     '\\end{figure}') % graphic if graphic else ''))
+    if bl or hal:
+        parts = []
+        if bl:
+            a0, a1, a2 = bl['A'][:3]
+            parts.append(fill(r"""
+\emph{Bloch's law.} The ideal-magnon density of the quantum Heisenberg
+ferromagnet, with $x = \beta S$,
+\[ n(x) = \sum_{m\ge1}\bigl[e^{-2xm}I_0(2xm)\bigr]^3
+   \sim \frac{\zeta(3/2)}{8\pi^{3/2}}x^{-3/2}
+   + \frac{3\zeta(5/2)}{128\pi^{3/2}}x^{-5/2}
+   + \frac{33\zeta(7/2)}{4096\pi^{3/2}}x^{-7/2} + \dots , \]
+has as its first correction the coefficient quoted in the fork's repository paper. The three
+coefficients are $A_0 = @a0@$, $A_1 = @a1@$ and $A_2 = @a2@$; the library's
+entry \cite{openai2026} states the first two terms. This is a consistency check
+of a quoted coefficient against the ideal-magnon expansion, not a re-proof of
+the theorem, which is about the interacting system.""",
+                             a0='%.5f' % a0, a1='%.5f' % a1, a2='%.5f' % a2))
+        if hal:
+            gaps = ', '.join('$\\Delta(%d)=%.4f$' % (L, g)
+                             for L, g in sorted(hal['gap'].items()))
+            parts.append(fill(r"""
+\emph{The spin-1 Haldane gap.} On a periodic ring of spin-1 sites
+$H(\theta)=\sum_i[\cos\theta\,\mathbf S_i\!\cdot\!\mathbf S_{i+1}
++\sin\theta\,(\mathbf S_i\!\cdot\!\mathbf S_{i+1})^2]$ the bond algebra gives
+$\mathbf S\!\cdot\!\mathbf S + \tfrac13(\mathbf S\!\cdot\!\mathbf S)^2 =
+2P_2 - \tfrac23$, so at $\tan\theta=\tfrac13$ the Hamiltonian is a sum of
+projectors and $E_0 = -2L/3$ on a ring, and the fork's code is checked against
+$E_0 = -2L/\sqrt{10}$ at $\tan\theta=\tfrac13$ to $10^{-8}$ before its gap is
+believed. Exact diagonalisation gives @gaps@, and a
+finite-size fit gives $\Delta_\infty \approx @inf@$ against the DMRG value of
+about $@lit@$ from the literature. The fit assumes its form and fits three
+points, so it is an illustration; the repository's paper proves a uniform lower
+bound for all even $L$.""", gaps=gaps, inf='%.4f' % hal['extrapolated'],
+                             lit='%.4f' % hal['literature']))
+        text.append('\n\\subsection{Two models that test the machinery}\n'
+                    '\\label{sec:ym:machinery}\n\n'
+                    'The remaining two models are not about gauge theory. They '
+                    'are in the library because each admits an independent '
+                    'computation, and because a knowledge base that is going to '
+                    'be trusted on the lattice should first be trusted on '
+                    'something with a known answer.\n\n' + '\n\n'.join(parts))
+    return '\n'.join(text)
+
+
+def _ym_running_and_tilings(f):
+    out = [r"""
+\subsection{Running, unification and the tilings}
+\label{sec:ym:cicy}
+"""]
+    if 'alpha3' in f:
+        a3 = f['alpha3']
+        spot = f['spot']
+        flat = max(spot.values()) - min(spot.values()) < 1e-12
+        out.append(fill(r"""
+CICY \cite{cicy2026} supplies the one-loop running of the three gauge couplings
+and the relation between them that unification implies. Eliminating the
+unified coupling and scale from $1/\alpha_i(M_Z) = 1/\alpha_G + (b_i/2\pi)
+\ln(M_G/M_Z)$ leaves
+\[ @unif@ , \]
+and with the measured $\alpha_1$ and $\alpha_2$ the library's algebra gives
+$\alpha_3(M_Z) = @mssm@$ for the supersymmetric spectrum and $@sm@$ for the
+Standard Model, against a measured $@meas@$. The only theoretical input is the
+set of $b_i$. A complete generation adds the same amount to every $b_i$, so
+the prediction does not depend on the number of generations: @flat@. That is
+unwelcome news for a programme that computes generation counts as an index,
+because the quantity the geometry gives most reliably is the one that drops out
+here. What the prediction is sensitive to is the incomplete multiplets, the
+Higgs doublets and any vector-like exotics, which an index cannot see.
+""", unif=_entry_tex('Unification prediction'),
+            mssm='%.3f' % a3['MSSM'], sm='%.3f' % a3['Standard Model'],
+            meas='%.3f' % f['alpha3_measured'],
+            flat=('the inverse coupling is the same to $10^{-12}$ for three to '
+                  'six generations' if flat else 'it was found to vary with '
+                  'the generation count, which would be a bug')))
+    else:
+        out.append(r"""
+CICY was not found on the machine that built this document, so the running of
+the couplings is not printed; \code{python3 rosettacicy.py} prints it.
+""")
+
+    hat = f['hat']
+    hom = f['homogeneous']
+    evidence = P.EVIDENCE
+    grade_rows = []
+    for name in sorted(evidence):
+        info = P.evidence_for(name)
+        grade_rows.append([esc(P.short(name)), esc(info['fact']),
+                           info['kinds'], esc(info['lean'] or '--')])
+    mat = f['matrix']
+    out.append(fill(r"""
+The tilings enter through a different door. The Spectre's substitution is
+nine species with inflation factor $\mu = 4+\sqrt{15}$ and the Hat's is four
+with $\kappa = (7+3\sqrt5)/2 = \phi^4$; their quadratics, $x^2-8x+1$ and
+$x^2-7x+1$, differ in one coefficient, and that coefficient is the difference
+between the fields generated by $\sqrt{15}$ and $\sqrt5$. The \texttt{nariai}
+repository \cite{nariai2026} adds the linear factor $\ell = (\sqrt6+\sqrt{10})/2$
+with $\mu = \ell^2$, the gap-label recurrence $G''=8G'-G$, which is the
+characteristic polynomial of the counts applied to powers of the reciprocal
+root, and the tile-count growth rate $\ln\mu \approx 2.063$, which is a growth
+rate and not an entropy: primitive substitution tilings have zero topological
+entropy. @hat@ @matrix@ @hom@
+
+Some of these sources grade their own claims, and the library keeps the grade.
+The \texttt{spectre} repository \cite{spectre2026} keeps a ledger in which every
+fact is derived by exact computation, counted on a placed tiling, recomputed by
+an independent route, quoted, or resting on a premise, and some are also checked
+by the Lean kernel. Table~\ref{tab:ledger} copies that grade onto the library's
+entries; the bridge compares it with the repository's ledger and the two agree.
+The grade is the repository's, and so is the responsibility for it.
+
+\begin{table}[!htbp]
+\centering
+\small
+@table@
+\caption{Evidence grades from the \texttt{spectre} ledger: D derived, C counted,
+X recomputed by an independent route. A theorem name means the Lean kernel
+checked the arithmetic. From \code{rosettaphys.EVIDENCE}.}
+\label{tab:ledger}
+\end{table}
+""", hat=(r"""The Hat constant comes out the same by three routes: the library's closed form,
+CICY's exact arithmetic in $\mathbb{Q}(\sqrt5)$ with the root verified exactly,
+and the \texttt{spectre} repository's own fact, $\kappa = %.9f$.""" % hat['library']
+          if hat and hat['cicy'] is not None and hat['spectre'] is not None
+          and abs(hat['cicy'] - hat['library']) < 1e-12
+          and abs(hat['spectre'] - hat['library']) < 1e-12 else ''),
+        matrix=(r"""The two tiling repositories hold the same $9\times9$ substitution matrix, rule for rule,
+with the same characteristic polynomial; they both transcribe the published metatile
+rules, so this checks the transcription and not a second derivation."""
+                if mat and mat['same_matrix'] and mat['same_charpoly'] else ''),
+        hom=(r"""The count recurrence $N_{n+2}=8N_{n+1}-N_n$ holds exactly for %s of the nine species,
+from any starting tile, once a transient of at most %s generations has passed; for the other
+three, $\Xi$, $\Pi$ and $\Psi$, it does not, because the matrix also has the eigenvalues $\pm1$.
+The library's first statement of this was too general, and the bridge is what found out."""
+             % (number(len(hom)), number(SP.TRANSIENT)) if hom is not None else ''),
+        table=_table(['entry', 'ledger fact', 'grade', 'Lean theorem'],
+                     [[r[0], r'\code{%s}' % r[1], r[2], r'\code{%s}' % r[3] if r[3] != '--' else '--']
+                      for r in grade_rows], 'llcl')))
+    return '\n'.join(out)
+
+
+def _ym_limits(f):
+    ran = [r for r in f['bridges'] if r['ran']]
+    return fill(r"""
+\subsection{What this section does and does not say}
+\label{sec:ym:limits}
+
+Every comparison above is a comparison of arithmetic with arithmetic: the
+library's algebra against what a repository's code computes, @ran@ of the five
+bridges having run on the machine that built this paper. None of it is evidence
+about the Clay problem, and none of it constructs four-dimensional Yang--Mills
+theory. The $O(N)$ models and the $XY$ chain are toys for gauge theory, with a
+different dimension, different observables and different exponents. The
+$SU(2)$ lattices are small, short and single-chain. The tiling repositories bear
+on Yang--Mills only through arithmetic and analogy, and the \texttt{nariai}
+repository itself records a retraction, an earlier inflation factor that was
+not the Spectre's, together with open findings against the physical predictions
+it builds on the algebra; those predictions are not in the library and are not
+claimed here. What the display records is the narrower thing that was tested:
+which of these repositories agree about which quantity, and where the library
+refuses to say that two similar things are the same.
+
+\clearpage
+""", ran=number(len(ran)))
+
+
+def yang_mills_section():
+    f = ym_facts()
+    return '\n'.join([_ym_overview(f), _ym_asymptotic(f),
+                      _ym_kt_bloch_haldane(f), _ym_running_and_tilings(f),
+                      _ym_limits(f)])
+
+
+
 def lean_section():
     conj = RL.conjecture(P.join('Boltzmann entropy',
                                 'Bekenstein-Hawking entropy'))
@@ -1122,6 +1735,19 @@ def reproducibility():
 \newline
 (the laboratory of Section~\ref{sec:lattice}: found in \code{YMLAB\_DIR}, or in
 a \code{yang-mills-mass-gap-lab} directory beside this one)
+\newline
+\url{%s}
+\newline
+\url{%s}
+\newline
+\url{%s}
+\newline
+\url{%s}
+\newline
+(the four repositories of Section~\ref{sec:ym}: found through
+\code{OPENAI\_MATH\_DIR}, \code{CICY\_DIR}, \code{SPECTRE\_DIR} and
+\code{NARIAI\_DIR}, or in a directory of that name beside this one; the figures
+of that section are copied from them next to the \code{.tex} when it is written)
 
 \begin{lstlisting}[language={}]
 python3 rosettaphys.py             the census: nodes, edges, joins, collisions
@@ -1131,11 +1757,17 @@ python3 rosettalean.py --selftest  the bridge, end to end
 python3 rosettaym.py               the Yang-Mills laboratory, checked against the library
 python3 rosettaym.py --selftest    %d comparisons, and the published campaign
 python3 rosettaym.py --reproduce   rerun one chain pair here (slow)
+python3 rosettaoai.py              the OpenAI-math fork, checked against the library
+python3 rosettacicy.py             CICY's couplings and generation count
+python3 rosettaspectre.py          the spectre repository, its ledger, and the Hat constant
+python3 rosettanariai.py           nariai's constants, and its matrix against spectre's
 python3 rosettapaper.py            regenerate this document
 make test                          all of the above, plus the kernel
 make collisions                    the table in Section 4
 \end{lstlisting}
 """ % (P.REFERENCES[Y.REFERENCE]['url'],
+       P.REFERENCES['openai2026']['url'], P.REFERENCES['cicy2026']['url'],
+       P.REFERENCES['spectre2026']['url'], P.REFERENCES['nariai2026']['url'],
        len(P.SYMBOLS) + len(P.CONCEPTS) + len(P.EQUATIONS), len(Y.checks()))
 
 
@@ -1235,11 +1867,17 @@ def _bibitem(key):
     ref = P.REFERENCES[key]
     title = esc(ref['title']).replace('Yang-Mills', 'Yang--Mills')
     sub = esc(ref['subtitle'])
-    given, surname = ref['authors'].split()[0], ref['authors'].split()[-1]
-    return (r"\bibitem{%s} %s, %s. (%d). %s: %s. %s" "\n"
+    words_ = ref['authors'].split()
+    if len(words_) == 2:
+        # 'Michael Elsbernd': surname, initial
+        who = '%s, %s.' % (esc(words_[-1]), esc(words_[0][0]))
+    else:
+        # a credit line rather than a name: print it as written
+        who = esc(ref['authors'])
+    return (r"\bibitem{%s} %s (%d). %s: %s. %s" "\n"
             r"\url{%s}" "\n\n"
-            % (key, esc(surname), esc(given[0]), ref['year'], title, sub,
-               esc(ref['note']), ref['url']))
+            % (key, who, ref['year'], title, sub, esc(ref['note']),
+               ref['url']))
 
 
 ELSBERND = _bibitem(Y.REFERENCE)
@@ -1278,8 +1916,11 @@ Controlled Natural Language. \emph{ITP 2024}.
 # The one reference that comes from the knowledge base rather than from this
 # file: rosettaphys.REFERENCES is where it is defined, so the bibliography
 # cannot say something the graph does not.
-BIBLIOGRAPHY = BIBLIOGRAPHY.replace(r'\end{thebibliography}',
-                                    ELSBERND + r'\end{thebibliography}')
+BIBLIOGRAPHY = BIBLIOGRAPHY.replace(
+    r'\end{thebibliography}',
+    ELSBERND + ''.join(_bibitem(k) for k in
+                       ('openai2026', 'cicy2026', 'spectre2026', 'nariai2026'))
+    + r'\end{thebibliography}')
 
 
 # ---------------------------------------------------------------- assembly
@@ -1296,6 +1937,7 @@ def document():
         composition_section(),
         geometry_section(),
         lattice_section(),
+        yang_mills_section(),
         lean_section(),
         reproducibility(),
         appendices(),
@@ -1307,6 +1949,8 @@ def write(path=OUTPUT):
     text = document()
     with open(path, 'w') as handle:
         handle.write(text)
+    # the figures the Yang--Mills section includes, beside the .tex
+    stage_figures(os.path.dirname(os.path.abspath(path)))
     return path, len(text)
 
 
@@ -1405,6 +2049,63 @@ def selftest():
     else:
         check('without the laboratory the section says so',
               'was not found on the machine' in text)
+
+    print('Yang-Mills across five repositories')
+    check('the section is present', r'\label{sec:ym}' in text
+          and 'Yang--Mills across five repositories' in text)
+    check('every repository is cited and defined',
+          all((r'\cite{%s}' % k in text or k in
+               ','.join(__import__('re').findall(r'\\cite\{([^}]+)\}', text)))
+              and r'\bibitem{%s}' % k in text for k in YM_KEYS))
+    check('the display is the library\'s, row for row',
+          P.grand_yang_mills() in text)
+    members = P.grand_yang_mills_members()
+    check('every row names its quantity',
+          all(P._tex_escape(m.name()) in text for m in members))
+    check('every repository is labelled on the display',
+          all('(%s)' % P.REFERENCES[k]['tag'] in text for k in YM_KEYS))
+    links = P.cross_repository_links()
+    check('the correspondences are counted',
+          '%d links' % len(links) in text and len(links) >= 5)
+    check('the identities elaborate to one proposition',
+          RL.grand_conjecture(P.YM_PIVOTS, name='yang_mills').check() == 'Prop')
+    check('the supersymmetric coefficient is left out of the colour row',
+          'One-loop coefficient (SUSY)' not in
+          [st.equation['name'] for m in members if m.pivot == 'N'
+           for st in m.steps])
+    facts = ym_facts()
+    check('the bridge table has a row for every repository',
+          all(r'\code{%s}' % esc(P.REFERENCES[k]['tag']) in text for k in YM_KEYS))
+    check('no bridge disagrees',
+          all(r.get('ok', True) for r in facts['bridges'])
+          and 'DISAGREE' not in text)
+    check('the limits are stated',
+          'None of it is evidence' in flat and 'Clay problem' in flat
+          and 'toys for gauge theory' in flat)
+    import re as _re
+    drawn = _re.findall(r'\\includegraphics\[[^]]*\]\{figures/([a-z_0-9]+)\.pdf\}', text)
+    check('every figure drawn has a source to copy from',
+          all(figure_source(n) for n in drawn))
+    import tempfile
+    with tempfile.TemporaryDirectory() as tmp:
+        staged = stage_figures(tmp)
+        check('and is staged beside the .tex',
+              sorted(staged) == sorted(drawn)
+              and all(os.path.exists(os.path.join(tmp, 'figures', n + '.pdf'))
+                      for n in drawn))
+    check('the repositories\' own figures are credited to their code',
+          all(c in text for c in ('tools/on\\_model\\_mc.py', 'tools/kt\\_flow.py'))
+          or not drawn)
+    check('no local path to any repository leaks into the document',
+          all(loc is None or loc not in text for loc in
+              (Y.locate(), OAI.locate(), CI.locate(), SP.locate(),
+               NR.locate())))
+    check('the two tiling repositories are credited to the author in the bibliography',
+          text.count('Hartshorn, B.~S.') >= 3 and 'B. S. Hartshorn (spectre' in text)
+    if facts['homogeneous'] is not None:
+        check('the recurrence is stated for the species it holds for',
+              number(len(facts['homogeneous'])) in text
+              and 'first statement of this was too general' in flat)
 
     print('the numbers are the live ones')
     check('the equation count matches the library',

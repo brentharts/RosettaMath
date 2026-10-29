@@ -574,7 +574,14 @@ def _lean_expr(expr, names, prec=0):
                                  _lean_expr(args[1], names, 3))
         if not args:
             return name
-        return '%s %s' % (name, ' '.join(_lean_expr(a, names, 7) for a in args))
+        text = '%s %s' % (name, ' '.join(_lean_expr(a, names, 7) for a in args))
+        # An application used as an argument needs its own brackets:
+        # `Real.neg Real.log x` is neg applied to the function log, which Lean
+        # rejects, where `Real.neg (Real.log x)` is what was meant.  The infix
+        # cases above bracket by precedence; this one never did.  Found by
+        # giving the generated file to Lean 4 itself, which the micro-kernel's
+        # own reading of the same term had let through.
+        return '(%s)' % text if prec >= 7 else text
     if isinstance(expr, L.Bound):
         index = len(names) - 1 - expr.index
         return names[index] if 0 <= index < len(names) else '?%d' % expr.index
@@ -601,6 +608,75 @@ def conjectures(graph=None):
             continue
         out.append((derivation, conj, None))
     return out
+
+
+def displays():
+    """The three composed displays as conjectures: the whole library, the
+    Yang-Mills threads across the repositories, and the gauge groups.
+
+    These are the statements the papers' large equations assert, and they are
+    emitted alongside the pairwise joins so that a reader (or Lean) is given
+    the thing the figure claims, not only its parts.
+    """
+    out = [grand_conjecture(name='physics'),
+           grand_conjecture(P.YM_PIVOTS, name='yang_mills'),
+           grand_conjecture(P.GAUGE_PIVOTS, name='gauge_groups')]
+    for conj in out:
+        conj.check()
+    return out
+
+
+def everything():
+    """Every conjecture the library can state: each readable join, then the
+    three displays."""
+    return [c for _, c, e in conjectures() if c is not None] + displays()
+
+
+_LEAN_RESULT = {}
+
+
+def lean_check(timeout=900):
+    """Give the generated file to Lean 4 itself, if there is a Lean to give it to.
+
+    Returns None when `lean` is not installed -- nothing is then claimed -- and
+    otherwise a dict: the version, how many theorems the file states, how many
+    errors Lean reported, how many `sorry` warnings (one per theorem is the
+    design: these are conjectures), and `ok`, true when Lean exits cleanly
+    with no error.  Run once and kept.
+    """
+    if 'result' in _LEAN_RESULT:
+        return _LEAN_RESULT['result']
+    import re
+    import shutil
+    import subprocess
+    import tempfile
+    exe = shutil.which('lean')
+    result = None
+    if exe is not None:
+        source = lean_file(everything())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, 'RosettaPhys.lean')
+            with open(path, 'w') as handle:
+                handle.write(source)
+            try:
+                run = subprocess.run([exe, path], stdout=subprocess.PIPE,
+                                     stderr=subprocess.STDOUT,
+                                     universal_newlines=True, timeout=timeout)
+                version = subprocess.run(
+                    [exe, '--version'], stdout=subprocess.PIPE,
+                    universal_newlines=True).stdout
+            except (OSError, subprocess.TimeoutExpired):
+                run = None
+        if run is not None:
+            found = re.search(r'version ([0-9][^,\s]*)', version)
+            errors = len(re.findall(r'\berror\b', run.stdout))
+            result = {'version': found.group(1) if found else '?',
+                      'theorems': len(re.findall(r'^theorem ', source, re.M)),
+                      'errors': errors,
+                      'sorries': run.stdout.count('declaration uses'),
+                      'ok': run.returncode == 0 and errors == 0}
+    _LEAN_RESULT['result'] = result
+    return result
 
 
 def report():
@@ -727,6 +803,22 @@ def selftest():
     check('and every one is a Prop',
           all(c.check() == 'Prop' for c in readable))
 
+    print('the file, and Lean 4 itself')
+    names = [c.name for c in everything()]
+    check('the three displays are in the file with the joins',
+          names[-3:] == ['physics', 'yang_mills', 'gauge_groups']
+          and len(names) == len(readable) + 3)
+    check('every printed application is bracketed where it is an argument',
+          'Real.neg Real.log' not in lean_file(everything()))
+    lc = lean_check()
+    if lc is None:
+        print('  (no lean on PATH: the real kernel was not asked)')
+    else:
+        check('Lean 4 %s accepts the whole file, with no error' % lc['version'],
+              lc['ok'])
+        check('and every theorem is a deliberate sorry, none an error',
+              lc['sorries'] == lc['theorems'] and lc['errors'] == 0)
+
     print()
     if failures:
         print('%d failure(s): %s' % (len(failures), ', '.join(failures)))
@@ -754,6 +846,6 @@ if __name__ == '__main__':
     if '--selftest' in sys.argv:
         sys.exit(1 if selftest() else 0)
     if '--lean' in sys.argv:
-        print(lean_file([c for _, c, e in conjectures() if c is not None]))
+        print(lean_file(everything()))
     else:
         report()

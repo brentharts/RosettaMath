@@ -26,7 +26,7 @@ The project is two files:
 | `neomath.tex` | The paper. |
 | `rosettaphys.py` | A physics knowledge graph: equations, the quantities their letters denote, and the links and joins between them. Entries from other people's repositories name the function they describe. `python3 rosettaphys.py --selftest` checks it. |
 | `rosettapaper.py` | Generates the physics paper (`rosettaphys.tex`) from the graph, including the conjoined Yang-Mills display (Section 8) and the figures drawn from the bridged repositories. |
-| `rosettaym.py`, `rosettaoai.py`, `rosettacicy.py`, `rosettaspectre.py`, `rosettanariai.py`, `rosettachirality.py` | The bridges: each puts the library's algebra and a repository's own code through the same numbers and compares them. |
+| `rosettaym.py`, `rosettaoai.py`, `rosettacicy.py`, `rosettaspectre.py`, `rosettanariai.py`, `rosettachirality.py`, `rosettagauge.py` | The bridges: each puts the library's algebra and a repository's own code through the same numbers and compares them. |
 
 ---
 
@@ -46,15 +46,36 @@ each has a bridge module:
 | `rosettaspectre.py` | [spectre](https://github.com/brentharts/spectre) | substitution matrix, tile areas and the repository's evidence ledger |
 | `rosettanariai.py` | [nariai](https://github.com/brentharts/nariai) | the tiling algebra, and its matrix against spectre's |
 | `rosettachirality.py` | [chirality-standard-model](https://github.com/brentharts/chirality-standard-model) | E8 branching, the E6 certificate, the magic square, and one Standard Model family computed from SU(5) weights and from the E8 roots |
+| `rosettagauge.py` | the laboratory, the chirality audit, CICY and nariai together | the gauge-group entries written for the Yang-Mills paper: dual Coxeter number, general one-loop coefficient, transmutation slopes, and the block step of a tiling |
 
 Each bridge finds its repository through an environment variable
 (`YMLAB_DIR`, `OPENAI_MATH_DIR`, `CICY_DIR`, `SPECTRE_DIR`, `NARIAI_DIR`,
 `CHIRALITY_DIR`) or a directory of that name beside this one, and reports what
 it could not check when the repository is absent. `make test` runs all the
 selftests; `make yangmills`, `openaimath`, `cicy`, `spectre`, `nariai` and
-`chirality` print each bridge's report. `python3 rosettapaper.py` writes the paper
-and copies or draws its figures beside the `.tex`; the Yang-Mills section is built
-from live bridge results, so its numbers change if a repository does.
+`chirality` print each bridge's report, and `make gauge` the gauge-group entries'.
+`python3 rosettapaper.py` writes two documents into `build/`, the paper
+(`rosettaphys.tex`, about Yang-Mills and the gauge groups) and its methods appendix
+(`rosettaphys_methods.tex`), with their figures in `build/figures/`; `--pdf`
+typesets both. The Yang-Mills and gauge-group sections are built from live bridge
+results, so their numbers change if a repository does.
+
+### Related work
+
+The library takes no entries from these, and nothing in the paper depends on them;
+they are cited as recent attempts at the mass gap itself, which this repository
+does not make.
+
+- V. P. Nair, [*Towards a Proof of Mass Gap in 3d Yang-Mills Theory*](https://arxiv.org/abs/2608.10133),
+  arXiv:2608.10133 [hep-th]. An argument for the three-dimensional theory, resting
+  on an inequality for the eigenvalues of the Laplacian on the gauge-invariant
+  configuration space. A three-dimensional gauge coupling has dimensions of mass, so
+  the one-loop slopes in the paper do not apply to it.
+- O. Mengara, [*The Art of Quantum Computing-2: Discovering the Yang-Mills and Mass
+  Gap Problem*](https://www.alphaxiv.org/abs/2610.yang-mills-mass-gap-problem),
+  as listed on alphaXiv (submitted 29 October 2026). Its abstract describes an
+  iterative multi-scale approach and says it avoids the Lean proof assistant. The
+  identifier in that address is not a numeric arXiv one.
 
 ---
 

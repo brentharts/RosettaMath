@@ -361,6 +361,7 @@ test:
 	$(PYTHON) rosettaspectre.py --selftest
 	$(PYTHON) rosettanariai.py --selftest
 	$(PYTHON) rosettachirality.py --selftest
+	$(PYTHON) rosettagauge.py --selftest
 	$(PYTHON) rosettapaper.py --selftest
 	$(PYTHON) rosettaui.py --selftest
 	$(PYTHON) lean4.py --selftest
@@ -404,6 +405,12 @@ nariai:
 chirality:
 	$(PYTHON) rosettachirality.py
 
+# The eight gauge-group entries written for the Yang-Mills paper, put through
+# the laboratory, the chirality audit, CICY and nariai: the exponent family and
+# the block step of a tiling.  Needs numpy; the laboratory needs sympy.
+gauge:
+	$(PYTHON) rosettagauge.py
+
 # Every join the graph offers, as a conjecture the micro-kernel has checked.
 conjectures:
 	$(PYTHON) rosettalean.py
@@ -424,14 +431,14 @@ RosettaPhys.lean:
 
 # The fourth paper.  Every number, table and equation in it is generated from
 # rosettaphys.py at build time, so the paper cannot disagree with the code.
-rosettaphys.tex: rosettaphys.py rosettalean.py rosettapaper.py
+# It is two documents -- the paper and its methods -- written with their
+# figures into build/, which is self-contained: pdflatex run in it needs
+# nothing else.  The paper is about Yang-Mills; the methods are how.
+build/rosettaphys.tex: rosettaphys.py rosettalean.py rosettapaper.py
 	$(PYTHON) rosettapaper.py
 
-physpaper: rosettaphys.tex
-	cd /tmp && pdflatex -interaction=nonstopmode -halt-on-error \
-	  $(CURDIR)/rosettaphys.tex >/dev/null \
-	  && pdflatex -interaction=nonstopmode $(CURDIR)/rosettaphys.tex >/dev/null \
-	  && echo '/tmp/rosettaphys.pdf'
+physpaper: build/rosettaphys.tex
+	$(PYTHON) rosettapaper.py --pdf
 
 # The micro-kernel on its own: proofs raise on failure, so this gates CI.
 proofs:
@@ -461,7 +468,7 @@ clean:
 	rm -rf __pycache__ /tmp/rosettaui-cache
 	rm -f /tmp/neomath.aux /tmp/neomath.log /tmp/neomath.out /tmp/neomath.tex
 
-.PHONY: memmap_rs rust_lean default help install install-all check-deps ui test census yangmills openaimath cicy spectre nariai chirality \
+.PHONY: memmap_rs rust_lean default help install install-all check-deps ui test census yangmills openaimath cicy spectre nariai chirality gauge \
 	conjectures collisions physpaper proofs \
 	render-test pdf paper leanproof crustos_eq rustproof_paper clean \
 	install_apple install-apple install_apple-all \

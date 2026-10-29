@@ -2781,6 +2781,101 @@ EQUATIONS = [
                    'the three that remains is the dimension of the SU(3) on '
                    'the family index. It counts the chiral part only and '
                    'fixes no mass or mixing.'),
+    # -- the gauge-group group ------------------------------------------------
+    #
+    # Written for this paper rather than taken from a repository, so none of
+    # these carries a source: they are textbook arithmetic, and each is checked
+    # against the repositories' own numbers by rosettagauge.py instead of
+    # being cited to them.  What they add is the thread from the dimension of a
+    # group to the slope of its coupling, which the entries above state for
+    # one group at a time and never for a group as such.
+    equation(name='Special unitary dimension', field='Lie algebras and chirality',
+             latex=r'D = N^{2} - 1', slug='Special_unitary_group',
+             must=['D', 'N', 'S:sup2'], nice=[],
+             blurb='The dimension of SU(N): the traceless N by N Hermitian '
+                   'matrices, N squared less the one trace. It is three for '
+                   'the weak isospin and eight for colour. Together with the '
+                   'roots-plus-rank entry it says the roots of SU(N) number '
+                   'N squared less N, which is the count that makes its dual '
+                   'Coxeter number N.'),
+    equation(name='Dual Coxeter number (simply laced)', field='Lie algebras and chirality',
+             latex=r'h_{c} = \frac{R}{r}', slug='Dual_Coxeter_number',
+             must=['h_c', 'R', 'r', 'S:frac'], nice=[],
+             blurb='For a simply laced algebra the dual Coxeter number is the '
+                   'number of roots divided by the rank. E8 has 240 roots and '
+                   'rank 8, so thirty; E6 has 72 and 6, so twelve; SU(N) has '
+                   'N squared less N roots and rank N less one, so N. It is '
+                   'the integer that sets the gauge bosons\' contribution to '
+                   'the running, and it is why the exceptional groups run '
+                   'faster than SU(3) does: their couplings change more for '
+                   'the same change of scale. The quotient is exact only '
+                   'when every root has the same length; for the other '
+                   'algebras it is a different integer.'),
+    equation(name='Adjoint index', field='Gauge unification',
+             latex=r'T_{a} = h_{c}', slug='Dynkin_index',
+             must=['T_a', 'h_c'], nice=[],
+             blurb='The Dynkin index of the adjoint representation is the '
+                   'dual Coxeter number, in the normalisation where the '
+                   'fundamental of SU(N) has index one half. It is what '
+                   'turns a count of roots into a coefficient of the beta '
+                   'function.'),
+    equation(name='One-loop coefficient (any group)', field='Gauge unification',
+             latex=r'b = -\frac{11}{3} T_{a} + \frac{4}{3} n_{f} T_{f}',
+             slug='Beta_function_(physics)',
+             must=['b', 'T_a', 'n_f', 'T_f', 'S:frac'], nice=[],
+             blurb='The one-loop slope for any compact gauge group with n_f '
+                   'Dirac fermions in a representation of index T_f: the '
+                   'gauge bosons through the adjoint index, the fermions '
+                   'through theirs. With the adjoint index N and the '
+                   'fundamental\'s one half it is the SU(N) coefficient of '
+                   'this library, which is the sense in which that one '
+                   'specialises this. The pure-gauge case, n_f = 0, is what '
+                   'a lattice without quarks sees.'),
+    equation(name='Spin-model transmutation slope', field='Lattice spin models',
+             latex=r'r_{s} = \frac{2 \pi}{N - 2}', slug='Asymptotic_freedom',
+             must=['r_s', 'N', 'pi', 'S:frac'], nice=[],
+             blurb='The rate at which the logarithm of the mass falls with '
+                   'the inverse temperature in the O(N) model: the exponent '
+                   'of the asymptotic-freedom scaling form, taken alone. It '
+                   'is the one number in that form the theory fixes. For '
+                   'three components it is two pi, and it diverges at two, '
+                   'where there is no asymptotic freedom to speak of.'),
+    equation(name='Gauge transmutation slope', field='Lattice gauge theory',
+             latex=r'r_{g} = \frac{12 \pi^{2}}{11 N^{2}}',
+             slug='Asymptotic_freedom',
+             must=['r_g', 'N', 'pi', 'S:frac', 'S:sup2'], nice=[],
+             blurb='The same quantity for a pure SU(N) lattice gauge theory, '
+                   'with the inverse coupling written in the convention of '
+                   'this library, beta = 2N / g^2. It comes from the one-loop '
+                   'coefficient of the pure gauge theory, eleven N over '
+                   'forty-eight pi squared, which in these units gives the '
+                   'mass falling as exp(-r beta). For two colours it is '
+                   'about 2.69 and for three about 1.20, against two pi for '
+                   'the O(3) model: the same lattice step has to move the '
+                   'coupling about two and a third times as far for SU(2) as '
+                   'for O(3), and five times as far for SU(3).'),
+    equation(name='Spin block coupling', field='Block renormalisation',
+             latex=r'\beta_{1} = \beta_{0} - \frac{\ln \ell}{r_{s}}',
+             slug='Renormalization_group',
+             must=['beta', 'ell', 'ln', 'r_s', 'S:frac'], nice=[],
+             blurb='Blocking a lattice by a length factor ell makes the mass '
+                   'ell times larger in the new lattice units, and the '
+                   'scaling form says which coupling does that: it is lower '
+                   'by the logarithm of ell over the slope. This is the '
+                   'leading-order statement, in which the tiling enters only '
+                   'through the logarithm of its inflation factor; the '
+                   'finite-coupling shift a simulation measures is larger, '
+                   'because the form is corrected at the values reached. '
+                   'Whether an aperiodic inflation is a valid blocking at '
+                   'all is not something this equation says.'),
+    equation(name='Gauge block coupling', field='Block renormalisation',
+             latex=r'\beta_{1} = \beta_{0} - \frac{\ln \ell}{r_{g}}',
+             slug='Renormalization_group',
+             must=['beta', 'ell', 'ln', 'r_g', 'S:frac'], nice=[],
+             blurb='The same rule for the SU(N) lattice, with its own '
+                   'slope. The factor ell is the only input from the '
+                   'tiling: for one Spectre inflation step it is about '
+                   '2.806, whose logarithm is 1.032.'),
 ]
 
 EQUATION_FAMILIES = [
@@ -4197,6 +4292,34 @@ add_quantity('net chiral class', '1',
              'Chirality_(physics)')
 
 
+add_quantity('dual coxeter number', '1',
+             'The integer h in the dual Coxeter number of a simple Lie '
+             'algebra: N for SU(N), twelve for E6, thirty for E8.',
+             'Dual_Coxeter_number')
+add_quantity('adjoint index', '1',
+             'The Dynkin index of the adjoint representation, which is the '
+             'dual Coxeter number in the usual normalisation.', 'Dynkin_index')
+add_quantity('representation index', '1',
+             'The Dynkin index of the representation the fermions are in: one '
+             'half for the fundamental of SU(N).', 'Dynkin_index')
+add_quantity('spin transmutation slope', '1',
+             'How fast the log of the mass falls with the inverse temperature '
+             'of an O(N) model. Kept apart from the gauge one: they are the '
+             'same kind of number for different systems, and equating them '
+             'would equate their N.', 'Asymptotic_freedom')
+add_quantity('gauge transmutation slope', '1',
+             'How fast the log of the mass falls with the inverse coupling of '
+             'a pure SU(N) lattice gauge theory, in the convention beta = '
+             '2N / g^2.', 'Asymptotic_freedom')
+add_quantity('blocked inverse coupling', '1',
+             'The inverse coupling of the lattice after one blocking step, '
+             'which is a different lattice and so a different quantity from '
+             'the one before it.', 'Renormalization_group')
+add_quantity('blocked spin inverse temperature', '1',
+             'The inverse temperature of the O(N) model after one blocking '
+             'step.', 'Renormalization_group')
+
+
 #
 # What each equation's letters denote.  Keyed by equation name, then by the
 # symbol name as the algebra spells it (no backslash, subscript folded in).
@@ -4493,6 +4616,26 @@ READINGS = {
     'Net chiral class': {
         'chi_V': 'net chiral class', 'N_gen': 'generation count',
         'chi_F': 'net chiral class'},
+    'Special unitary dimension': {
+        'D': 'lie algebra dimension', 'N': 'color count'},
+    'Dual Coxeter number (simply laced)': {
+        'h_c': 'dual coxeter number', 'R': 'root count', 'r': 'rank'},
+    'Adjoint index': {'T_a': 'adjoint index', 'h_c': 'dual coxeter number'},
+    'One-loop coefficient (any group)': {
+        'b': 'beta function coefficient', 'T_a': 'adjoint index',
+        'n_f': 'flavour count', 'T_f': 'representation index'},
+    'Spin-model transmutation slope': {
+        'r_s': 'spin transmutation slope', 'N': 'component count',
+        'pi': 'pi'},
+    'Gauge transmutation slope': {
+        'r_g': 'gauge transmutation slope', 'N': 'color count', 'pi': 'pi'},
+    'Spin block coupling': {
+        'beta_1': 'blocked spin inverse temperature',
+        'beta_0': 'spin inverse temperature',
+        'ell': 'linear inflation factor', 'r_s': 'spin transmutation slope'},
+    'Gauge block coupling': {
+        'beta_1': 'blocked inverse coupling', 'beta_0': 'inverse coupling',
+        'ell': 'linear inflation factor', 'r_g': 'gauge transmutation slope'},
 }
 
 
@@ -4573,6 +4716,23 @@ def agree(a, b, quantity):
     left = reading(a, quantity)
     right = reading(b, quantity)
     return left is not None and left == right
+
+
+def clashes(a, b, quantity):
+    """The other letters two equations share and read differently.
+
+    A join states both equations at once, and a letter they share is then one
+    variable: so two equations that agree about the pivot but read some other
+    letter as different quantities -- an amount of substance and a number
+    density, or the inverse temperature of a spin model and the inverse coupling
+    of a lattice -- would be made to agree about that too, which neither says.
+    The join is refused for them.  Letters one equation does not declare do not
+    count, since silence is not a reading.
+    """
+    left = READINGS.get(a['name'], {})
+    right = READINGS.get(b['name'], {})
+    return sorted(s for s in set(left) & set(right)
+                  if s != quantity and left[s] != right[s])
 
 
 def disagreements(graph=None):
@@ -5046,6 +5206,62 @@ LINKS = [
      'Cubic anomaly coefficient',
      'the cubic anomaly coefficient for a tensor product, where the factor '
      'acting trivially contributes only its dimension'),
+    ('Special unitary dimension', FIELD, 'Lie algebra dimension',
+     'the same count for the one family of algebras: N squared less one is '
+     'roots plus rank for SU(N), where the roots number N squared less N and '
+     'the rank is N less one'),
+    ('Dual Coxeter number (simply laced)', DEFINES, 'Adjoint index',
+     'the adjoint index is this integer, in the normalisation where the '
+     'fundamental of SU(N) has one half'),
+    ('Adjoint index', DEFINES, 'One-loop coefficient (any group)',
+     'the gauge bosons enter the slope through the adjoint index, so it is '
+     'what carries the size of the group into the running'),
+    ('One-loop coefficient (QCD)', SPECIALISES,
+     'One-loop coefficient (any group)',
+     'SU(N) with fundamental quarks: the adjoint index is N and the '
+     'fundamental\'s is one half, so four thirds of n_f times one half is '
+     'the two thirds of the specialised form'),
+    ('Asymptotic-freedom mass scaling', DEFINES,
+     'Spin-model transmutation slope',
+     'the slope is the exponent of the scaling form with the prefactor '
+     'removed, the one part the theory fixes'),
+    ('One-loop coefficient (any group)', DEFINES,
+     'Gauge transmutation slope',
+     'the slope is the pure-gauge case of the coefficient, n_f = 0, written '
+     'against the lattice coupling beta = 2N / g^2 and not against 1 / g^2'),
+    ('Spin-model transmutation slope', FIELD, 'Gauge transmutation slope',
+     'the same role in two systems -- the exponent in which the mass falls '
+     'with the inverse coupling -- with different N: components in the one, '
+     'colours in the other; they are not equated, and the O(3) value is '
+     'two pi where the SU(2) value is about 2.69'),
+    ('Spin-model transmutation slope', DEFINES, 'Spin block coupling',
+     'blocking by a length factor divides the mass by it, and the slope says '
+     'what change of coupling does that'),
+    ('Gauge transmutation slope', DEFINES, 'Gauge block coupling',
+     'the same step for the gauge theory, with its own slope'),
+    ('Magic square dimension', FIELD, 'Lie algebra dimension',
+     'two ways to the dimension of one algebra: as roots plus rank, and as '
+     'the two triality algebras and three times the product of the two '
+     'division algebras\' dimensions; for the octonions on both sides the '
+     'second is 28 + 28 + 3 * 64 and the first 240 + 8, and both are E8\'s '
+     '248'),
+    ('Special unitary dimension', FIELD, 'Net chiral class',
+     'the same SU(3) arithmetic in two different groups: the laboratory\'s '
+     'colour group and the family symmetry of the chirality theorem both have '
+     'dimension eight and dual Coxeter number three, which is where the '
+     'three of net chirality comes from; nothing here says they are one '
+     'group, and the library joins them by no row'),
+    ('Spin block coupling', FIELD, 'Gauge block coupling',
+     'the same rule for two systems: both lower the coupling by the logarithm '
+     'of the length factor over a slope, and the factor is the only thing they '
+     'share; the couplings are an inverse temperature and an inverse gauge '
+     'coupling, which the library keeps apart and does not equate, so the two '
+     'steps are joined by no row'),
+    ('Spectre linear inflation', DEFINES, 'Spin block coupling',
+     'the tiling supplies the length factor and nothing else: at one loop the '
+     'block step depends on it only through its logarithm, so any scale '
+     'factor would do, and what the Spectre adds is a particular irrational '
+     'one'),
 ]
 
 
@@ -5507,6 +5723,8 @@ def join(a, b, pivot=None, graph=None):
     for quantity in options:
         if not agree(a, b, quantity):
             continue              # same letter, different quantity, no join
+        if clashes(a, b, quantity):
+            continue              # another shared letter is read two ways
         left = solve(a, quantity)
         right = solve(b, quantity)
         if left is None or right is None:
@@ -5735,6 +5953,14 @@ SHORT = {
     'Asymptotic-freedom mass scaling': 'asymptotic freedom',
     'Dimensional transmutation': 'transmutation',
     'Second-moment correlation length': 'second moment',
+    'Special unitary dimension': 'dim SU(N)',
+    'Dual Coxeter number (simply laced)': 'h = R / r',
+    'Adjoint index': 'adjoint index',
+    'One-loop coefficient (any group)': 'general b',
+    'Spin-model transmutation slope': 'spin slope',
+    'Gauge transmutation slope': 'gauge slope',
+    'Spin block coupling': 'spin block step',
+    'Gauge block coupling': 'gauge block step',
 }
 
 
@@ -5787,15 +6013,18 @@ def grand(pivots=GRAND_PIVOTS, graph=None, compact=True):
             '\\;\\right\\} %s' % (body, tally))
 
 
-def _grand_row(chained, compact, tags=False):
-    """One quantity, overbraced, equal to everything the library says it is."""
+def _grand_row(chained, compact, tags=False, untagged=''):
+    """One quantity, overbraced, equal to everything the library says it is.
+
+    With `tags`, each term names the repository its equation came from; an
+    equation that came from none is tagged `untagged` if that is given."""
     frac = r'\tfrac' if compact else r'\frac'
     terms = []
     for step in chained.steps:
         expr = step.expr.replace(r'\frac', frac) if compact else step.expr
         label = short(step.equation)
-        if tags and repo_tag(step.equation):
-            label = '%s (%s)' % (label, repo_tag(step.equation))
+        if tags and (repo_tag(step.equation) or untagged):
+            label = '%s (%s)' % (label, repo_tag(step.equation) or untagged)
         terms.append(r'\underbrace{%s}_{\text{\tiny %s}}'
                      % (expr, _tex_escape(label)))
     head = r'\overbrace{%s}^{\text{\tiny %s}}' % (
@@ -5870,6 +6099,42 @@ def grand_yang_mills_members(pivots=YM_PIVOTS, graph=None):
     return grand_members(pivots, graph)
 
 
+def _grand_with_arrows(members, arrows, graph, compact, untagged=''):
+    """Identity rows, then correspondence rows, under one side brace.
+
+    `members` are the chains, one per row; `arrows` are (equation, kind,
+    equation, note) quadruples, each drawn as two underbraced equations with an
+    arrow between them rather than an equals sign.
+    """
+    frac = r'\tfrac' if compact else r'\frac'
+    rows = [_grand_row(c, compact, tags=True, untagged=untagged)
+            for c in members]
+    count = sum(len(c) for c in members)
+
+    def side(eq):
+        label = short(eq)
+        tag = repo_tag(eq) or untagged
+        if tag:
+            label = '%s (%s)' % (label, tag)
+        text = eq['latex'].replace(r'\frac', frac) if compact else eq['latex']
+        return r'\underbrace{%s}_{\text{\tiny %s}}' % (text, _tex_escape(label))
+
+    corr = []
+    for a, kind, b, _note in arrows:
+        arrow, word = _LINK_ARROW.get(kind, (r'\longleftrightarrow', kind))
+        corr.append(r'{} & %s \;\overset{\text{\tiny %s}}{%s}\; %s'
+                    % (side(a), word, arrow, side(b)))
+    body = ' \\\\[1.2ex]\n'.join(rows)
+    if corr:
+        body += ' \\\\[2.4ex]\n' + ' \\\\[1.6ex]\n'.join(corr)
+    tally = (r'\begin{array}{l} \text{identities:} \\ '
+             r'\text{%d equations, %d quantities} \\[0.6ex] '
+             r'\text{correspondences:} \\ \text{%d links} \end{array}'
+             % (count, len(rows), len(corr)))
+    return ('\\left.\n\\begin{aligned}\n%s\n\\end{aligned}\n'
+            '\\;\\right\\} %s' % (body, tally))
+
+
 def grand_yang_mills(pivots=YM_PIVOTS, graph=None, compact=True):
     r"""The Yang-Mills threads across the repositories, as one display.
 
@@ -5885,30 +6150,77 @@ def grand_yang_mills(pivots=YM_PIVOTS, graph=None, compact=True):
     members = grand_yang_mills_members(pivots, graph)
     if not members:
         return ''
-    frac = r'\tfrac' if compact else r'\frac'
-    rows = [_grand_row(c, compact, tags=True) for c in members]
-    count = sum(len(c) for c in members)
-    links = cross_repository_links(graph)
+    return _grand_with_arrows(members, cross_repository_links(graph), graph,
+                              compact)
 
-    def side(eq):
-        label = '%s (%s)' % (short(eq), repo_tag(eq))
-        text = eq['latex'].replace(r'\frac', frac) if compact else eq['latex']
-        return r'\underbrace{%s}_{\text{\tiny %s}}' % (text, _tex_escape(label))
 
-    corr = []
-    for a, kind, b, _note in links:
-        arrow, word = _LINK_ARROW.get(kind, (r'\longleftrightarrow', kind))
-        corr.append(r'{} & %s \;\overset{\text{\tiny %s}}{%s}\; %s'
-                    % (side(a), word, arrow, side(b)))
-    body = ' \\\\[1.2ex]\n'.join(rows)
-    if corr:
-        body += ' \\\\[2.4ex]\n' + ' \\\\[1.6ex]\n'.join(corr)
-    tally = (r'\begin{array}{l} \text{identities:} \\ '
-             r'\text{%d equations, %d quantities} \\[0.6ex] '
-             r'\text{correspondences:} \\ \text{%d links} \end{array}'
-             % (count, len(rows), len(corr)))
-    return ('\\left.\n\\begin{aligned}\n%s\n\\end{aligned}\n'
-            '\\;\\right\\} %s' % (body, tally))
+# What the gauge-group display equates.  The threads are the ones that run
+# between the groups the repositories use: the dimension of a group as
+# N squared less one, as roots plus rank and as the pieces of a branching; the
+# roots as the dimension less the rank and as the dual Coxeter number times the
+# rank; that number as the adjoint index; the one-loop coefficient of SU(N) and
+# of any group; the length factor of a tiling as what a block step of either
+# slope exponentiates (the spin one only: the gauge one reads the coupling as
+# something else, and a row binds it once); and the generation count by the
+# geometry and by the chirality theorem.  The colour count is left out, as it is in YM_PIVOTS, for
+# the supersymmetric coefficient, and the lattice and the family SU(3) are
+# joined by no row, only by an arrow that says what they do not share.
+GAUGE_PIVOTS = (
+    ('D', 'lie algebra dimension'),
+    ('R', 'root count'),
+    ('h_c', 'dual coxeter number'),
+    ('b', 'beta function coefficient', ('One-loop coefficient (SUSY)',)),
+    ('ell', 'linear inflation factor', ('Gauge block coupling',)),
+    ('N_gen', 'generation count'),
+)
+
+# The correspondences of that display, as (source, destination) pairs naming
+# links in LINKS: they are listed rather than computed because most links in the
+# library are not about gauge groups.
+GAUGE_ARROWS = (
+    ('Magic square dimension', 'Lie algebra dimension'),
+    ('Special unitary dimension', 'Net chiral class'),
+    ('One-loop coefficient (QCD)', 'One-loop coefficient (any group)'),
+    ('Spin-model transmutation slope', 'Gauge transmutation slope'),
+    ('Hypercharge normalisation', 'Electromagnetic coupling at the Z'),
+    ('Spectre linear inflation', 'Spin block coupling'),
+    ('Spin block coupling', 'Gauge block coupling'),
+)
+
+
+def gauge_arrows(arrows=GAUGE_ARROWS, graph=None):
+    """The links the gauge-group display draws, found in LINKS by their ends."""
+    graph = graph or GRAPH
+    found = {(s, d): (kind, note) for s, kind, d, note in LINKS}
+    out = []
+    for src, dst in arrows:
+        if (src, dst) not in found:
+            raise KeyError('no link from %r to %r' % (src, dst))
+        kind, note = found[(src, dst)]
+        out.append((graph.find(src, 'equation'), kind,
+                    graph.find(dst, 'equation'), note))
+    return out
+
+
+def grand_gauge_members(pivots=GAUGE_PIVOTS, graph=None):
+    """The chains the gauge-group display equates, one per row."""
+    return grand_members(pivots, graph)
+
+
+def grand_gauge(pivots=GAUGE_PIVOTS, graph=None, compact=True):
+    r"""The gauge-group threads between the repositories, as one display.
+
+    Built exactly as the Yang-Mills display is: identities for quantities that
+    several entries state, correspondences for what they say about different
+    things.  An entry written for the paper and drawn from no repository is
+    tagged `here`.
+    """
+    graph = graph or GRAPH
+    members = grand_gauge_members(pivots, graph)
+    if not members:
+        return ''
+    return _grand_with_arrows(members, gauge_arrows(graph=graph), graph,
+                              compact, untagged='here')
 
 
 def joins_for(eq, graph=None):

@@ -17,11 +17,25 @@ matters.  What is generated is every claim of fact.  Where the two meet, a
 sentence says "the library currently contains" and a number follows from
 len().
 
-    python3 rosettapaper.py                write rosettaphys.tex
-    python3 rosettapaper.py --stdout       write it to the terminal instead
-    python3 rosettapaper.py --selftest     check the generated document
+There are two documents.  The paper is about Yang-Mills: the lattice, the
+running of the coupling, the gauge group, and what the repositories that touch
+them agree about.  The methods document is how that is done: the graph, the
+algebra and what it refuses, the readings table, and the route to Lean.  Each
+cites the other, and each compiles on its own.
+
+    python3 rosettapaper.py                write both .tex files and figures/
+                                           into build/
+    python3 rosettapaper.py --pdf          ...and compile both to PDF
+    python3 rosettapaper.py --outdir DIR   build somewhere else
+    python3 rosettapaper.py --stdout       write both to the terminal instead
+    python3 rosettapaper.py --selftest     check the generated documents
+
+The output directory is self-contained -- the two .tex files, the figures they
+include, and the PDFs -- so it can be copied elsewhere and rebuilt with
+pdflatex alone.
 """
 
+import math
 import os
 import sys
 
@@ -35,9 +49,10 @@ import rosettacicy as CI
 import rosettaspectre as SP
 import rosettanariai as NR
 import rosettachirality as CH
+import rosettagauge as GA
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUTPUT = os.path.join(HERE, 'rosettaphys.tex')
+BUILD = os.path.join(HERE, 'build')
 
 
 # ---------------------------------------------------------------- helpers
@@ -72,7 +87,7 @@ def lines(*parts):
 
 # ---------------------------------------------------------------- preamble
 
-PREAMBLE = r"""\documentclass[11pt]{article}
+_PACKAGES = r"""\documentclass[11pt]{article}
 \usepackage[margin=2.2cm]{geometry}
 \usepackage{amsmath,amssymb,listings}
 \usepackage{graphicx}
@@ -111,13 +126,48 @@ PREAMBLE = r"""\documentclass[11pt]{article}
 }
 
 \newcommand{\code}[1]{\texttt{#1}}
-
-\title{Conjoining, Gluing, and Coupling Gauge Theories: A Knowledge Base for Yang-Mills and Lattice Dynamics}
-\author{Brent Hartshorn \orcidlink{0009-0004-2853-655X} and Tristan Romanov}
-
-\begin{document}
-\maketitle
 """
+
+# The paper is two documents that cite each other.  A label in the other one is
+# reached through xr-hyper, as \methref{...} from the paper and \mainref{...}
+# from the methods, so a reference like "Figure 1" in one PDF is a live link to
+# the other and cannot drift when a section moves.  The first pass over either
+# file prints ?? for what the other has not written yet; build() runs two
+# rounds, one of each in turn, which settles it.
+MAIN_NAME = 'rosettaphys'
+METHODS_NAME = 'rosettaphys_methods'
+
+MAIN_TITLE = (r'Conjoining, Gluing, and Coupling Gauge Theories: A Knowledge '
+              r'Base for Yang-Mills and Lattice Dynamics')
+METHODS_TITLE = (r"Methods and Formal Verification: Appendix to ``Conjoining, "
+                 r"Gluing, and Coupling Gauge Theories''")
+AUTHORS = (r'Brent Hartshorn \orcidlink{0009-0004-2853-655X} '
+           r'and Tristan Romanov')
+
+
+def _preamble(title, other, prefix, macro):
+    """Packages, the link to the companion document, and the title block.
+
+    `other` is the companion's file name, `prefix` the label prefix its labels
+    get here, `macro` the command that reaches them.
+    """
+    return (_PACKAGES + '\n'
+            r'\usepackage{xr-hyper}' '\n'
+            r'\externaldocument[%s-]{%s}[%s.pdf]' '\n'
+            r'\newcommand{\%s}[1]{\ref{%s-#1}}' '\n\n'
+            r'\title{%s}' '\n'
+            r'\author{%s}' '\n\n'
+            r'\begin{document}' '\n'
+            r'\maketitle' '\n'
+            % (prefix, other, other, macro, prefix, title, AUTHORS))
+
+
+def main_preamble():
+    return _preamble(MAIN_TITLE, METHODS_NAME, 'M', 'methref')
+
+
+def methods_preamble():
+    return _preamble(METHODS_TITLE, MAIN_NAME, 'Y', 'mainref')
 
 
 def abstract():
@@ -181,6 +231,129 @@ Our primary focus is Yang-Mills theory and its manifestations across six distinc
 While earlier foundational work established expression isolation, graph-building rules, and micro-kernel proof architectures (detailed further in the appendices), this paper centers on the physical and computational insights gained by bringing Yang-Mills equations from diverse code ecosystems into direct dialogue. The resulting framework bridges discrete lattice metrics, asymptotic freedom scalings, and topological invariants. 
     """
 
+def method_section():
+    """The method in two pages, for a reader who has come for Yang--Mills.
+
+    Everything factual is a call, as everywhere in this module.  The full
+    account is the methods document; this is what has to be understood to read
+    the displays that follow, and what each of the repositories' bridges does.
+    """
+    refused = [e for e in P.EQUATIONS if P.algebraic(e['latex']) is not None]
+    ungated, gated = len(P.ungated_joins()), len(P.all_joins())
+    ym = RL.grand_conjecture(P.YM_PIVOTS, name='yang_mills')
+    members = P.grand_yang_mills_members()
+    # the collisions that Yang--Mills itself runs into, read off the library's
+    # own table rather than remembered: letter -> every quantity it denotes
+    reads = {}
+    for _a, _b, q, left, right in P.disagreements():
+        reads.setdefault(q, set()).update((left, right))
+
+    def either(letter):
+        names = sorted(reads[letter])
+        return ', '.join(names[:-1]) + ' or ' + names[-1]
+
+    lc = RL.lean_check()
+    if lc is not None and lc['ok']:
+        leanclaim = (r"Lean~4 \cite{demoura2021} reads the same terms as a "
+                     r"second reader and accepts all %d statements of the "
+                     r"generated source, this display's among them: again a "
+                     r"claim of well-formedness and not of truth."
+                     % lc['theorems'])
+    else:
+        leanclaim = (r"Lean~4 \cite{demoura2021} was not run, or did not "
+                     r"accept the file, when this paper was built, so nothing "
+                     r"is claimed of it here.")
+    return fill(r"""
+\section{The method, briefly}
+\label{sec:method}
+
+The rest of this paper is a set of displays, and what is in them is decided by
+four choices, each argued at length in the methods document. They are stated
+here so the displays can be read.
+
+\paragraph{A graph over quantities.} The library holds @eqs@, @syms@ and
+@qtys@; the graph on them has @nodes@ nodes and @edges@ edges. Earlier work
+built a translator from \LaTeX{} to Python \cite{hartshorn2026rosetta} and a
+kernel whose statements are written in \LaTeX{} \cite{hartshorn2026lean,
+hartshorn2026second}; what is new here is that an equation is connected to the
+\emph{quantities} its letters denote and not to the letters. Each equation
+carries a table of readings, and two equations are joined on a letter only when
+both say what it denotes and the two agree. An equation that has declared
+nothing agrees with nothing, so silence is never agreement
+(Methods, Section~\methref{sec:readings}).
+
+\paragraph{Why that matters.} Joining on the letter alone produces @ungated@
+statements from the library; joining on the quantity leaves @gated@, so the
+rest were joins that only a shared letter supported. The first one found equated
+$\exp(S/k_B)$ with $Fd$ because both mention $W$, one a count of microstates and
+the other a work. That statement parses, typechecks and renders, and it is
+false. Yang--Mills has the same hazard at every step, and the library's table
+of collisions (Methods, Section~\methref{sec:readings}) records it: @ncoll@
+places where one letter denotes two quantities, among them $N$ (@N@), $\beta$
+(@beta@), $\chi$ (@chi@) and $g$ (@g@). The first two are the thread from the laboratory's lattice to the OpenAI
+fork's spin models, which is why they have to be told apart. The displays below
+equate a quantity only where every entry in the row declares the same one.
+
+\paragraph{An algebra, and what it refuses.} To equate two entries about one
+quantity, each is solved for it. The small expression algebra that does this
+refuses what it cannot do soundly: @nrefused@ of the library's @eqs@ contain notation
+that is not scalar algebra (derivatives, tensor indices, sums, ambiguous signs)
+and are left in the graph but never rearranged; an even power is not inverted,
+since $x^2 = 4$ has two roots and a chain built on the wrong one is a false
+statement; and a quantity occurring twice is not isolated. A refusal is reported
+and not repaired, because a wrong rearrangement looks exactly like a right one
+(Methods, Section~\methref{sec:algebra}).
+
+\paragraph{Displays, and what they are allowed to claim.} A display is rows of
+quantities. Each row is a quantity, overbraced with what it is, equal to every
+expression some equation in the library gives for it, each underbraced with the
+equation and the repository it came from; a side brace gathers the rows into one
+claim. Where two entries say something similar about different systems, the
+display joins them with an arrow, which asserts a correspondence and not an
+identity. The Yang--Mills display of the next section has @rows@ rows and @terms@
+equations. Its identities elaborate to a single closed proposition over an
+axiomatic type of reals, with @nvars@ variables bound once across the whole and
+@nclaims@ conjuncts, which the micro-kernel accepts as a proposition. That is
+a claim about well-formedness: the kernel is not given the field axioms, cannot
+prove the identities, and is not asked to (Methods,
+Section~\methref{sec:lean}). @leanclaim@
+
+\paragraph{Bridges.} A display is only as good as its entries. Each repository
+that contributes entries has a bridge: a module that takes what the entry states,
+evaluates it with the library's own algebra, and compares the number with what
+that repository's code computes. A repository that is absent from the machine
+building the paper is reported as not run and nothing is printed for it. The
+bridges and what each measured are Table~\ref{tab:bridges}.
+""", eqs=words(len(P.EQUATIONS), 'equation'),
+        syms=words(len(P.SYMBOLS), 'symbol'),
+        qtys=words(len(P.QUANTITIES), 'physical quantity', 'physical quantities'),
+        nodes=len(P.GRAPH.nodes), edges=len(P.GRAPH.edges),
+        ungated=number(ungated), gated=number(gated),
+        rows=number(len(members)), terms=sum(len(m) for m in members),
+        nvars=len(ym.variables), nclaims=len(ym.notes),
+        nrefused=number(len(refused)), leanclaim=leanclaim,
+        ncoll=number(len({(q, tuple(sorted((l, r)))) for _a, _b, q, l, r
+                          in P.disagreements()})),
+        N=either('N'), beta=either('beta'), chi=either('chi'), g=either('g'))
+
+
+def methods_abstract():
+    return r"""
+\begin{abstract}
+This is the companion to the paper \emph{Conjoining, Gluing, and Coupling Gauge
+Theories}. The paper reports what a knowledge base of physics equations finds
+when it is made to say what each symbol denotes; this document is how. It
+describes the graph over physical quantities, the small expression algebra that
+rearranges equations to expose a shared quantity---and the cases it refuses---the
+readings table that stops two equations being joined because they share a
+letter, the composition of equations into displays, the route from a composed
+statement to a Lean~4 conjecture, and the checks of the library's algebra against
+the code of the laboratory it draws on. Every count, table and listing is
+generated from the library at the moment the document is built.
+\end{abstract}
+"""
+
+
 def introduction_appendix():
     fams = P.grand_members()
     terms = sum(len(f) for f in fams)
@@ -226,11 +399,12 @@ Laboratory of Elsbernd \cite{elsbernd2026}: %s of its entries name the
 function in that code which they describe, and a bridge module puts the same
 numbers through the library's algebra and through the code and compares them.
 
-Yang--Mills theory is where those borrowings meet. Section~\ref{sec:ym} gathers
+Yang--Mills theory is where those borrowings meet. Section~\mainref{sec:ym} of
+the paper gathers
 what six repositories say about it---the laboratory, a fork of an OpenAI
 mathematics release, CICY, two on the Spectre monotile, and one on chirality
 and the Standard Model's gauge group---into a second
-generated display, Figure~\ref{fig:grandym}, in which a quantity is equated
+generated display, Figure~\mainref{fig:grandym}, in which a quantity is equated
 across repositories only where they all state it, and joined by an arrow where
 they state something similar about a different system.
 
@@ -1147,9 +1321,42 @@ def figure_source(name):
     if name == 'chirality_e8':
         return 'generated' if CH.available() else None
     which, rel = FIGURES[name]
+    if which == 'ymlab':
+        # the laboratory keeps no built figures in its tree; its own figure
+        # functions draw them from the data it does keep
+        c = ym_facts()['ymlab']
+        ok = c is not None and (name != 'su2_slopes' or bool(c['scans']))
+        return 'generated' if ok else None
     root = _figure_root(which)
     path = os.path.join(root, rel) if root else None
     return path if path and os.path.exists(path) else None
+
+
+def ymlab_figure(name, target):
+    """Draw one of the laboratory's findings figures with its own code.
+
+    `ymlab.figures` writes a PDF and a PNG into a directory it is given; that
+    is a scratch directory here, and only the PDF is kept, at `target`.  The
+    figure is the laboratory's, drawn from its data and the OpenAI fork's
+    Monte Carlo, and is not redrawn or restyled here.
+    """
+    import importlib
+    import shutil
+    import tempfile
+    import matplotlib
+    matplotlib.use('Agg')
+    Y.load()                                  # puts ymlab on sys.path
+    figures = importlib.import_module('ymlab.figures')
+    c = ym_facts()['ymlab']
+    from pathlib import Path
+    with tempfile.TemporaryDirectory() as tmp:
+        if name == 'on_local_slopes':
+            figures.fig_on_local_slopes(c['on'], Path(tmp))
+        elif name == 'su2_slopes':
+            figures.fig_su2_slopes(c['scans'], Path(tmp))
+        else:
+            raise KeyError(name)
+        shutil.copyfile(os.path.join(tmp, name + '.pdf'), target)
 
 
 def chirality_figure(target):
@@ -1221,9 +1428,27 @@ def stage_figures(directory):
             continue
         target = os.path.join(directory, 'figures')
         os.makedirs(target, exist_ok=True)
-        shutil.copyfile(source, os.path.join(target, name + '.pdf'))
+        destination = os.path.join(target, name + '.pdf')
+        if source == 'generated':
+            ymlab_figure(name, destination)
+        else:
+            shutil.copyfile(source, destination)
         staged.append(name)
     return staged
+
+
+def missing_figures():
+    """Figures the documents want that have no source on this machine, with
+    the command that would make one."""
+    how = {'openai': 'make models   (in the openai_math_yang_mills clone)',
+           'ymlab': 'the laboratory\'s findings data (results/findings)'}
+    out = []
+    for name, (which, _rel) in FIGURES.items():
+        if figure_source(name) is None:
+            out.append((name, how[which]))
+    if not CH.available():
+        out.append(('chirality_e8', 'the chirality-standard-model clone'))
+    return out
 
 
 def _graphic(name, width):
@@ -1379,8 +1604,8 @@ different systems, joined by an arrow rather than an equals sign. Generated by
 \label{fig:grandym}
 \end{figure}
 
-Figure~\ref{fig:grandym} is to Yang--Mills what Figure~\ref{fig:grand} is to the
-whole library, and it is built the same way: nothing in it was written down as a
+Figure~\ref{fig:grandym} is to Yang--Mills what Figure~\methref{fig:grand} of the
+methods document is to the whole library, and it is built the same way: nothing in it was written down as a
 display. The rows are \emph{chosen} (\code{rosettaphys.YM\_PIVOTS}), because
 every family in the library does not fit on a page and because some would
 equate things that are only analogous; what each row \emph{says} is whatever the
@@ -1672,9 +1897,9 @@ bound for all even $L$.""", gaps=gaps, inf='%.4f' % hal['extrapolated'],
     return '\n'.join(text)
 
 
-def _ym_running_and_tilings(f):
+def _ym_running(f):
     out = [r"""
-\subsection{Running, unification and the tilings}
+\subsection{Running and unification}
 \label{sec:ym:cicy}
 """]
     if 'alpha3' in f:
@@ -1707,7 +1932,14 @@ Higgs doublets and any vector-like exotics, which an index cannot see.
 CICY was not found on the machine that built this document, so the running of
 the couplings is not printed; \code{python3 rosettacicy.py} prints it.
 """)
+    return '\n'.join(out)
 
+
+def _ym_tilings(f):
+    out = [r"""
+\subsection{The tilings}
+\label{sec:ym:tilings}
+"""]
     hat = f['hat']
     hom = f['homogeneous']
     evidence = P.EVIDENCE
@@ -1718,8 +1950,9 @@ the couplings is not printed; \code{python3 rosettacicy.py} prints it.
                            info['kinds'], esc(info['lean'] or '--')])
     mat = f['matrix']
     out.append(fill(r"""
-The tilings enter through a different door. The Spectre's substitution is
-nine species with inflation factor $\mu = 4+\sqrt{15}$ and the Hat's is four
+The tilings bear on Yang--Mills through arithmetic only, and are here because
+three repositories compute the same numbers independently. The Spectre's
+substitution is nine species with inflation factor $\mu = 4+\sqrt{15}$ and the Hat's is four
 with $\kappa = (7+3\sqrt5)/2 = \phi^4$; their quadratics, $x^2-8x+1$ and
 $x^2-7x+1$, differ in one coefficient, and that coefficient is the difference
 between the fields generated by $\sqrt{15}$ and $\sqrt5$. The \texttt{nariai}
@@ -1955,6 +2188,191 @@ the two routes, which start from different inputs, the weights of $SU(5)$ and th
     return '\n'.join(out)
 
 
+def _sig(x, digits=3):
+    return ('%.' + str(digits) + 'g') % x
+
+
+def _range_tex(span, digits=2):
+    if span is None:
+        return '--'
+    lo, hi = span
+    return '%.*f--%.*f' % (digits, lo, digits, hi)
+
+
+def _ym_exponents(f):
+    rows = GA.exponent_family()
+    table_rows = []
+    for r in rows:
+        name = r['system']
+        if r['kind'] == 'exceptional':
+            name = '$%s$' % name
+        else:
+            name = name.replace('SU(2)', '$SU(2)$').replace('SU(3)', '$SU(3)$') \
+                       .replace('O(3)', '$O(3)$').replace('O(4)', '$O(4)$')
+        table_rows.append([
+            name,
+            '--' if r['dimension'] is None else str(r['dimension']),
+            '--' if r['rank'] is None else str(r['rank']),
+            '--' if r['h'] is None else str(r['h']),
+            r['coupling'],
+            '--' if r['kind'] == 'exceptional' else '%.3f' % r['slope'],
+            '--' if r['per_inverse'] is None else '%.3f' % r['per_inverse']])
+    by = {r['system']: r for r in rows}
+    f4, g2 = [x for x in GA.not_simply_laced()]
+    su3, e8 = by['SU(3) lattice'], by['E8']
+    return fill(r"""
+\subsection{One exponent for every group}
+\label{sec:ym:exponents}
+
+The two exponentials above differ in their symbols and agree in their role, and
+the library now states the part they share by itself: the transmutation slope
+$r$, the rate at which $\ln m$ falls as the coupling rises. For the $O(N)$ model
+it is
+\[ @spin@ , \]
+and for an $SU(N)$ lattice, with the inverse coupling in the convention
+$\beta = 2N/g^2$ used throughout,
+\[ @gauge@ . \]
+The second is not a separate input. It is the pure-gauge case of the one-loop
+coefficient for any compact group,
+\[ @anygroup@ , \]
+in which the gauge bosons enter only through the adjoint index $T_a$ and the
+fermions through theirs, and for a simply laced algebra the adjoint index is the
+dual Coxeter number,
+\[ @adjoint@ , \qquad @dual@ , \]
+the roots over the rank. Setting $n_f = 0$, the mass falls as $\exp(-r/g^2)$
+with $r = 24\pi^2/(11 h)$, and for $SU(N)$ with $h = N$ and $\beta = 2N/g^2$ this is
+the $SU(N)$ slope above. The bridge takes that route and the direct one and finds
+them equal, and finds both equal to the laboratory's own symbolic slope
+\cite{elsbernd2026} taken at a coupling so large that its two-loop correction
+vanishes. Table~\ref{tab:exponents} sets the lattices of the laboratory and the
+spin models of the fork beside the exceptional algebras of the chirality
+repository \cite{chirality2026,lisi2026}, whose dimension, rank and dual
+Coxeter number are read from that repository's audit.
+
+\begin{table}[!htbp]
+\centering
+\small
+@table@
+\caption{The transmutation slope $r$ in each system's own coupling, and for the
+gauge groups per $1/g^2$, which is the column that compares groups. The $SU(N)$
+rows come from the laboratory's convention and the $E_n$ rows are arithmetic
+only, with the long roots of squared length two, so that the adjoint index is the
+dual Coxeter number. From \code{rosettagauge.exponent\_family()}.}
+\label{tab:exponents}
+\end{table}
+
+The slope per $1/g^2$ is inversely proportional to $h$, so the group with the
+larger dual Coxeter number is the one whose coupling runs faster: $E_8$, with
+$h = 30$, has a tenth of the slope of $SU(3)$, which is @e8@ against @su3@. That is
+the one thing the table adds to the lattice data, and it is a statement about the
+one-loop coefficient only. No $E_n$ gauge theory has been put on a lattice here,
+the coefficient is pure gauge with no matter and no second loop, and the
+$E_n$ rows say nothing about a unified theory's running. The limit the entry
+for the dual Coxeter number states is visible in the same audit: $F_4$ and $G_2$
+have $R/r = @f4@$ and $@g2@$ but dual Coxeter numbers $@f4h@$ and $@g2h@$, because
+their roots have two lengths, and the quotient is the dual Coxeter number only when
+they do not.
+""", spin=_entry_tex('Spin-model transmutation slope'),
+        gauge=_entry_tex('Gauge transmutation slope'),
+        anygroup=_entry_tex('One-loop coefficient (any group)'),
+        adjoint=_entry_tex('Adjoint index'),
+        dual=_entry_tex('Dual Coxeter number (simply laced)'),
+        table=_table(['system', r'$\dim$', 'rank', '$h$', 'coupling', '$r$',
+                      r'$r$ per $1/g^2$'], table_rows, 'lccclcc'),
+        e8='%.2f' % e8['per_inverse'], su3='%.2f' % su3['per_inverse'],
+        f4='%d' % round(f4[1]), g2='%d' % round(g2[1]),
+        f4h='%d' % f4[2], g2h='%d' % g2[2])
+
+
+def _ym_block(f):
+    table = GA.block_table()
+    ell = GA.linear_factor()
+    if not table:
+        return r"""
+\subsection{A tiling as a block step}
+\label{sec:ym:block}
+
+The laboratory was not found on the machine that built this document, so the
+block-step table is not printed; \code{python3 rosettagauge.py} prints it.
+"""
+    rows = []
+    for r in table:
+        label = '$%s$' % r['model']
+        for tag in ('two', 'spectre'):
+            s = r['steps'][tag]
+            rows.append([label if tag == 'two' else '',
+                         '%.3f' % r['slope'] if tag == 'two' else '',
+                         '2' if tag == 'two' else r'$\ell$',
+                         '%.3f' % s['leading'], '%.3f' % s['predicted'],
+                         _range_tex(s['measured'], 3)])
+    o3 = [r for r in table if r['model'] == 'O(3)'][0]
+    o3s = o3['steps']['spectre']
+    su2 = [r for r in table if r['model'] == 'SU(2)'][0]
+    su2s = su2['steps']['spectre']
+    return fill(r"""
+\subsection{A tiling as a block step}
+\label{sec:ym:block}
+
+One connection between the tilings and the gauge side can be written down and
+tested against numbers already in hand. An inflation step of a substitution
+tiling replaces the tiles by tiles larger by the linear factor $\ell$ of
+Section~\ref{sec:ym:tilings}; if that is read as a block step, asymptotic
+scaling says what it does to the coupling. With $m \propto e^{-r\beta}$ in
+lattice units, a lattice coarsened by a length factor $s$ has its mass multiplied
+by $s$, and the coupling that does that is lower by $\ln s / r$:
+\[ @spin@ , \qquad @gauge@ . \]
+The tiling enters only through $\ln\ell = @lnell@$. For the $O(3)$ model, whose
+slope is $2\pi$, one Spectre step lowers $\beta$ by $\ln\ell/2\pi = @o3@$;
+Table~\ref{tab:block} gives the others, beside the same step for the usual
+factor of two.
+
+\begin{table}[!htbp]
+\centering
+\small
+@table@
+\caption{The coupling shift of a block step of length factor $s$: at leading
+order ($\ln s/r$), as the laboratory's full formula predicts at the coupling
+it runs the model at ($O(3)$ at $\beta = 1.5$, $O(4)$ at $2.0$, $SU(2)$ at $2.5$
+and $SU(3)$ at $6.0$, with the prefactor and two-loop corrections), and as the local
+slopes of simulations imply over their range. The simulations are the fork's
+Monte Carlo for $O(N)$ and the laboratory's $4^4$ and $6^4$ Metropolis scans for
+$SU(2)$; $SU(3)$ has none. From \code{rosettagauge.block\_table()}.}
+\label{tab:block}
+\end{table}
+
+The leading-order figure is the smallest everywhere. The laboratory's corrected
+slopes are smaller than $r$ at the couplings it uses, so the predicted shifts are
+larger, and the measured ones are larger again: for $O(3)$ one Spectre step is
+@o3m@ against @o3l@ at leading order, @o3r@ times as far. For the
+$SU(2)$ scans it is @su2m@, against @su2l@: those lattices are small enough that
+their measured slopes are a fraction of the two-loop value, as Figure~\ref{fig:slopes}
+shows, and the number says that and not much else.
+
+What this does not say is most of what it could be taken to say. The one-loop
+slope fixes the shift only through $\ln s$, so the Spectre supplies one irrational
+number and no more; a factor of two gives the same kind of statement, and the
+table has it. Nothing here depends on the tiling being aperiodic, chiral or
+built from nine species. Reading an inflation as a block step also assumes that
+it acts as a uniform change of length scale on a model whose degrees of freedom
+sit on the tiles, and none of these models has been put on a Spectre tiling: the
+$O(N)$ and $SU(N)$ lattices here are square, and a substitution maps patches of
+nine tile types to larger patches, which a block-spin transformation need not
+do. Without such a model the shift is arithmetic about a coupling and a length,
+and not a renormalisation-group flow. The test the numbers point to is the
+$O(3)$ model on a Spectre tiling and on its inflation, asking whether the second
+sits at a coupling about $@o3@$ below the first up to the corrections in the
+table; that has not been run.
+""", spin=_entry_tex('Spin block coupling'),
+        gauge=_entry_tex('Gauge block coupling'),
+        lnell='%.4f' % math.log(ell), o3='%.4f' % o3s['leading'],
+        table=_table(['lattice', '$r$', '$s$', 'leading', 'predicted',
+                      'measured'], rows, 'lccccc'),
+        o3m=_range_tex(o3s['measured'], 3), o3l='%.3f' % o3s['leading'],
+        o3r=('%.1f--%.1f' % (o3s['measured'][0] / o3s['leading'],
+                             o3s['measured'][1] / o3s['leading'])),
+        su2m=_range_tex(su2s['measured'], 2), su2l='%.3f' % su2s['leading'])
+
+
 def _ym_limits(f):
     ran = [r for r in f['bridges'] if r['ran']]
     return fill(r"""
@@ -1985,12 +2403,227 @@ refuses to say that two similar things are the same.
 """, ran=number(len(ran)), total=number(len(f['bridges'])))
 
 
+def _index_table(rows):
+    body = []
+    for row in rows:
+        for i, (name, mult, idx) in enumerate(row['pieces']):
+            body.append([row['view'] if i == 0 else '', name, str(mult),
+                         '$%s$' % _frac_tex(idx),
+                         '$%s$' % _frac_tex(mult * idx)])
+        body.append(['', r'\emph{sum}', '', '', r'$\mathbf{%s}$'
+                     % _frac_tex(row['total'])])
+    return _table(['seen from', 'piece', 'copies', 'index', 'contributes'],
+                  body, 'llccc')
+
+
+def gauge_section():
+    members = P.grand_gauge_members()
+    arrows = P.gauge_arrows()
+    terms = sum(len(m) for m in members)
+    conj = RL.grand_conjecture(P.GAUGE_PIVOTS, name='gauge_groups')
+    f = ym_facts()
+    rows = GA.e8_index_rows()
+    ch = f['chirality']
+    head = fill(r"""
+\section{Lisi, Elsbernd and the gauge groups}
+\label{sec:gauge}
+
+The Yang--Mills display of Section~\ref{sec:ym} equates what the repositories
+say about the dynamics: couplings, masses, flows. This section does the same for
+the groups. Elsbernd's laboratory \cite{elsbernd2026} works with $SU(2)$ and
+$SU(3)$ as matrix groups on a lattice. The chirality repository
+\cite{chirality2026} and the Lisi bridge in its fork \cite{lisi2026} work with
+$E_8$ and its subalgebras at the level of roots. The two never meet in the
+code: one has no use for a dual Coxeter number and the other none for a plaquette.
+The library gives them common ground in eight entries written for this paper and
+drawn from no repository (Section~\ref{sec:ym:exponents}), and
+Figure~\ref{fig:grandgauge} is what those entries equate with the repositories'
+own.
+
+\begin{figure}[!htbp]
+\centering
+\resizebox{0.98\textwidth}{!}{$\displaystyle %s $}
+\caption{\tiny The gauge groups across the repositories, conjoined. The upper
+rows are identities: a quantity, overbraced, equal to what each of @terms@ equations says
+it is, each underbraced with the equation and where it came from, with \texttt{here}
+for the entries written for this paper. The lower rows are correspondences:
+@nlinks@ links, drawn as arrows because the two ends say related things about
+different systems. Generated by \code{rosettaphys.grand\_gauge()}; the identities,
+with their @nvars@ variables bound once, elaborate to a single proposition,
+\code{gauge\_groups}, through \code{rosettalean.grand\_conjecture}, and Lean accepts
+it.}
+\label{fig:grandgauge}
+\end{figure}
+""" % P.grand_gauge(), terms=terms, nlinks=len(arrows),
+        nvars=len(conj.variables))
+
+    rows_text = fill(r"""
+\subsection{What the rows say}
+
+The first row is the dimension of a group, which three entries state: $N^2-1$
+for $SU(N)$, the roots plus the rank, and the pieces of a branching under a
+subalgebra. The second and third take the roots apart: they are the dimension less
+the rank, and the dual Coxeter number times the rank, so $h = R/r$ and for
+$E_8$, @e8@, the number is thirty. The fourth is the one-loop coefficient, for
+$SU(N)$ with quarks and for any group, which agree when the adjoint index is $N$
+and the fermions' is one half; the supersymmetric coefficient is left out for the
+reason the colour count is left out of the display above. The fifth is the length
+factor of the Spectre, which the spin block step of Section~\ref{sec:ym:block}
+exponentiates; the gauge block step is an arrow to it and not a row, because its
+coupling is an inverse gauge coupling and the row would bind it to the spin model's
+inverse temperature. The sixth is the generation count, stated once by the
+geometry of a compactification and once by the chirality theorem. The row
+equates them as a conjecture about a model in which both hold; the library's link
+between them says that neither argument predicts the other's number.
+@magic@
+""", e8='$240/8 = 30$',
+        magic=(r"""
+The first arrow is a second route to the same dimension. The magic square gives
+$E_8$ as the two triality algebras of the octonions and three times the product of
+their dimensions, $%d + %d + 3\cdot 8\cdot 8 = %d$, with the triality dimensions
+$%s$ for the four division algebras computed exactly by the Lisi bridge, and the
+roots plus the rank give $240 + 8$ for the same algebra.""" % (
+            ch['tri'][3], ch['tri'][3], ch['tri'][3] * 2 + 192,
+            ', '.join(str(x) for x in ch['tri']))
+            if ch else ''))
+
+    if rows is None:
+        branching = r"""
+\subsection{A sum rule between the two repositories}
+
+The chirality repository was not found on the machine that built this document, so
+the branching of $E_8$ is not computed here; \code{python3 rosettagauge.py} prints it.
+"""
+    else:
+        branching = fill(r"""
+\subsection{A sum rule between the two repositories}
+\label{sec:gauge:sum}
+
+The adjoint of $E_8$ restricts to $E_6\times SU(3)$ as the adjoint of each, and
+the $\mathbf{27}$ with the $\mathbf{3}$ and its conjugate, which is the
+branching the Lisi bridge reads off the roots: $240 = 72 + 6 + 6\times 27$. When a
+subalgebra sits inside with index one, the Dynkin indices of the pieces add up to
+the index of the adjoint, which is the dual Coxeter number of the big group.
+Table~\ref{tab:index} does the sum from each side. Seen from $E_6$ the $\mathbf{27}$
+appears three times and its conjugate three times; seen from $SU(3)$ the
+$\mathbf{3}$ appears twenty-seven times and its conjugate as many. The
+multiplicities are the repository's, read off its roots; the indices of the
+$\mathbf{27}$ and the $\mathbf{3}$ are the audit's positive controls; the dual
+Coxeter numbers of the two factors are the library's, roots over rank. Both sides
+come to @h@, the library's value for $E_8$ from $240/8$.
+
+\begin{table}[!htbp]
+\centering
+\small
+@table@
+\caption{The index sum for $E_8\supset E_6\times SU(3)$, in the normalisation of
+the chirality audit, in which the adjoint's index is the dual Coxeter number.
+From \code{rosettagauge.e8\_index\_rows()}.}
+\label{tab:index}
+\end{table}
+
+None of this is new mathematics: the sum rule is what an index-one embedding
+means. What is new is only that three repositories' numbers satisfy it through the
+library's entries, with nothing adjusted to make them, and that it fails to be
+trivially true: had the audit's normalisation not made the adjoint's index the dual
+Coxeter number, or had the root count of the $\mathbf{27}$ been off, one of the two
+sides would not come to thirty. It is a check on the arithmetic of the repositories
+and of the library, and not a statement about physics.
+""", h='$%s$' % _frac_tex(rows[0]['h_e8']), table=_index_table(rows))
+
+    other = fill(r"""
+\subsection{Two $SU(3)$s}
+
+The arrow from the dimension of $SU(N)$ to the net chiral class is the place where
+the two repositories use the same number for different groups. The laboratory's
+$SU(3)$ is colour: eight generators, dual Coxeter number three, and the
+transmutation slope @slope@ of Section~\ref{sec:ym:exponents}. The $SU(3)$ of the
+chirality theorem is the symmetry acting on the family index, and its
+multiplicity is the three of net chirality. They share arithmetic, so a pure
+gauge theory of either has the same one-loop coefficient and the same slope, and
+that is all the library says: it joins them by no row, because that they are one
+group is not an arithmetic fact. In the standard picture colour sits inside $E_6$
+and the family $SU(3)$ commutes with it, so they are different subgroups of
+$E_8$; the library does not know this, and the figure's arrow says only that the
+numbers coincide.
+""", slope='$%.3f$' % GA.gauge_slope(3.0))
+
+    limits = r"""
+\subsection{What this section does and does not say}
+
+It does not say that $E_8$ unifies the Standard Model; the repository that
+supplies the branching marks a root computation as unable to see a real form, and
+the no-go theorem of Distler and Garibaldi concerns exactly the question of
+whether $E_8$ can hold the Standard Model's chiral matter, which arithmetic of
+this kind cannot settle. It does not evaluate the chirality theorem, which is that paper's
+to prove, and it carries none of the physical claim that nature uses the pair. The
+slopes are one-loop, pure-gauge and four-dimensional.
+
+That last point matters for the recent attempts at the mass gap itself. Nair's
+argument \cite{nair2026} is for the three-dimensional theory and rests on an
+inequality for the eigenvalues of the Laplacian on the gauge-invariant
+configuration space. A three-dimensional gauge theory has a coupling with
+dimensions of mass and does not run logarithmically, so the slopes of this section
+say nothing about it, and the library has no entry for an inequality of that kind.
+A further preprint \cite{mengara2026}, cited as listed on alphaXiv, describes an
+iterative multi-scale approach and states in its abstract that it avoids the Lean
+proof assistant; its address is not a numeric arXiv identifier, and
+nothing in this paper depends on it. Neither is evaluated here. The Lean in this
+paper is of a different and much smaller kind: the displays are conjectures whose
+well-formedness a kernel checks, as Appendix~\methref{app:lean} says, and not
+proofs.
+
+\clearpage
+"""
+    return '\n'.join([head, rows_text, branching, other, limits])
+
+
 def yang_mills_section():
     f = ym_facts()
-    return '\n'.join([_ym_overview(f), _ym_asymptotic(f),
-                      _ym_kt_bloch_haldane(f), _ym_running_and_tilings(f),
-                      _ym_chirality(f), _ym_limits(f)])
+    return '\n'.join([_ym_overview(f), _ym_asymptotic(f), _ym_exponents(f),
+                      _ym_kt_bloch_haldane(f), _ym_running(f),
+                      _ym_chirality(f), _ym_tilings(f), _ym_block(f),
+                      _ym_limits(f)])
 
+
+
+def lean_reader_paragraph():
+    r"""What Lean~4 itself said about the generated file, if it was asked.
+
+    The result is printed only when `lean` was run while this document was
+    built (rosettalean.lean_check); without one the paragraph says that
+    nothing has been checked, which is the honest state of a build without it.
+    """
+    lc = RL.lean_check()
+    if lc is None:
+        return (r"It was not checked by Lean~4 itself when this document was "
+                r"built, because no \code{lean} was installed. The preamble "
+                r"declares the type-class instances an axiomatic \code{Real} "
+                r"needs---\code{Add}, \code{Mul}, \code{HPow}, "
+                r"\code{OfNat}---so the infix output should elaborate, but "
+                r"that is a prediction and not a result.")
+    if not lc['ok']:
+        return (r"The file was given to Lean~4 (version %s) when this document "
+                r"was built, and it reported %d error(s) in %d statements; "
+                r"the file in Appendix~\ref{app:lean} is not accepted as it "
+                r"stands." % (lc['version'], lc['errors'], lc['theorems']))
+    return (r"""\subsection{A second reader}
+
+The file was given to Lean~4 itself (version %s) when this document was built.
+It accepts all %d statements, the three displays among them: no errors, and one
+\code{sorry} warning for each theorem, which is the design, since these are
+conjectures and the hole is left visible. This is the claim and no more: that
+the statements are well-formed propositions over an axiomatic \code{Real}. It is
+not a proof of any of them.
+
+It did not always. The first time the file was given to Lean it rejected three
+statements, in which $-\ln W$ had been written \code{Real.neg Real.log W}: the
+negation applied to the function and not to its value. The printer bracketed
+infix operands and never an application used as an argument. The library's own
+kernel had read the underlying term correctly and so had no complaint; the fault
+was in how the term was written out, and only a reader of the written-out text
+could find it. The bracket is now printed, and the whole file is accepted."""
+            % (lc['version'], lc['theorems']))
 
 
 def lean_section():
@@ -2026,19 +2659,24 @@ the equation each side came from:
 %s
 \end{lstlisting}
 
-All %s the library composes are emitted this way, and so is
-Figure~\ref{fig:grand} itself: conjoining its rows and binding the shared
-variables once over the whole gives a single proposition with %d binders and
-%d conjuncts, which the micro-kernel accepts as a \code{Prop}. The complete
-file is Appendix~\ref{app:lean}.
+All %s the library composes are emitted this way, and so are the three displays:
+Figure~\ref{fig:grand} itself, whose rows conjoined, with the shared variables
+bound once over the whole, give a single proposition with %d binders and %d
+conjuncts, and the Yang--Mills display of the paper
+(Figure~\mainref{fig:grandym}), with %d binders and %d conjuncts, and the
+gauge-group display of the paper (Figure~\mainref{fig:grandgauge}), with %d
+binders and %d conjuncts. The micro-kernel accepts each as a \code{Prop}. The complete file is
+Appendix~\ref{app:lean}.
 
-It has not been checked by Lean~4 itself. The preamble declares the type-class
-instances an axiomatic \code{Real} needs---\code{Add}, \code{Mul},
-\code{HPow}, \code{OfNat}---so the infix output elaborates, but that is a
-prediction rather than a result.
+%s
 """ % (conj.lean(), words(len(ok), 'statement'),
        len(RL.grand_conjecture().variables),
-       len(RL.grand_conjecture().notes))
+       len(RL.grand_conjecture().notes),
+       len(RL.grand_conjecture(P.YM_PIVOTS).variables),
+       len(RL.grand_conjecture(P.YM_PIVOTS).notes),
+       len(RL.grand_conjecture(P.GAUGE_PIVOTS).variables),
+       len(RL.grand_conjecture(P.GAUGE_PIVOTS).notes),
+       lean_reader_paragraph())
 
 
 
@@ -2051,8 +2689,9 @@ def reproducibility():
 \newline
 \url{%s}
 \newline
-(the laboratory of Section~\ref{sec:lattice}: found in \code{YMLAB\_DIR}, or in
-a \code{yang-mills-mass-gap-lab} directory beside this one)
+(the laboratory of Section~\methref{sec:lattice} of the methods document: found
+in \code{YMLAB\_DIR}, or in a \code{yang-mills-mass-gap-lab} directory beside
+this one)
 \newline
 \url{%s}
 \newline
@@ -2083,9 +2722,10 @@ python3 rosettacicy.py             CICY's couplings and generation count
 python3 rosettaspectre.py          the spectre repository, its ledger, and the Hat constant
 python3 rosettanariai.py           nariai's constants, and its matrix against spectre's
 python3 rosettachirality.py        E8 branching, the E6 certificate, one family
-python3 rosettapaper.py            regenerate this document
+python3 rosettagauge.py            the gauge-group entries, and the block step
+python3 rosettapaper.py --pdf      regenerate both documents, with figures/
 make test                          all of the above, plus the kernel
-make collisions                    the table in Section 4
+make collisions                    the readings table of the methods document
 \end{lstlisting}
 """ % (P.REFERENCES[Y.REFERENCE]['url'],
        P.REFERENCES['openai2026']['url'], P.REFERENCES['cicy2026']['url'],
@@ -2095,7 +2735,7 @@ make collisions                    the table in Section 4
 
 
 def appendices():
-    lean = RL.lean_file([c for _, c, e in RL.conjectures() if c is not None])
+    lean = RL.lean_file(RL.everything())
     rows = []
     for eq in P.EQUATIONS:
         table = P.READINGS.get(eq['name'])
@@ -2231,58 +2871,135 @@ Controlled Natural Language. \emph{ITP 2024}.
 
 """
 
+
+BIB_LITERATURE = r"""
+
+\bibitem{nair2026} Nair, V.~P. (2026). Towards a Proof of Mass Gap in 3d
+Yang--Mills Theory. arXiv:2608.10133 [hep-th].
+\url{https://arxiv.org/abs/2608.10133}
+
+\bibitem{mengara2026} Mengara, O. (2026). The Art of Quantum Computing--2:
+Discovering the Yang--Mills and Mass Gap Problem. alphaXiv listing, submitted 29
+October 2026; the identifier in its address is not a numeric arXiv one.
+\url{https://www.alphaxiv.org/abs/2610.yang-mills-mass-gap-problem}
+
+"""
+
 BIB_EXTRA = ''.join(_bibitem(k) for k in
                        ('openai2026', 'cicy2026', 'spectre2026', 'nariai2026',
                         'chirality2026', 'lisi2026'))
 
-BIBLIOGRAPHY = r'''
-\begin{thebibliography}{99}
-%s
-%s
-%s
-\end{thebibliography}
-''' % (ELSBERND, BIB_EXTRA, BIB_APPENDIX)
+def _bib_entries():
+    """Every reference, as {key: its \\bibitem text}, in the order written."""
+    text = ELSBERND + BIB_EXTRA + BIB_LITERATURE + BIB_APPENDIX
+    parts = text.split('\\bibitem{')[1:]
+    return {p.split('}', 1)[0]: '\\bibitem{' + p for p in parts}
+
+
+def _cited(text):
+    import re
+    used = set()
+    for group in re.findall(r'\\cite\{([^}]+)\}', text):
+        used.update(k.strip() for k in group.split(','))
+    return used
+
+
+def bibliography(body, companion_body, orphans=False):
+    """The references `body` cites -- and, when asked, those nobody cites.
+
+    Each document lists what it cites and no more, so the paper is not
+    carrying the Calculus of Constructions and the methods are not carrying
+    the laboratory twice.  A reference nobody cites goes to the document that
+    says it (`orphans`), so that nothing the library was given is dropped.
+    """
+    entries = _bib_entries()
+    mine = _cited(body)
+    wanted = [k for k in entries if k in mine]
+    if orphans:
+        wanted += [k for k in entries
+                   if k not in mine and k not in _cited(companion_body)]
+    return ('\\begin{thebibliography}{99}\n%s\\end{thebibliography}\n'
+            % ''.join(entries[k] for k in entries if k in wanted))
 
 
 # ---------------------------------------------------------------- assembly
 
+_DOCUMENTS = {}
+
+
+def documents():
+    """Both documents, as {file name: LaTeX}.  Built once and kept.
+
+    The paper is the Yang--Mills argument.  The methods are everything it
+    rests on: the graph, the algebra, the readings table, composition, the case
+    where the method fails (the geometry group), the checks against the
+    laboratory's code, and the route to Lean with its generated source.
+    """
+    if _DOCUMENTS:
+        return dict(_DOCUMENTS)
+    paper = lines(abstract(), introduction(), method_section(),
+                  yang_mills_section(), gauge_section(), reproducibility())
+    methods = lines(methods_abstract(), r'\small',
+                    introduction_appendix(), graph_section(),
+                    algebra_section(), readings_section(),
+                    composition_section(), geometry_section(),
+                    lattice_section(), lean_section())
+    listings = appendices()
+    _DOCUMENTS[MAIN_NAME] = lines(
+        main_preamble(), paper, bibliography(paper, methods + listings),
+        r'\end{document}')
+    _DOCUMENTS[METHODS_NAME] = lines(
+        methods_preamble(), methods,
+        bibliography(methods + listings, paper, orphans=True),
+        r'\appendix', listings, r'\end{document}')
+    return dict(_DOCUMENTS)
+
+
 def document():
-    """The whole paper, in order."""
-    return lines(
-        PREAMBLE,
-        abstract(),
-        introduction(),
-        yang_mills_section(),
+    """Both documents as one string -- what the content checks read.
 
-        geometry_section(),
-
-        reproducibility(),
-
-        BIBLIOGRAPHY,
-
-        r'\appendix',
-        r'\tiny',
-        introduction_appendix(),
-        graph_section(),
-        algebra_section(),
-        readings_section(),
-        composition_section(),
-
-        lattice_section(),
-
-        lean_section(),
-        appendices(),
-        r'\end{document}'
-    )
+    The structural checks look at the two separately; nothing else cares which
+    of them a sentence is in.
+    """
+    return '\n'.join(documents().values())
 
 
-def write(path=OUTPUT):
-    text = document()
-    with open(path, 'w') as handle:
-        handle.write(text)
-    # the figures the Yang--Mills section includes, beside the .tex
-    stage_figures(os.path.dirname(os.path.abspath(path)))
-    return path, len(text)
+def write(outdir=BUILD):
+    """Write both .tex files and the figures they include into `outdir`.
+
+    The directory is self-contained: pdflatex run inside it needs nothing from
+    the repository.  Returns [(path, characters)].
+    """
+    os.makedirs(outdir, exist_ok=True)
+    written = []
+    for name, text in documents().items():
+        path = os.path.join(outdir, name + '.tex')
+        with open(path, 'w') as handle:
+            handle.write(text)
+        written.append((path, len(text)))
+    stage_figures(outdir)
+    return written
+
+
+def compile_pdf(outdir=BUILD):
+    """Typeset both documents with pdflatex, twice each, interleaved.
+
+    Each refers to labels in the other (\\methref, \\mainref), so a document's
+    second pass needs the other's first.  Main, methods, main, methods settles
+    both.  Returns the PDF paths; raises with the end of the log on failure.
+    """
+    import subprocess
+    names = (MAIN_NAME, METHODS_NAME)
+    for _round in range(2):
+        for name in names:
+            run = subprocess.run(
+                ['pdflatex', '-interaction=nonstopmode', '-halt-on-error',
+                 name + '.tex'], cwd=outdir, stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, universal_newlines=True)
+            if run.returncode:
+                raise RuntimeError('pdflatex failed on %s.tex:\n%s'
+                                   % (name, run.stdout[-2500:]))
+    return [os.path.join(outdir, n + '.pdf') for n in names]
 
 
 # ---------------------------------------------------------------- selftest
@@ -2296,20 +3013,96 @@ def selftest():
         if not ok:
             failures.append(label)
 
+    import re as _re
+    docs = documents()
     text = document()
 
-    print('structure')
-    check('it opens a document', r'\begin{document}' in text)
-    check('and closes it', r'\end{document}' in text)
-    # \{ and \} are literal characters, not grouping, and the side brace on
-    # the grand display is made of them
-    grouping = text.replace(r'\{', '').replace(r'\}', '')
-    check('braces balance', grouping.count('{') == grouping.count('}'))
-    for env in ('abstract', 'thebibliography', 'longtable', 'align*'):
-        check('%s is closed' % env,
-              text.count(r'\begin{%s}' % env) == text.count(r'\end{%s}' % env))
-    check('every listing is closed',
-          text.count(r'\begin{lstlisting}') == text.count(r'\end{lstlisting}'))
+    print('structure, for each of the two documents')
+    check('there are two, and they are the paper and its methods',
+          sorted(docs) == sorted((MAIN_NAME, METHODS_NAME)))
+    for name, body in docs.items():
+        check('%s opens a document and closes it' % name,
+              body.count(r'\begin{document}') == 1
+              and body.rstrip().endswith(r'\end{document}'))
+        # \{ and \} are literal characters, not grouping, and the side brace
+        # on the grand display is made of them
+        grouping = body.replace(r'\{', '').replace(r'\}', '')
+        check('%s: braces balance' % name,
+              grouping.count('{') == grouping.count('}'))
+        for env in ('abstract', 'thebibliography', 'longtable', 'align*',
+                    'lstlisting', 'figure', 'table'):
+            check('%s: %s is closed' % (name, env),
+                  body.count(r'\begin{%s}' % env)
+                  == body.count(r'\end{%s}' % env))
+        check('%s: every citation is defined in it' % name,
+              not _undefined_citations(body))
+        own = set(_re.findall(r'\\label\{([^}]+)\}', body))
+        # \ref{M-#1} is the body of the \methref macro, not a reference
+        refs = {r for r in _re.findall(r'\\ref\{([^}]+)\}', body)
+                if '#' not in r}
+        check('%s: every reference resolves inside it' % name, refs <= own)
+        if not refs <= own:
+            print('      unresolved: %s' % ', '.join(sorted(refs - own)))
+
+    print('the two documents and each other')
+    paper, methods = docs[MAIN_NAME], docs[METHODS_NAME]
+    labels = lambda b: set(_re.findall(r'\\label\{([^}]+)\}', b))
+    to_methods = set(_re.findall(r'\\methref\{([^}]+)\}', paper))
+    to_paper = set(_re.findall(r'\\mainref\{([^}]+)\}', methods))
+    check('every reference from the paper into the methods resolves',
+          to_methods <= labels(methods))
+    check('and every one from the methods into the paper',
+          to_paper <= labels(paper))
+    check('the paper is about Yang--Mills and leads with it',
+          r'\label{sec:ym}' in paper and r'\label{sec:graph}' not in paper)
+    check('the methods carry the algebra, the readings and the Lean bridge',
+          all(l in methods for l in (r'\label{sec:algebra}',
+                                     r'\label{sec:readings}',
+                                     r'\label{sec:lean}', r'\label{app:lean}')))
+    check('the geometry case study is in the methods, not the paper',
+          r'\label{sec:geometry}' in methods
+          and r'\label{sec:geometry}' not in paper)
+    check('the generated Lean source is in the methods only',
+          'namespace RosettaPhys' in methods
+          and 'namespace RosettaPhys' not in paper)
+    check('and it carries all three displays: the library, Yang--Mills, gauge groups',
+          all('theorem %s :' % n in methods
+              for n in ('physics', 'yang_mills', 'gauge_groups')))
+    lc = RL.lean_check()
+    if lc is not None:
+        check('Lean 4 accepts it, and the documents say so, with the count',
+              lc['ok'] and 'A second reader' in methods
+              and ('accepts all %d statements' % lc['theorems']) in
+              ' '.join((methods + paper).split()))
+    else:
+        check('without Lean the documents claim nothing of it',
+              'A second reader' not in methods)
+    check('each document cites only what it needs: the paper has no Coquand',
+          r'\bibitem{coquand1988}' in methods
+          and r'\bibitem{coquand1988}' not in paper)
+    order = [r'\label{sec:method}', r'\label{sec:ym}', r'\label{sec:ym:af}',
+             r'\label{sec:ym:exponents}',
+             r'\label{sec:ym:kt}', r'\label{sec:ym:cicy}',
+             r'\label{sec:ym:chirality}', r'\label{sec:ym:tilings}',
+             r'\label{sec:ym:block}', r'\label{sec:ym:limits}',
+             r'\label{sec:gauge}']
+    where = [paper.find(l) for l in order]
+    check('the paper runs: method, Yang--Mills, lattice, flow, running, '
+          'gauge group, tilings, limits',
+          all(w >= 0 for w in where) and where == sorted(where))
+    check('the tilings follow the gauge group and no longer share a heading '
+          'with the running',
+          'Running, unification and the tilings' not in paper
+          and r'\subsection{Running and unification}' in paper)
+    flat_paper = ' '.join(paper.split())
+    check('the method section names the collisions Yang--Mills meets',
+          all(s in flat_paper for s in ('color count', 'sample count',
+                                        'spin inverse temperature')))
+    check('and cites the earlier work it builds on',
+          all(r'\bibitem{%s}' % k in paper for k in
+              ('hartshorn2026rosetta', 'hartshorn2026lean', 'demoura2021')))
+    check('no reference is dropped: every one the library defines is printed',
+          all(r'\bibitem{%s}' % k in paper + methods for k in _bib_entries()))
 
     print('generated content')
     check('the gravitational family is present',
@@ -2331,8 +3124,13 @@ def selftest():
           "\\alpha'" in text and 'Hagedorn temperature' in text)
     # the prime has to survive the printer: alpha_prime is the internal name
     # and must never reach the page
+    # (a binder in the generated Lean is called alpha_prime, legitimately:
+    # it is an identifier there.  What must not happen is the prose or a
+    # display printing it.)
     check('no internal primed name leaks into the document',
-          'alpha_prime' not in text)
+          'alpha_prime' not in _re.sub(
+              r'\\begin\{lstlisting\}.*?\\end\{lstlisting\}', '', text,
+              flags=_re.S))
     check('the provenance appendix lists every sourced entry',
           all(esc(src) in text for _eq, src in P.sourced()))
     check('both monotile inflation factors are present and distinguished',
@@ -2469,6 +3267,39 @@ def selftest():
     check('no local path to the chirality repository leaks into the document',
           CH.locate() is None or CH.locate() not in text)
 
+    print('the exponent family and the block step')
+    exps = GA.exponent_family()
+    check('the exponent subsection and its table are present',
+          r'\label{sec:ym:exponents}' in text and r'\label{tab:exponents}' in text)
+    check('the entries it displays are the library\'s',
+          all(_entry_tex(n) in text for n in (
+              'Spin-model transmutation slope', 'Gauge transmutation slope',
+              'One-loop coefficient (any group)', 'Adjoint index',
+              'Dual Coxeter number (simply laced)')))
+    check('every group in the table is printed with its dual Coxeter number',
+          all(('& %d &' % r['h']) in text for r in exps if r['h'] is not None))
+    check('it states where the quotient stops being the dual Coxeter number',
+          'two lengths' in text and 'only when' in text)
+    check('it says the exceptional rows are arithmetic only',
+          'arithmetic' in text and 'No $E_n$ gauge theory' in text)
+    check('the bridge for these entries agrees',
+          not [c for c in GA.checks() if not c.ok])
+    if GA.lab() is not None:
+        check('the block subsection and its table are present',
+              r'\label{sec:ym:block}' in text and r'\label{tab:block}' in text)
+        check('the O(3) step is the number the tiling gives',
+              '%.4f' % (math.log(GA.linear_factor()) / (2 * math.pi)) in text)
+        check('both block entries are displayed',
+              all(_entry_tex(n) in text for n in ('Spin block coupling',
+                                                  'Gauge block coupling')))
+        check('it says the tiling enters only through a logarithm',
+              'only through $\\ln\\ell' in text or 'only through $\\ln s$' in text)
+        check('it says no model was put on a tiling and that the test was not run',
+              'has been put on a Spectre tiling' in text
+              and 'that has not been run' in text)
+        check('and does not claim the shift is a flow',
+              'not a renormalisation-group flow' in text)
+
     print('the numbers are the live ones')
     check('the equation count matches the library',
           str(len(P.EQUATIONS)) in text)
@@ -2505,11 +3336,33 @@ def _mentions_count(text, n):
     return str(n) in text or number(n) in text
 
 
+def _outdir(argv):
+    if '--outdir' in argv:
+        i = argv.index('--outdir')
+        if i + 1 >= len(argv):
+            sys.exit('--outdir needs a directory')
+        return os.path.abspath(argv[i + 1])
+    return BUILD
+
+
 if __name__ == '__main__':
     if '--selftest' in sys.argv:
         sys.exit(1 if selftest() else 0)
     if '--stdout' in sys.argv:
-        print(document())
+        for name, text in documents().items():
+            print('%% ===== %s.tex =====' % name)
+            print(text)
     else:
-        path, size = write()
-        print('wrote %s (%d characters)' % (path, size))
+        outdir = _outdir(sys.argv)
+        for path, size in write(outdir):
+            print('wrote %s (%d characters)' % (path, size))
+        print('figures in %s: %s' % (
+            os.path.join(outdir, 'figures'),
+            ', '.join(sorted(
+                f[:-4] for f in os.listdir(os.path.join(outdir, 'figures'))))
+            if os.path.isdir(os.path.join(outdir, 'figures')) else 'none'))
+        for name, how in missing_figures():
+            print('  not drawn: %s -- needs %s' % (name, how))
+        if '--pdf' in sys.argv:
+            for pdf in compile_pdf(outdir):
+                print('typeset %s' % pdf)

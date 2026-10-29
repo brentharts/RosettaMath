@@ -360,6 +360,7 @@ test:
 	$(PYTHON) rosettacicy.py --selftest
 	$(PYTHON) rosettaspectre.py --selftest
 	$(PYTHON) rosettanariai.py --selftest
+	$(PYTHON) rosettachirality.py --selftest
 	$(PYTHON) rosettapaper.py --selftest
 	$(PYTHON) rosettaui.py --selftest
 	$(PYTHON) lean4.py --selftest
@@ -395,6 +396,13 @@ spectre:
 # matrix against the spectre repository's.  Needs only numpy.
 nariai:
 	$(PYTHON) rosettanariai.py
+
+# The chirality-standard-model repository's dimension counts, orbit sizes,
+# E6 certificate and triality dimensions, plus one Standard Model family
+# computed from the weights of the 10 and the 5-bar, checked against the
+# library.  Needs numpy and sympy.
+chirality:
+	$(PYTHON) rosettachirality.py
 
 # Every join the graph offers, as a conjecture the micro-kernel has checked.
 conjectures:
@@ -453,7 +461,7 @@ clean:
 	rm -rf __pycache__ /tmp/rosettaui-cache
 	rm -f /tmp/neomath.aux /tmp/neomath.log /tmp/neomath.out /tmp/neomath.tex
 
-.PHONY: memmap_rs rust_lean default help install install-all check-deps ui test census yangmills openaimath cicy spectre nariai \
+.PHONY: memmap_rs rust_lean default help install install-all check-deps ui test census yangmills openaimath cicy spectre nariai chirality \
 	conjectures collisions physpaper proofs \
 	render-test pdf paper leanproof crustos_eq rustproof_paper clean \
 	install_apple install-apple install_apple-all \

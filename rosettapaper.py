@@ -34,6 +34,7 @@ import rosettaoai as OAI
 import rosettacicy as CI
 import rosettaspectre as SP
 import rosettanariai as NR
+import rosettachirality as CH
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 OUTPUT = os.path.join(HERE, 'rosettaphys.tex')
@@ -188,8 +189,9 @@ function in that code which they describe, and a bridge module puts the same
 numbers through the library's algebra and through the code and compares them.
 
 Yang--Mills theory is where those borrowings meet. Section~\ref{sec:ym} gathers
-what five repositories say about it---the laboratory, a fork of an OpenAI
-mathematics release, CICY, and two on the Spectre monotile---into a second
+what six repositories say about it---the laboratory, a fork of an OpenAI
+mathematics release, CICY, two on the Spectre monotile, and one on chirality
+and the Standard Model's gauge group---into a second
 generated display, Figure~\ref{fig:grandym}, in which a quantity is equated
 across repositories only where they all state it, and joined by an arrow where
 they state something similar about a different system.
@@ -1073,10 +1075,10 @@ def _reproduction_text():
     return '\n\n' + '\n'.join(lines)
 
 
-# ------------------------------------------------- Yang--Mills, five repositories
+# ------------------------------------------------- Yang--Mills, six repositories
 
 YM_KEYS = ('elsbernd2026', 'openai2026', 'cicy2026', 'spectre2026',
-           'nariai2026')
+           'nariai2026', 'chirality2026', 'lisi2026')
 
 # Figures the section draws from the repositories' own output.  They are
 # copied next to the .tex when it is written, never regenerated here: a figure
@@ -1106,16 +1108,77 @@ def _figure_root(which):
 
 
 def figure_source(name):
+    if name == 'chirality_e8':
+        return 'generated' if CH.available() else None
     which, rel = FIGURES[name]
     root = _figure_root(which)
     path = os.path.join(root, rel) if root else None
     return path if path and os.path.exists(path) else None
 
 
+def chirality_figure(target):
+    """Two panels computed by the chirality bridge, written to `target`.
+
+    Left: the 240 roots of E8 by their SU(3) weights, from the repository's
+    root system.  Right: each summand of one Standard Model family's
+    contribution to the sum of Y cubed, from the weights of the 10 and the
+    5-bar.  Generated here, not copied: it draws numbers the bridge computes.
+    """
+    import matplotlib
+    matplotlib.use('Agg')
+    import matplotlib.pyplot as plt
+    b = CH.e8_branching(CH.load()[0])
+    fig, (left, right) = plt.subplots(1, 2, figsize=(9.2, 2.9),
+                                      gridspec_kw={'width_ratios': [1.15, 1]})
+    parts = [('E$_6$ roots', b['e6_roots']), ('SU(3) roots', b['su3_roots']),
+             ('$(27, 3)$', 3 * 27),
+             ('$(\\overline{27}, \\overline{3})$', 3 * 27)]
+    colours = ['#4c72b0', '#c44e52', '#55a868', '#8172b2']
+    start = 0
+    for i, ((label, n), colour) in enumerate(zip(parts, colours)):
+        left.barh([0], [n], left=start, color=colour, edgecolor='white')
+        left.text(start + n / 2, 0, '%d' % n, ha='center', va='center',
+                  color='white' if n > 10 else 'black', fontsize=9,
+                  clip_on=False)
+        # the thin segments get their labels higher so neighbours do not collide
+        left.annotate(label, (start + n / 2, 0.4),
+                      xytext=(start + n / 2, 0.55 + 0.45 * (i == 1)),
+                      ha='center', va='bottom', fontsize=8,
+                      arrowprops=dict(arrowstyle='-', linewidth=0.5)
+                      if i == 1 else None)
+        start += n
+    left.set_xlim(0, start)
+    left.set_ylim(-0.6, 1.5)
+    left.set_yticks([])
+    left.set_xlabel('roots of E$_8$ by SU(3)$_M$ weight (total %d)' % start,
+                    fontsize=8)
+    names = {(1, 1, 1): 'Q', (2, 0, -4): '$u^c$', (0, 0, 6): '$e^c$',
+             (2, 0, 2): '$d^c$', (0, 1, -3): 'L'}
+    fam = CH.family()
+    keys = sorted(fam, key=lambda k: list(names).index(k))
+    values = [float(fam[k][2] * CH.hypercharge(k) ** 3) for k in keys]
+    right.bar([names[k] for k in keys], values,
+              color=['#55a868' if v >= 0 else '#c44e52' for v in values])
+    right.axhline(0, color='black', linewidth=0.6)
+    right.set_ylabel('states $\\times$ $Y^3$', fontsize=8)
+    right.set_xlabel('one family; the bars sum to %.0f' % sum(values),
+                     fontsize=8)
+    right.tick_params(labelsize=8)
+    left.tick_params(labelsize=8)
+    fig.tight_layout()
+    fig.savefig(target)
+    plt.close(fig)
+
+
 def stage_figures(directory):
     """Copy the available figures to <directory>/figures/; return their names."""
     import shutil
     staged = []
+    if CH.available():
+        target = os.path.join(directory, 'figures')
+        os.makedirs(target, exist_ok=True)
+        chirality_figure(os.path.join(target, 'chirality_e8.pdf'))
+        staged.append('chirality_e8')
     for name in FIGURES:
         source = figure_source(name)
         if source is None:
@@ -1138,6 +1201,15 @@ def _entry_tex(name):
     return P.GRAPH.find(name, 'equation')['latex']
 
 
+def _chirality_checks(key):
+    """The bridge's comparisons for the entries one reference is cited by."""
+    if not CH.available():
+        return None
+    mine = {e['name'] for e in P.cited(key)}
+    every = CH._check_closed_forms() + CH.checks_independent() + CH.checks()
+    return [c for c in every if c.equation in mine]
+
+
 def _bridge_rows():
     """One row per repository: what cites it, and what its bridge measured."""
     def closed(module):
@@ -1149,6 +1221,8 @@ def _bridge_rows():
         'cicy2026': lambda: (closed(CI) + CI.checks()) if CI.available() else None,
         'spectre2026': lambda: (closed(SP) + SP.checks()) if SP.available() else None,
         'nariai2026': lambda: (closed(NR) + NR.checks()) if NR.available() else None,
+        'chirality2026': lambda: _chirality_checks('chirality2026'),
+        'lisi2026': lambda: _chirality_checks('lisi2026'),
     }
     rows = []
     for key in YM_KEYS:
@@ -1203,6 +1277,16 @@ def ym_facts():
     facts['hat'] = SP.hat_three_ways() if SP.available() or CI.available() else None
     facts['homogeneous'] = SP.homogeneous_species() if SP.available() else None
     facts['matrix'] = NR.matrix_comparison() if NR.available() else None
+    facts['chirality'] = None
+    if CH.available():
+        e8, magic, cert, _root = CH.load()
+        sums = CH.family_sums()
+        facts['chirality'] = {
+            'branching': CH.e8_branching(e8), 'cert': cert['finite_object_counts'],
+            'sums': sums, 'k': sums['Y2'] / sums['T3sq'],
+            'tri': [magic.tri_dim(n) for n in CH.DIVISION],
+            'anomaly': CH.anomalies()[0],
+        }
     _FACTS.update(facts)
     return _FACTS
 
@@ -1222,11 +1306,11 @@ def _ym_overview(f):
     ran = [r for r in f['bridges'] if r['ran']]
     return fill(r"""
 \clearpage
-\section{Yang--Mills across five repositories}
+\section{Yang--Mills across six repositories}
 \label{sec:ym}
 
 Yang--Mills theory is a thread that runs through more code than one author's,
-and the library now holds entries from five repositories that touch it. The
+and the library now holds entries from six repositories that touch it. The
 laboratory of Elsbernd \cite{elsbernd2026} contributes @ymlab@ entries on the
 lattice theory itself. A fork of an OpenAI mathematics release
 \cite{openai2026} contributes @openai@ entries on the spin models and
@@ -1236,7 +1320,12 @@ running of the gauge couplings and on the Hat monotile. The last two,
 \texttt{spectre} \cite{spectre2026} and \texttt{nariai} \cite{nariai2026}, are
 about a tiling, and are here because the arithmetic of the Spectre can be put
 beside CICY's arithmetic of the Hat and agrees with it; they are not
-Yang--Mills and the section does not pretend otherwise.
+Yang--Mills and the section does not pretend otherwise. The sixth,
+\texttt{chirality-standard-model} \cite{chirality2026,lisi2026}, @chirality@
+entries, is about the gauge group and the chiral matter a gauge theory couples
+to and not about the dynamics of the gauge field; it enters through the
+generation count, the hypercharge normalisation, and the dimension counts that
+the other repositories' groups also use.
 
 \begin{figure}[!htbp]
 \centering
@@ -1293,7 +1382,8 @@ measured.}
          for r in f['bridges']], 'lrrrl')),
         ymlab=number(counts['elsbernd2026']), openai=number(counts['openai2026']),
         cicy=number(counts['cicy2026']), terms=terms, nlinks=len(links),
-        nvars=nvars)
+        nvars=nvars, chirality=number(counts['chirality2026']
+                                      + counts['lisi2026']))
 
 
 def _ym_asymptotic(f):
@@ -1642,6 +1732,193 @@ The library's first statement of this was too general, and the bridge is what fo
     return '\n'.join(out)
 
 
+
+def _frac_tex(x):
+    from fractions import Fraction
+    x = Fraction(x)
+    if x.denominator == 1:
+        return '%d' % x.numerator
+    sign = '-' if x < 0 else ''
+    return r'%s\tfrac{%d}{%d}' % (sign, abs(x.numerator), x.denominator)
+
+
+_FAMILY_NAMES = ((1, 1, 1), 'Q'), ((2, 0, -4), 'u^c'), ((0, 0, 6), 'e^c'), \
+    ((2, 0, 2), 'd^c'), ((0, 1, -3), 'L')
+
+
+def _ym_chirality(f):
+    c = f['chirality']
+    out = [r"""
+\subsection{Chirality, the gauge group and the family count}
+\label{sec:ym:chirality}
+"""]
+    if c is None:
+        out.append(r"""
+The \texttt{chirality-standard-model} repository was not found on the machine
+that built this document, so its section is not printed;
+\code{python3 rosettachirality.py} prints it.
+""")
+        return '\n'.join(out)
+    b, cert = c['branching'], c['cert']
+    fam = CH.family()
+    rows = []
+    for key, name in _FAMILY_NAMES:
+        colour, weak, n = fam[key]
+        cname = {0: '1', 1: '3', 2: r'\overline{3}'}[key[0]]
+        rows.append([r'$%s$' % name, r'$(%s,%d)$' % (cname, weak), str(n),
+                     str(key[2]), r'$%s$' % _frac_tex(CH.hypercharge(key))])
+    sums = c['sums']
+    a3 = c['anomaly']
+    out.append(fill(r"""
+The repository of Mostaque \cite{chirality2026} turns the usual construction
+round. Rather than choose a gauge algebra and a spectrum and check that the
+anomalies cancel, it asks which inclusions $\mathfrak h\subsetneq\mathfrak g$ of
+compact Lie algebras, effective and with the whole complement $\mathfrak q =
+\mathfrak g/\mathfrak h$ a single representation of complex type, have a cubic
+anomaly with a nonzero radical, and finds exactly one pair, up to duality:
+$\mathfrak e_8\supset\mathfrak e_6\oplus\mathfrak{su}(3)_M$ with the family
+module $V=\mathbf{27}\boxtimes\mathbf3$. The paper proves it, exact Python
+recomputes the finite censuses from two root-system realisations, and finite
+Lean theorems check the $E_6$ incidence; the \texttt{lisi} directory of the
+fork \cite{lisi2026} recomputes the branching from the $E_8$ roots. The
+library takes the arithmetic of this and none of the interpretation, and the
+bridge puts that arithmetic back through the code in three layers: the algebra
+against what each entry states, numbers the algebra cannot give computed
+independently of both repositories, and the repository's own roots, certificate
+and nullspace computations.
+
+\paragraph{Counts.} The dimension of a semisimple algebra is its roots plus its
+rank, and the algebra of the pair decomposes as the subalgebra plus twice the
+complex dimension of $V$:
+\[ @lie@ , \qquad @branch@ , \qquad @tensor@ . \]
+The repository's root system gives $@e8roots@$ roots of rank @e8rank@ for $E_8$,
+@e6roots@ of rank @e6rank@ for $E_6$ and @su3roots@ of rank @su3rank@ for
+$SU(3)_M$, so $248 = 240+8$ and $248 = (72+6)+(6+2)+2\,(27\cdot3)$; the 240 roots
+fall into exactly the weights of $(78,1)+(1,8)+(27,3)+(\overline{27},\overline3)$
+with 27 roots over each of the three weights (Figure~\ref{fig:chirality}, left).
+Inside $E_6$ the three types of maximal subsystem form orbits under a Weyl group
+of order @weyl@, and
+\[ @orbit@ : \quad \tfrac{51840}{1920}=27,\quad \tfrac{51840}{1440}=36,\quad
+\tfrac{51840}{1296}=40, \qquad @triple@ : \quad 27\cdot36\cdot40=@triplespace@, \]
+with stabilisers $|W(D_5)|$, $|W(A_5)||W(A_1)|$ and $|W(A_2)|^3\cdot3!$ from
+closed forms the bridge writes out itself. The repository's certificate gives
+the same three orbit sizes, the same Weyl order and the same triple space, and
+matches its recorded digest. For each pair type it lists, the certificate's
+dimension is the rank plus the root count the bridge computes from the type's
+name, and is the standard dimension of its simple factors. These are necessary
+conditions on the pair and not the theorem: that no other pair passes is the
+paper's and the Lean files' to say.
+
+\paragraph{The cubic anomaly.} The group factor of the triangle anomaly of a
+left-handed multiplet, and its value when one factor of a tensor product acts
+trivially, are
+\[ @cubic@ , \qquad @product@ . \]
+Computed with the Gell-Mann generators ($\operatorname{tr}T_aT_b=\delta_{ab}/2$),
+the tensor of the $\mathbf3$ has largest entry @a3max@, that of
+$\overline{\mathbf3}$ has the opposite sign, that of the doublet of $SU(2)$ is
+zero, and for $\mathbf{27}\boxtimes\mathbf3$ acting through the $\mathbf3$ it is
+27 times the $\mathbf3$'s, entry by entry. That the anomaly with a Standard
+Model leg vanishes, because $E_6$ is the radical, is the paper's argument and
+is not recomputed here; the repository calls $SU(3)_M$ a background symmetry
+and says that making it a gauge group needs further structure.
+
+\paragraph{One family, from the weights.} Restrict along $E_6\supset
+\operatorname{Spin}(10)\supset SU(5)\supset S(U(3)\times U(2))$. Taking the
+circle $\eta(z)=\operatorname{diag}(z^{-2}I_3,z^3I_2)$ of the paper, the weights
+of the $\mathbf{10}=\Lambda^2\mathbf5$ and the $\overline{\mathbf5}$ group into
+five summands (Table~\ref{tab:family}), the same five the paper names, with the
+integer charge $q$, the colour triality $t\in\mathbb Z/3$ and the weak parity
+$s\in\mathbb Z/2$ counted from the indices. Each satisfies the charge lattice
+$@lattice@$ and, with $@hyper@$, has the hypercharge the paper gives. @smroute@
+
+\begin{table}[!htbp]
+\centering
+\small
+@family@
+\caption{One Standard Model family, computed by \code{rosettachirality.family()}
+from the weights of the $\mathbf{10}$ and the $\overline{\mathbf5}$ of $SU(5)$.
+The names are the paper's.}
+\label{tab:family}
+\end{table}
+
+Over this family $\sum Y = \sum Y^3 = 0$ and the mixed sums with $SU(3)$ and
+$SU(2)$ vanish: $@anomalyfree@$ is computed by adding the five summands, an
+argument independent of the paper's, which derives it from $E_6$ being the
+radical (Figure~\ref{fig:chirality}, right). The ratio of the summed squared
+hypercharges to the summed squared weak isospins is $@ysum@/@tsum@ = @k@$, and
+that is the five thirds in
+\[ @em@ , \]
+which CICY \cite{cicy2026} uses to convert the unification normalisation of
+hypercharge: here it is a trace over a family and not an assumption, and
+adding the singlet of the $\mathbf{16}$ changes neither sum. The library records
+the relation as a definition (the arrow in Figure~\ref{fig:grandym}); it fixes
+the normalisation and says nothing about the couplings.
+
+\begin{figure}[!htbp]
+\centering
+\includegraphics[width=0.98\textwidth]{figures/chirality_e8.pdf}
+\caption{Left: the roots of $E_8$ by $SU(3)_M$ weight, from the repository's
+root system. Right: each summand's contribution to $\sum Y^3$ over one family,
+from the weights of the $\mathbf{10}$ and $\overline{\mathbf5}$. Generated by
+\code{rosettapaper.chirality\_figure()} from numbers the bridge computes.}
+\label{fig:chirality}
+\end{figure}
+
+\paragraph{The count.} The restriction of the family module is $3\mathcal F
+\oplus3(\mathbf5\oplus\overline{\mathbf5})\oplus6\cdot\mathbf1$. Taking, for each
+representation not equal to its dual, its multiplicity minus its conjugate's,
+the vector-like pair and the singlets cancel and what is left is
+\[ @chi@ , \]
+with $N_{\mathrm{gen}}=3$ the number of weights of the $\mathbf3$ over which the
+$\mathbf{27}$ repeats: the bridge finds all five summands chiral, none
+self-dual, and nothing else chiral. CICY's generation count
+$N_{\mathrm{gen}}=-I/G$ is the same quantity reached by a different argument,
+an index divided by the order of a freely acting group, and the display equates
+the quantity and not the value. Neither argument predicts the other's number,
+and it does not follow from either that a compactification has three families.
+The one-loop unification prediction of Section~\ref{sec:ym:cicy} cannot see the
+count, since every summand of the $\mathbf{27}$ outside the family is a complete
+$SU(5)$ multiplet or a singlet and shifts the one-loop coefficients equally or
+not at all.
+
+\paragraph{The Lisi bridge.} The fork's \texttt{lisi} directory recomputes the
+$E_8$ branching and places the family three beside the triality three of
+$D_4\times D_4$. Its Freudenthal--Tits dimension formula
+\[ @magic@ \]
+with the triality algebras of $\mathbb R,\mathbb C,\mathbb H,\mathbb O$ computed
+by the repository as exact nullspaces, of dimensions @tri@, reproduces the whole
+$4\times4$ table, and for the octonions $28+28+3\cdot64 = 248$, the dimension
+the root system has. The repository's own notes record, at the level of root
+systems, that the two threes are different commuting symmetries, and mark as not
+checked whether the triality three has any physical role, anything that depends
+on a real form, and whether the generations of Lisi's model escape the
+Distler--Garibaldi dimension argument. The library carries no entry for those and
+claims nothing about them.
+""", lie=_entry_tex('Lie algebra dimension'), branch=_entry_tex('Adjoint branching'),
+        tensor=_entry_tex('Product representation dimension'),
+        e8roots=b['roots'], e8rank=number(b['rank_e8']), e6roots=b['e6_roots'],
+        e6rank=number(b['rank_e6']), su3roots=b['su3_roots'],
+        su3rank=number(b['rank_su3']), weyl=cert['weyl_group_order'],
+        orbit=_entry_tex('Orbit size'), triple=_entry_tex('Triple space'),
+        triplespace=r'{:,}'.format(cert['triple_space']).replace(',', r'\,'),
+        cubic=_entry_tex('Cubic anomaly coefficient'),
+        product=_entry_tex('Anomaly of a product representation'),
+        a3max='%.4f' % abs(a3).max(), lattice=_entry_tex('Charge lattice'),
+        hyper=_entry_tex('Hypercharge'),
+        family=_table(['summand', '$(SU(3),SU(2))$', 'states', '$q$', '$Y$'],
+                      rows, 'lcrrr'),
+        anomalyfree=_entry_tex('Anomaly-free hypercharge'),
+        smroute=(r"""The fork's \code{lisi/sm\_charges.py} reads the same five summands,
+with the same multiplicities, off the sixteen $E_8$ weights of the $\mathbf{27}$
+by inner products with roots, and gets the same five thirds; the bridge compares
+the two routes, which start from different inputs, the weights of $SU(5)$ and the roots of $E_8$.""" if CH.load_sm() else ''),
+        ysum=_frac_tex(sums['Y2']), tsum=_frac_tex(sums['T3sq']),
+        k=_frac_tex(c['k']), em=_entry_tex('Electromagnetic coupling at the Z'),
+        chi=_entry_tex('Net chiral class'), magic=_entry_tex('Magic square dimension'),
+        tri=', '.join(str(t) for t in c['tri'])))
+    return '\n'.join(out)
+
+
 def _ym_limits(f):
     ran = [r for r in f['bridges'] if r['ran']]
     return fill(r"""
@@ -1649,8 +1926,8 @@ def _ym_limits(f):
 \label{sec:ym:limits}
 
 Every comparison above is a comparison of arithmetic with arithmetic: the
-library's algebra against what a repository's code computes, @ran@ of the five
-bridges having run on the machine that built this paper. None of it is evidence
+library's algebra against what a repository's code computes, @ran@ of the
+@total@ bridged references having run on the machine that built this paper. None of it is evidence
 about the Clay problem, and none of it constructs four-dimensional Yang--Mills
 theory. The $O(N)$ models and the $XY$ chain are toys for gauge theory, with a
 different dimension, different observables and different exponents. The
@@ -1659,19 +1936,24 @@ on Yang--Mills only through arithmetic and analogy, and the \texttt{nariai}
 repository itself records a retraction, an earlier inflation factor that was
 not the Spectre's, together with open findings against the physical predictions
 it builds on the algebra; those predictions are not in the library and are not
-claimed here. What the display records is the narrower thing that was tested:
+claimed here. The \texttt{chirality-standard-model} repository is a uniqueness
+theorem over a stated domain; the library takes its dimension counts, orbit
+sizes and the arithmetic of one family, which are consequences and necessary
+conditions, and neither the theorem, which is the paper's and the Lean files'
+to prove, nor the physical claim that the pair is the one nature uses. What the
+display records is the narrower thing that was tested:
 which of these repositories agree about which quantity, and where the library
 refuses to say that two similar things are the same.
 
 \clearpage
-""", ran=number(len(ran)))
+""", ran=number(len(ran)), total=number(len(f['bridges'])))
 
 
 def yang_mills_section():
     f = ym_facts()
     return '\n'.join([_ym_overview(f), _ym_asymptotic(f),
                       _ym_kt_bloch_haldane(f), _ym_running_and_tilings(f),
-                      _ym_limits(f)])
+                      _ym_chirality(f), _ym_limits(f)])
 
 
 
@@ -1744,10 +2026,13 @@ a \code{yang-mills-mass-gap-lab} directory beside this one)
 \newline
 \url{%s}
 \newline
-(the four repositories of Section~\ref{sec:ym}: found through
-\code{OPENAI\_MATH\_DIR}, \code{CICY\_DIR}, \code{SPECTRE\_DIR} and
-\code{NARIAI\_DIR}, or in a directory of that name beside this one; the figures
-of that section are copied from them next to the \code{.tex} when it is written)
+\url{%s}
+\newline
+(the five repositories of Section~\ref{sec:ym}: found through
+\code{OPENAI\_MATH\_DIR}, \code{CICY\_DIR}, \code{SPECTRE\_DIR},
+\code{NARIAI\_DIR} and \code{CHIRALITY\_DIR}, or in a directory of that name
+beside this one; the figures of that section are copied from them, or drawn from
+their numbers, next to the \code{.tex} when it is written)
 
 \begin{lstlisting}[language={}]
 python3 rosettaphys.py             the census: nodes, edges, joins, collisions
@@ -1761,6 +2046,7 @@ python3 rosettaoai.py              the OpenAI-math fork, checked against the lib
 python3 rosettacicy.py             CICY's couplings and generation count
 python3 rosettaspectre.py          the spectre repository, its ledger, and the Hat constant
 python3 rosettanariai.py           nariai's constants, and its matrix against spectre's
+python3 rosettachirality.py        E8 branching, the E6 certificate, one family
 python3 rosettapaper.py            regenerate this document
 make test                          all of the above, plus the kernel
 make collisions                    the table in Section 4
@@ -1768,6 +2054,7 @@ make collisions                    the table in Section 4
 """ % (P.REFERENCES[Y.REFERENCE]['url'],
        P.REFERENCES['openai2026']['url'], P.REFERENCES['cicy2026']['url'],
        P.REFERENCES['spectre2026']['url'], P.REFERENCES['nariai2026']['url'],
+       P.REFERENCES['chirality2026']['url'],
        len(P.SYMBOLS) + len(P.CONCEPTS) + len(P.EQUATIONS), len(Y.checks()))
 
 
@@ -1919,7 +2206,8 @@ Controlled Natural Language. \emph{ITP 2024}.
 BIBLIOGRAPHY = BIBLIOGRAPHY.replace(
     r'\end{thebibliography}',
     ELSBERND + ''.join(_bibitem(k) for k in
-                       ('openai2026', 'cicy2026', 'spectre2026', 'nariai2026'))
+                       ('openai2026', 'cicy2026', 'spectre2026', 'nariai2026',
+                        'chirality2026', 'lisi2026'))
     + r'\end{thebibliography}')
 
 
@@ -2050,9 +2338,9 @@ def selftest():
         check('without the laboratory the section says so',
               'was not found on the machine' in text)
 
-    print('Yang-Mills across five repositories')
+    print('Yang-Mills across six repositories')
     check('the section is present', r'\label{sec:ym}' in text
-          and 'Yang--Mills across five repositories' in text)
+          and 'Yang--Mills across six repositories' in text)
     check('every repository is cited and defined',
           all((r'\cite{%s}' % k in text or k in
                ','.join(__import__('re').findall(r'\\cite\{([^}]+)\}', text)))
@@ -2106,6 +2394,37 @@ def selftest():
         check('the recurrence is stated for the species it holds for',
               number(len(facts['homogeneous'])) in text
               and 'first statement of this was too general' in flat)
+
+    print('chirality and the family count')
+    if CH.available():
+        c = facts['chirality']
+        check('the subsection is present', r'\label{sec:ym:chirality}' in text)
+        check('the entries it displays are the library\'s',
+              all(_entry_tex(n) in text for n in (
+                  'Lie algebra dimension', 'Adjoint branching', 'Orbit size',
+                  'Triple space', 'Charge lattice', 'Net chiral class')))
+        check('the family table has the paper\'s five summands',
+              all(r'$%s$ &' % n in text for _k, n in _FAMILY_NAMES))
+        check('the five thirds is computed and shown',
+              c['k'] == __import__('fractions').Fraction(5, 3)
+              and r'\tfrac{10}{3}/2 = \tfrac{5}{3}' in text.replace(
+                  r'/\tfrac{2}{1}', '/2'))
+        check('the counts agree with the certificate',
+              str(c['cert']['weyl_group_order']) in text
+              and c['cert']['triple_space'] == 38880)
+        check('the two routes to the family are compared when both exist',
+              (not CH.load_sm()) or 'reads the same five summands' in flat)
+        check('the chirality figure is drawn and staged',
+              'figures/chirality_e8.pdf' in text)
+        check('it says what it does not claim',
+              'is not recomputed here' in flat
+              and 'claims nothing about them' in flat
+              and 'neither the theorem' in flat)
+    else:
+        check('without the repository the subsection says so',
+              'chirality-standard-model} repository was not found' in text)
+    check('no local path to the chirality repository leaks into the document',
+          CH.locate() is None or CH.locate() not in text)
 
     print('the numbers are the live ones')
     check('the equation count matches the library',

@@ -1260,6 +1260,43 @@ exponent here is the same expression as the lattice-spacing exponent there.
      'Thomson limit'])
 
 
+add_concept('Chirality, anomalies and the family count', 'Gauge theory', """
+Matter in the Standard Model is chiral: left- and right-handed fields carry
+different charges. A chiral gauge theory is only consistent if the cubic
+anomaly of its fermions cancels, so a model is usually built by choosing a
+gauge algebra and a spectrum and then checking. The chirality-standard-model
+repository turns the question round: among compact Lie-algebra inclusions
+whose complement is a single complex-type representation, the ones whose
+cubic anomaly has a nonzero radical, exactly one survives -- E8 containing E6
+times SU(3), with the family module 27 tensor 3. The three is the dimension of
+the SU(3) acting on the family index, and the net chiral content of the module
+is three copies of one Standard Model family.
+
+What the library can say about that is narrow and exact. The dimensions add up
+(248 is 86 plus twice 81; the three maximal subsystems of E6 form orbits of 27,
+36 and 40 under a Weyl group of order 51840, and the triples of them number
+38880). One family of left-handed fermions has hypercharges that cancel to
+every order that matters, and the ratio of the sum of squared hypercharges to
+the sum of squared weak isospins is five thirds, which is the number that
+appears where hypercharge is normalised to unify. And the count of
+generations is stated here by representation theory and by an index theorem
+in the compactification group, which are different arguments about the same
+quantity.
+
+The library does not say that the pair is the physical one. The repository
+itself marks what it leaves open: the family SU(3) is a background symmetry
+and promoting it to a gauge group needs more structure, and the Lisi bridge in
+its lisi directory records, at the level of root systems, that the family
+three and the triality three are different symmetries.
+""", 'Anomaly_(physics)', ['\\chi'],
+    ['Lie algebra dimension', 'Adjoint branching',
+     'Product representation dimension', 'Orbit size', 'Triple space',
+     'Magic square dimension', 'Cubic anomaly coefficient',
+     'Anomaly of a product representation', 'Charge lattice', 'Hypercharge',
+     'Hypercharge normalisation', 'Anomaly-free hypercharge',
+     'Net chiral class'])
+
+
 # ---------------------------------------------------------------- equations
 #
 # A signature library.  Each entry lists the features that MUST be present for
@@ -2576,7 +2613,7 @@ EQUATIONS = [
              latex=r'N_{gen} = - \frac{I}{G}',
              slug='Atiyah%E2%80%93Singer_index_theorem',
              source='brentharts/CICY: pyCICY.breaking.generations_downstairs()',
-             must=['N', 'I', 'G', 'S:frac'], nice=['S:sub'],
+             must=['N', 'I', 'G', 'S:frac'], nice=['S:sub', 'N_gen'],
              blurb='The net number of chiral generations downstairs: minus '
                    'the index of the bundle upstairs divided by the order of '
                    'the freely acting group that quotients the manifold. An '
@@ -2594,6 +2631,156 @@ EQUATIONS = [
                    'Checking it integrated against the Kahler classes is '
                    'necessary and not sufficient, and the code says which '
                    'one it did.'),
+
+    # ------------------------------------------- chirality and the family count
+    #
+    # Emad Mostaque's chirality-standard-model repository (paper, exact Python
+    # verification, finite Lean checks) and the lisi/ bridge in the fork, which
+    # recomputes the E8 branching from the root system.  The entries are the
+    # arithmetic those two make checkable; rosettachirality.py puts each of
+    # them back through the code.
+    equation(name='Lie algebra dimension', field='Lie algebras and chirality',
+             latex=r'D = R + r', slug='Root_system',
+             source='emad-ii/chirality-standard-model: verification/python/check_e6_pair_orderings.py',
+             must=['D', 'R', 'r'], nice=[],
+             blurb='A semisimple Lie algebra is its Cartan subalgebra, one '
+                   'dimension for each unit of rank r, plus one dimension for '
+                   'every root, so the dimension is the root count plus the '
+                   'rank: E8 has 240 roots and rank 8, which is 248, and E6 '
+                   'has 72 and 6, which is 78. The chirality repository uses '
+                   'it to rank the three pair types inside E6. It is for '
+                   'semisimple algebras only; a central torus adds to the '
+                   'dimension and is not a root.'),
+    equation(name='Adjoint branching', field='Lie algebras and chirality',
+             latex=r'D = D_{h} + 2 D_{V}', slug='Branching_rule',
+             source='brentharts/chirality-standard-model: lisi/check_e6_su3_bridge.py',
+             must=['D', 'S:sub'], nice=['D_h', 'D_V'],
+             blurb='When a compact algebra contains an effective subalgebra '
+                   'whose complement is one irreducible of complex type, the '
+                   'complement has real dimension twice the complex dimension '
+                   'of V, because its complexification is V plus its dual. '
+                   'For E8 containing E6 times SU(3) that is 248 = 86 + 2 '
+                   'times 81, where 86 is 78 + 8 and the 162 is the 27 over '
+                   'the 3 and its conjugate. A dimension count is a '
+                   'necessary condition on the pair and not a proof that it '
+                   'exists.'),
+    equation(name='Product representation dimension',
+             field='Lie algebras and chirality',
+             latex=r'D_{V} = D_{a} D_{b}', slug='Tensor_product_of_representations',
+             source='brentharts/chirality-standard-model: lisi/check_e6_su3_bridge.py',
+             must=['D', 'S:sub'], nice=['D_V', 'D_a', 'D_b'],
+             blurb='The external tensor product of a representation of one '
+                   'factor with a representation of another has the product '
+                   'of the two dimensions. The family module is the 27 of E6 '
+                   'times the 3 of SU(3), which is 81.'),
+    equation(name='Orbit size', field='Lie algebras and chirality',
+             latex=r'n = \frac{w}{s}', slug='Group_action',
+             source='emad-ii/chirality-standard-model: verification/certificates/e6_extrema_certificate.json',
+             must=['n', 'w', 's', 'S:frac'], nice=[],
+             blurb='The orbit-stabiliser theorem: the orbit of a point has '
+                   'the order of the group divided by the order of the '
+                   'point\'s stabiliser. The Weyl group of E6 has order '
+                   '51840 and the maximal subsystems D5, A5+A1 and A2 cubed '
+                   'have stabilisers of orders 1920, 1440 and 1296, so their '
+                   'orbits hold 27, 36 and 40 subsystems.'),
+    equation(name='Triple space', field='Lie algebras and chirality',
+             latex=r'T = n_{1} n_{2} n_{3}', slug='Cartesian_product',
+             source='emad-ii/chirality-standard-model: verification/certificates/e6_extrema_certificate.json',
+             must=['T', 'n', 'S:sub'], nice=[],
+             blurb='One subsystem from each of the three orbits, chosen '
+                   'independently: 27 times 36 times 40 is 38880 ordered '
+                   'triples. The repository exhausts all of them, which is '
+                   'why its claims about extremal intersections are '
+                   'statements about a finite set and not about a sample.'),
+    equation(name='Magic square dimension', field='Lie algebras and chirality',
+             latex=r'L = \tau_{A} + \tau_{B} + 3 a b', slug='Freudenthal_magic_square',
+             source='brentharts/chirality-standard-model: lisi/check_magic_square.py',
+             must=['L', 'tau', 'a', 'b', 'S:sub'], nice=[],
+             blurb='The dimension of the Freudenthal-Tits Lie algebra built '
+                   'from two division algebras: the dimensions of their '
+                   'triality algebras, plus three times the product of the '
+                   'dimensions of the algebras. With both the octonions it is '
+                   '28 + 28 + 3 times 64 = 248, the D4 times D4 count of E8. '
+                   'The repository computes the triality dimensions 0, 2, 9, '
+                   '28 as exact nullspaces; the formula is the standard one '
+                   'and the table it reproduces is the standard table.'),
+    equation(name='Cubic anomaly coefficient', field='Lie algebras and chirality',
+             latex=r'A_{abc} = \frac{1}{2} \mathrm{tr}\left(T_{a} \{T_{b}, T_{c}\}\right)',
+             slug='Gauge_anomaly',
+             source='emad-ii/chirality-standard-model: verification/python/check_cubic_radical_selection.py',
+             must=['A', 'T', 'S:frac'], nice=['S:sub'],
+             blurb='The group factor in the triangle anomaly of a '
+                   'left-handed Weyl multiplet: the symmetrised trace of '
+                   'three generators in the representation. It is odd under '
+                   'taking the dual, zero on a self-dual representation and '
+                   'zero for every representation of SU(2). The repository\'s '
+                   'second condition is that the ideal on which it vanishes '
+                   'be nonzero, which E6, with its complex 27 and no cubic '
+                   'invariant, satisfies.'),
+    equation(name='Anomaly of a product representation',
+             field='Lie algebras and chirality',
+             latex=r'A_{V} = D_{a} A_{b}', slug='Gauge_anomaly',
+             source='emad-ii/chirality-standard-model: paper/paper.tex, eq. (11)',
+             must=['A', 'D', 'S:sub'], nice=['A_V', 'D_a', 'A_b'],
+             blurb='Generators acting through the second factor of a tensor '
+                   'product act as the same matrix once for each basis state '
+                   'of the first, so the trace is multiplied by its '
+                   'dimension: the SU(3) cubic anomaly of the 27 times 3 is '
+                   '27 times that of the 3. The repository calls the SU(3) '
+                   'a background symmetry and says that making it a gauge '
+                   'group needs further anomaly-cancelling structure.'),
+    equation(name='Charge lattice', field='Lie algebras and chirality',
+             latex=r'q + 2 t + 3 s \equiv 0 \pmod{6}', slug='Standard_Model',
+             source='emad-ii/chirality-standard-model: paper/paper.tex, section on the 27 and the Standard Model',
+             must=['q', 't', 's'], nice=[],
+             blurb='Which representations descend to the faithful Standard '
+                   'Model group S(U(3) x U(2)): with the integer charge q '
+                   'normalised so the quark doublet has q = 1, colour '
+                   'triality t in Z/3 and weak-centre parity s in Z/2, a '
+                   'representation exists on the group exactly when q + 2t + '
+                   '3s is a multiple of six. With t = 0 it forces the '
+                   'electric charges of colour singlets to be integers.'),
+    equation(name='Hypercharge', field='Lie algebras and chirality',
+             latex=r'Y = \frac{q}{6}', slug='Weak_hypercharge',
+             source='emad-ii/chirality-standard-model: paper/paper.tex, section on the 27 and the Standard Model',
+             must=['Y', 'q', 'S:frac'], nice=[],
+             blurb='The conventional hypercharge is the integer charge of '
+                   'the lattice above divided by six, which is what makes the '
+                   'quark doublet 1/6, the right-handed up antiquark -2/3 '
+                   'and the positron 1.'),
+    equation(name='Hypercharge normalisation', field='Lie algebras and chirality',
+             latex=r'k = \frac{\sum Y^{2}}{\sum T_{3}^{2}}', slug='Weinberg_angle',
+             source='emad-ii/chirality-standard-model: paper/paper.tex, section on the 27 and the Standard Model',
+             must=['k', 'Y', 'T', 'S:sum', 'S:frac'], nice=['S:sub', 'S:sup2'],
+             blurb='The ratio of the sum of squared hypercharges to the sum '
+                   'of squared weak isospins over a complete multiplet. For '
+                   'one family of left-handed fermions, which is a 10 and a '
+                   '5-bar of SU(5), it is five thirds -- the number that '
+                   'converts the unification normalisation of hypercharge to '
+                   'the usual one. Here it is a trace over a family and not '
+                   'an assumption, and it is the same with or without the '
+                   'singlet, which has zero hypercharge.'),
+    equation(name='Anomaly-free hypercharge', field='Lie algebras and chirality',
+             latex=r'\sum_{i} Y_{i}^{3} = 0', slug='Gauge_anomaly',
+             source='emad-ii/chirality-standard-model: paper/paper.tex, section on the 27 and the Standard Model',
+             must=['Y', 'S:sum'], nice=['S:sub', 'S:sup'],
+             blurb='Over one family of left-handed Weyl fermions the cubes '
+                   'of the hypercharges cancel, and so do the hypercharges '
+                   'themselves and the mixed sums with SU(3) and SU(2). The '
+                   'paper derives this from E6 being the radical of the cubic '
+                   'form; the bridge adds the five summands directly and '
+                   'does not use that argument, so the two are independent.'),
+    equation(name='Net chiral class', field='Lie algebras and chirality',
+             latex=r'\chi_{V} = N_{gen} \chi_{F}', slug='Chirality_(physics)',
+             source='emad-ii/chirality-standard-model: paper/paper.tex, eq. (10)',
+             must=['chi', 'N', 'S:sub'], nice=['N_gen'],
+             blurb='The net chirality of the family module as a multiple of '
+                   'one Standard Model family\'s: for each representation not '
+                   'equal to its dual, its multiplicity minus its '
+                   'conjugate\'s. Vector-like pairs and singlets drop out and '
+                   'the three that remains is the dimension of the SU(3) on '
+                   'the family index. It counts the chiral part only and '
+                   'fixes no mass or mixing.'),
 ]
 
 EQUATION_FAMILIES = [
@@ -3953,6 +4140,62 @@ add_quantity('chern class', '1',
              'A characteristic class of a bundle, here integrated against a '
              'Kahler class to give a number.', 'Chern_class')
 
+add_quantity('lie algebra dimension', '1',
+             'The dimension of a Lie algebra as a vector space.',
+             'Lie_algebra')
+add_quantity('root count', '1',
+             'The number of roots of a semisimple Lie algebra.', 'Root_system')
+add_quantity('rank', '1',
+             'The dimension of a Cartan subalgebra.', 'Rank_of_a_Lie_algebra')
+add_quantity('subalgebra dimension', '1',
+             'The dimension of a subalgebra of a larger Lie algebra.',
+             'Lie_algebra')
+add_quantity('representation dimension', '1',
+             'The complex dimension of a representation.',
+             'Group_representation')
+add_quantity('weyl group order', '1',
+             'The order of the Weyl group of a root system.', 'Weyl_group')
+add_quantity('stabiliser order', '1',
+             'The order of the stabiliser of a point under a group action.',
+             'Group_action')
+add_quantity('orbit size', '1',
+             'The number of points in one orbit of a group action.',
+             'Group_action')
+add_quantity('triple count', '1',
+             'The number of ordered triples drawn from three finite sets.',
+             'Cartesian_product')
+add_quantity('triality algebra dimension', '1',
+             'The dimension of the triality algebra of a division algebra.',
+             'Triality')
+add_quantity('division algebra dimension', '1',
+             'The dimension of R, C, H or O over the reals.',
+             'Division_algebra')
+add_quantity('cubic anomaly coefficient', '1',
+             'The symmetrised cubic trace of generators in a representation: '
+             'the group factor of the triangle anomaly.', 'Gauge_anomaly')
+add_quantity('integer charge', '1',
+             'The charge of a representation of the Standard Model group in '
+             'the normalisation where the quark doublet has charge one.',
+             'Standard_Model')
+add_quantity('colour triality', '1',
+             'The class in Z/3 of how the centre of SU(3) acts.',
+             'Triality')
+add_quantity('weak centre parity', '1',
+             'The class in Z/2 of how the centre of SU(2) acts.',
+             'Weak_isospin')
+add_quantity('hypercharge', '1',
+             'The U(1) charge of the Standard Model, in the convention '
+             'Q = T3 + Y.', 'Weak_hypercharge')
+add_quantity('weak isospin', '1',
+             'The third component of weak isospin.', 'Weak_isospin')
+add_quantity('hypercharge normalisation', '1',
+             'The ratio of summed squared hypercharge to summed squared weak '
+             'isospin over a complete multiplet.', 'Weinberg_angle')
+add_quantity('net chiral class', '1',
+             'The multiplicity of each representation minus that of its '
+             'dual, as an element of a quotient of the representation ring.',
+             'Chirality_(physics)')
+
 
 #
 # What each equation's letters denote.  Keyed by equation name, then by the
@@ -4217,6 +4460,39 @@ READINGS = {
         'G': 'symmetry order'},
     'Heterotic anomaly condition': {
         'W': 'fivebrane class', 'c_2': 'chern class'},
+
+    'Lie algebra dimension': {
+        'D': 'lie algebra dimension', 'R': 'root count', 'r': 'rank'},
+    'Adjoint branching': {
+        'D': 'lie algebra dimension', 'D_h': 'subalgebra dimension',
+        'D_V': 'representation dimension'},
+    'Product representation dimension': {
+        'D_V': 'representation dimension', 'D_a': 'representation dimension',
+        'D_b': 'representation dimension'},
+    'Orbit size': {
+        'n': 'orbit size', 'w': 'weyl group order', 's': 'stabiliser order'},
+    'Triple space': {
+        'T': 'triple count', 'n_1': 'orbit size', 'n_2': 'orbit size',
+        'n_3': 'orbit size'},
+    'Magic square dimension': {
+        'L': 'lie algebra dimension', 'tau_A': 'triality algebra dimension',
+        'tau_B': 'triality algebra dimension',
+        'a': 'division algebra dimension', 'b': 'division algebra dimension'},
+    'Cubic anomaly coefficient': {
+        'A_abc': 'cubic anomaly coefficient'},
+    'Anomaly of a product representation': {
+        'A_V': 'cubic anomaly coefficient', 'D_a': 'representation dimension',
+        'A_b': 'cubic anomaly coefficient'},
+    'Charge lattice': {
+        'q': 'integer charge', 't': 'colour triality', 's': 'weak centre parity'},
+    'Hypercharge': {'Y': 'hypercharge', 'q': 'integer charge'},
+    'Hypercharge normalisation': {
+        'k': 'hypercharge normalisation', 'Y': 'hypercharge',
+        'T_3': 'weak isospin'},
+    'Anomaly-free hypercharge': {'Y_i': 'hypercharge'},
+    'Net chiral class': {
+        'chi_V': 'net chiral class', 'N_gen': 'generation count',
+        'chi_F': 'net chiral class'},
 }
 
 
@@ -4751,6 +5027,25 @@ LINKS = [
      'a spin gap on a lattice and a mass gap in lattice units are both '
      'energies above a ground state, but one is a finite quantum system and '
      'the other a field theory, so they stay distinct quantities'),
+    ('Lie algebra dimension', FIELD, 'Adjoint branching',
+     'both count the dimension of one algebra: as its roots plus its rank, '
+     'and as the pieces of a decomposition under a subalgebra; for E8 the '
+     'first gives 240 + 8 and the second 86 + 162, and they agree'),
+    ('Net chiral class', FIELD, 'Generation count',
+     'both count net chiral generations, by different arguments: here the '
+     'multiplicity of an SU(3) acting on the family index, in the heterotic '
+     'compactification an index divided by the order of a freely acting '
+     'group; neither argument predicts the other\'s number, and agreement '
+     'would be a fact about the model and not about the library'),
+    ('Hypercharge normalisation', DEFINES, 'Electromagnetic coupling at the Z',
+     'the five thirds in the electromagnetic coupling is this ratio for a '
+     'complete SU(5) multiplet; the family traced here gives the same '
+     'number, which fixes the normalisation and says nothing about the '
+     'couplings themselves'),
+    ('Anomaly of a product representation', SPECIALISES,
+     'Cubic anomaly coefficient',
+     'the cubic anomaly coefficient for a tensor product, where the factor '
+     'acting trivially contributes only its dimension'),
 ]
 
 
@@ -5400,6 +5695,20 @@ SHORT = {
     'Bilinear-biquadratic chain': 'spin-1 chain',
     'Spin gap': 'spin gap',
     'Lattice coupling': 'lattice coupling',
+    'Generation count': 'generation count',
+    'Lie algebra dimension': 'dim = roots + rank',
+    'Adjoint branching': 'adjoint branching',
+    'Product representation dimension': 'tensor dim.',
+    'Orbit size': 'orbit size',
+    'Triple space': 'triple space',
+    'Magic square dimension': 'magic square',
+    'Cubic anomaly coefficient': 'cubic anomaly',
+    'Anomaly of a product representation': 'product anomaly',
+    'Charge lattice': 'Z6 charge lattice',
+    'Hypercharge': 'hypercharge',
+    'Hypercharge normalisation': 'hypercharge norm.',
+    'Anomaly-free hypercharge': 'sum Y^3 = 0',
+    'Net chiral class': 'net chirality',
     'One-loop coefficient (QCD)': 'one-loop b',
     'Area law': 'area law',
     'Creutz string tension': 'Creutz',
@@ -5529,6 +5838,7 @@ YM_PIVOTS = (
     ('mu', 'inflation factor'),
     ('kappa', 'inflation factor'),
     ('alpha_em', 'fine-structure coupling'),
+    ('N_gen', 'generation count'),
 )
 
 _LINK_ARROW = {FIELD: (r'\longleftrightarrow', 'same field'),
@@ -5878,6 +6188,42 @@ REFERENCES = {
                 'every entry here uses the corrected ones; the physical '
                 'predictions built on the algebra are not in the library '
                 'and are not claimed.',
+    },
+    'chirality2026': {
+        'authors': 'Emad Mostaque',
+        'title': 'From Chirality to the Standard Model',
+        'subtitle': 'a uniqueness and no-go theorem for compact Lie-algebra '
+                    'embeddings',
+        'year': 2026,
+        'repo': 'emad-ii/chirality-standard-model',
+        'tag': 'chirality',
+        'url': 'https://github.com/emad-ii/chirality-standard-model',
+        'manuscript': 'paper/paper.tex',
+        'note': 'Exactly one compact Lie-algebra pair, E8 containing E6 '
+                'times SU(3) with the family module 27 tensor 3, has a '
+                'complex-type complement whose cubic anomaly has a nonzero '
+                'radical; the paper proves it, exact Python recomputes the '
+                'finite censuses from two root-system realisations, and '
+                'finite Lean theorems check the E6 incidence. The library '
+                'takes the arithmetic of that and none of the physical '
+                'interpretation.',
+    },
+    'lisi2026': {
+        'authors': 'B. S. Hartshorn (lisi bridge in the chirality fork)',
+        'title': 'Lisi bridge: two ways to see three families inside E8',
+        'subtitle': 'root-level checks of the E8 branching, triality and the '
+                    'magic square',
+        'year': 2026,
+        'repo': 'brentharts/chirality-standard-model',
+        'tag': 'lisi',
+        'url': 'https://github.com/brentharts/chirality-standard-model',
+        'manuscript': 'lisi/THEORY.md',
+        'note': 'Exact root-system computations in the fork\'s lisi '
+                'directory that connect the chirality theorem to the E8 '
+                'programme of Lisi and to the Distler-Garibaldi no-go '
+                'theorem. Its THEORY.md marks each result as checked or not '
+                'checked, and says that a root computation cannot see a real '
+                'form. The library takes only the checked dimension counts.',
     },
     'spectre2026': {
         'authors': 'B. S. Hartshorn (spectre repository)',

@@ -24,6 +24,37 @@ The project is two files:
 | `hoare.py` | An imperative fragment on top of that kernel: Hoare triples, loop invariants, records, and a kernel-checked model of an seL4-style OS. See [LEAN4.md](LEAN4.md). |
 | `crustproof.py` | The bridge to [Crust](https://github.com/brentharts/crust): its contracts, as propositions the kernel settles. |
 | `neomath.tex` | The paper. |
+| `rosettaphys.py` | A physics knowledge graph: equations, the quantities their letters denote, and the links and joins between them. Entries from other people's repositories name the function they describe. `python3 rosettaphys.py --selftest` checks it. |
+| `rosettapaper.py` | Generates the physics paper (`rosettaphys.tex`) from the graph, including the conjoined Yang-Mills display (Section 8) and the figures drawn from the bridged repositories. |
+| `rosettaym.py`, `rosettaoai.py`, `rosettacicy.py`, `rosettaspectre.py`, `rosettanariai.py`, `rosettachirality.py` | The bridges: each puts the library's algebra and a repository's own code through the same numbers and compares them. |
+
+---
+
+## The physics graph and its bridges
+
+`rosettaphys.py` holds equations as graph nodes, with the quantity each letter
+denotes. A join is only made between equations that agree about the letter, so
+the graph can say that two equations state the same quantity and refuse to say it
+for letters that merely coincide. Some entries come from six repositories, and
+each has a bridge module:
+
+| Bridge | Repository | Checks |
+| :--- | :--- | :--- |
+| `rosettaym.py` | [yang-mills-mass-gap-lab](https://github.com/Elsbernd09/yang-mills-mass-gap-lab) | lattice entries against the laboratory's code and published campaign |
+| `rosettaoai.py` | [openai_math_yang_mills](https://github.com/brentharts/openai_math_yang_mills) | spin-model and flow entries against the fork's `tools/` output |
+| `rosettacicy.py` | [CICY](https://github.com/brentharts/CICY) | couplings, generation count and the Hat constant |
+| `rosettaspectre.py` | [spectre](https://github.com/brentharts/spectre) | substitution matrix, tile areas and the repository's evidence ledger |
+| `rosettanariai.py` | [nariai](https://github.com/brentharts/nariai) | the tiling algebra, and its matrix against spectre's |
+| `rosettachirality.py` | [chirality-standard-model](https://github.com/brentharts/chirality-standard-model) | E8 branching, the E6 certificate, the magic square, and one Standard Model family computed from SU(5) weights and from the E8 roots |
+
+Each bridge finds its repository through an environment variable
+(`YMLAB_DIR`, `OPENAI_MATH_DIR`, `CICY_DIR`, `SPECTRE_DIR`, `NARIAI_DIR`,
+`CHIRALITY_DIR`) or a directory of that name beside this one, and reports what
+it could not check when the repository is absent. `make test` runs all the
+selftests; `make yangmills`, `openaimath`, `cicy`, `spectre`, `nariai` and
+`chirality` print each bridge's report. `python3 rosettapaper.py` writes the paper
+and copies or draws its figures beside the `.tex`; the Yang-Mills section is built
+from live bridge results, so its numbers change if a repository does.
 
 ---
 

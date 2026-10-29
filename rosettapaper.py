@@ -112,9 +112,8 @@ PREAMBLE = r"""\documentclass[11pt]{article}
 
 \newcommand{\code}[1]{\texttt{#1}}
 
-\title{A Physics Knowledge Graph from \LaTeX{} Notation to Lean Conjectures}
-\author{Brent S. Hartshorn \orcidlink{0009-0004-2853-655X} \small \url{brenthartshorn@proton.me}}
-\date{September 2026}
+\title{Conjoining, Gluing, and Coupling Gauge Theories: A Knowledge Base for Yang-Mills and Lattice Dynamics}
+\author{Brent Hartshorn \orcidlink{0009-0004-2853-655X} and Tristan Romanov}
 
 \begin{document}
 \maketitle
@@ -123,26 +122,70 @@ PREAMBLE = r"""\documentclass[11pt]{article}
 
 def abstract():
     return r"""
-\begin{abstract}
-Physics notation is ambiguous, this paper reports what happens when a knowledge base of %s, %s
-and %s is made to declare what each of its letters denotes, and is
-then allowed to connect itself. Equations become graph nodes; edges follow
-shared \emph{quantities} rather than shared characters; and two equations
-stating the same quantity are joined by transitivity into one annotated formula.
-Each statement is checked to be a well-formed proposition over an axiomatic \code{Real} by a Calculus of
-Constructions micro-kernel, then emitted as Lean~4.
-\end{abstract}
-""" % (words(len(P.EQUATIONS), 'equation'), words(len(P.SYMBOLS), 'symbol'),
-       words(len(P.QUANTITIES), 'physical quantity', 'physical quantities'),
-    )
+    \begin{abstract}
+Physics notation is notoriously ambiguous, relying on contextual human interpretation where a single glyph carries multiple meanings. This paper reports what happens when a knowledge base of physics equations is made to declare what each symbol denotes, allowing equations to connect automatically across disparate codebases and theoretical repositories. Focusing on Yang-Mills theory and lattice gauge simulations, we construct a graph over physical quantities rather than shared characters. By integrating eleven entries from the Yang-Mills Mass Gap Laboratory by Elsbernd (2026) alongside string models, Calabi-Yau geometry, aperiodic monotiles, and standard model chirality frameworks, we present a conjoined multi-repository display of Yang-Mills relations. Algebraic isolation and strict reading-table constraints prevent false equivalences, enabling exact arithmetic comparisons between independent simulation software and theoretical libraries. Formal verification mechanics and type-checked Lean 4 translations are deferred to the appendices. 
+    \end{abstract}
+    """
 
 
 # ---------------------------------------------------------------- sections
-
 def introduction():
+    return r"""
+\section{Introduction}
+
+In physics and mathematics, the concept of a gauge theory describes how the fundamental forces of nature arise from local symmetries. When we look at conjoining, gluing, or coupling gauge theories, we are examining how different gauge fields interact with each other, how separate symmetry groups merge, or how a single theory transforms across different geometric and structural boundaries.
+Depending on the approach, conjoining a gauge theory manifests in four distinct frameworks:
+
+\subsection{Product Groups and Force Unification (Gauge Product Coupling)}
+
+The most common way gauge theories are "conjoined" in particle physics is by taking the direct product of independent gauge groups to form a unified framework.
+
+The Standard Model: The universe's non-gravitational forces are conjoined by the product group $SU(3) \times SU(2) \times U(1)$.
+
+The Gauge Principle: To maintain local invariance under these conjoined groups, separate connection fields (gauge bosons) must be introduced. The $U(1)$ sector yields the photon, $SU(2)$ yields the \(W^{\pm }\) and Z bosons, and $SU(3)$ introduces the gluons.
+
+Grand Unified Theories (GUTs): At high energy scales, these conjoined, independent gauge groups are hypothesized to merge ("conjoin") into a single, overarching simple Lie group, such as $SU(5)$ or $SO(10)$, treating the individual forces as broken remnants of a single unified gauge symmetry.
+
+\subsection{Fiber Bundle Glueing and Edge Modes (Geometric Conjunction)}
+
+From a purely mathematical perspective, a gauge field is a connection on a principal fiber bundle. When physicists discuss conjoining gauge fields across spacetime boundaries or interfaces, they invoke geometric gluing conditions:
+
+Edge Modes: When a gauge theory is restricted to a bounded manifold, gauge invariance is often broken at the boundary. To properly conjoin or glue two adjacent regions of spacetime together safely, physicists introduce boundary degrees of freedom known as edge modes.
+
+Interface Gauge Theory: When two different phases of a gauge theory touch (such as a Higgs phase meeting a confining phase), the gauge fields must be conjoined at the interface. This requires checking for Higgs-confinement continuity, determining whether the gauge connection smoothly interpolates or undergoes a sharp topological phase transition.
+
+\subsection{Matter-Field Coupling (Conjoining Fields)}
+
+To make a gauge theory physical, the gauge connection field \(A_{\mu }\) must be conjoined to matter fields (like electrons or quarks) via the covariant derivative: 
+\(D_{\mu }=\partial _{\mu }+A_{\mu }\)
+
+This minimal coupling conjoins the internal "internal space" of a particle (its quantum phase or color) to the geometry of spacetime.
+
+In a highly visual sense, following Eric Weinstein, conjoining means that when the coordinate system or phase of a matter field is rotated locally, the gauge field simultaneously changes its "horizontal reference level" to ensure the underlying physics remains perfectly invariant.
+
+\subsection{Gauge/Gravity Dualities (Conjoining Bulk and Boundary)}
+
+In modern string theory, the most profound version of conjoining gauge theory is the AdS/CFT correspondence (Gauge/Gravity Duality).
+
+This framework completely conjoins a strongly coupled quantum gauge theory (like a conformal Yang-Mills theory) operating on a lower-dimensional boundary to a theory of quantum gravity operating in a higher-dimensional bulk spacetime.
+Here, the gauge fields are literally mapped and conjoined to the geometric fluctuations of spacetime itself.
+
+
+\subsection{The Yang-Mills Knowledge Base}
+Nothing in our conjoined Yang-Mills knowledge base was written down as a unified manual. Each equation entered independently on its own terms, described in its own words, drawn from textbooks or external simulation codebases. When these equations are interrogated through what their letters actually denote rather than superficial character matches, complex cross-repository structures emerge. 
+
+The single hardest thing about reading physics---and comparing computational implementations---is that the alphabet ran out long ago. A single glyph carries multiple meanings, and automated systems or human readers are otherwise expected to infer context alone. This paper treats notation not as text to be manually translated, but as a structured knowledge network to be interrogated. 
+
+Our primary focus is Yang-Mills theory and its manifestations across six distinct repositories: the $SU(2)$ and $SU(3)$ finite-lattice simulations of the Yang-Mills Mass Gap Laboratory, OpenAI-derived spin-model toys for gauge theory, Calabi-Yau and running-coupling toolkits (CICY), aperiodic vacuum and Spectre tiling structures, and chiral embeddings of the Standard Model. Rather than treating these codebases in isolation, our automated algebra exposes where they agree to machine precision and where they sharply diverge. 
+
+While earlier foundational work established expression isolation, graph-building rules, and micro-kernel proof architectures (detailed further in the appendices), this paper centers on the physical and computational insights gained by bringing Yang-Mills equations from diverse code ecosystems into direct dialogue. The resulting framework bridges discrete lattice metrics, asymptotic freedom scalings, and topological invariants. 
+    """
+
+def introduction_appendix():
     fams = P.grand_members()
     terms = sum(len(f) for f in fams)
     return r"""
+\section{Physics Knowledge Graph: from \LaTeX{} to Lean Conjectures}
 
 \begin{figure}[htbp]
 \centering
@@ -155,11 +198,6 @@ by \code{rosettaphys.grand()}; the corresponding Lean proposition, with all
 Appendix~\ref{app:lean}.}
 \label{fig:grand}
 \end{figure}
-
-
-\section{Introduction}
-
-
 
 \noindent
 Nothing in Figure~\ref{fig:grand} was written down. Each equation entered the
@@ -809,12 +847,10 @@ def lattice_section():
                                'String tension') is None)
 
     head = r"""
-\section{A group whose source is somebody else's code}
+\section{Elsbernd: Yang--Mills Mass Gap Laboratory}
 \label{sec:lattice}
 
-Everything in the library so far was entered by its author, from a textbook or
-from his own earlier work. The last group is different, and the difference is
-what is being tested: %s were drawn from the Yang--Mills Mass Gap
+%s tests were drawn from the Yang--Mills Mass Gap
 Laboratory of Elsbernd \cite{elsbernd2026}, a finite-lattice $SU(2)$ and
 $SU(3)$ simulation package with its own test suite, and %s of them carry a
 \code{source} naming the function they describe.
@@ -1963,7 +1999,7 @@ def lean_section():
     results = RL.conjectures()
     ok = [c for _, c, e in results if c is not None]
     return r"""
-\section{Conclusion: From a composed statement to a Lean conjecture}
+\section{From a composed statement to a Lean conjecture}
 \label{sec:lean}
 
 \code{lean4.py} already reads \LaTeX{}, but reads the language of types and
@@ -2074,8 +2110,7 @@ def appendices():
     computed = [eq for eq, _src in P.sourced() if P.reference_for(eq) is None]
     coded = [eq for eq, _src in P.sourced() if P.reference_for(eq) is not None]
     return r"""
-\appendix
-\footnotesize
+
 \section{The readings table}
 \label{app:readings}
 
@@ -2169,8 +2204,7 @@ def _bibitem(key):
 
 ELSBERND = _bibitem(Y.REFERENCE)
 
-BIBLIOGRAPHY = r"""
-\begin{thebibliography}{99}
+BIB_APPENDIX = r"""
 
 \bibitem{hartshorn2026rosetta} Hartshorn, B.~S. (2026). RosettaMath: Reading,
 Running and Proving Mathematics from \LaTeX{}. SSRN.
@@ -2195,20 +2229,19 @@ Prover and Programming Language. \emph{CADE-28}, 625--635.
 \bibitem{massot2024} Massot, P. (2024). Teaching Mathematics Using Lean and
 Controlled Natural Language. \emph{ITP 2024}.
 
-\end{thebibliography}
-
-\end{document}
 """
 
-# The one reference that comes from the knowledge base rather than from this
-# file: rosettaphys.REFERENCES is where it is defined, so the bibliography
-# cannot say something the graph does not.
-BIBLIOGRAPHY = BIBLIOGRAPHY.replace(
-    r'\end{thebibliography}',
-    ELSBERND + ''.join(_bibitem(k) for k in
+BIB_EXTRA = ''.join(_bibitem(k) for k in
                        ('openai2026', 'cicy2026', 'spectre2026', 'nariai2026',
                         'chirality2026', 'lisi2026'))
-    + r'\end{thebibliography}')
+
+BIBLIOGRAPHY = r'''
+\begin{thebibliography}{99}
+%s
+%s
+%s
+\end{thebibliography}
+''' % (ELSBERND, BIB_EXTRA, BIB_APPENDIX)
 
 
 # ---------------------------------------------------------------- assembly
@@ -2219,17 +2252,27 @@ def document():
         PREAMBLE,
         abstract(),
         introduction(),
+        yang_mills_section(),
+
+        geometry_section(),
+
+        reproducibility(),
+
+        BIBLIOGRAPHY,
+
+        r'\appendix',
+        r'\tiny',
+        introduction_appendix(),
         graph_section(),
         algebra_section(),
         readings_section(),
         composition_section(),
-        geometry_section(),
+
         lattice_section(),
-        yang_mills_section(),
+
         lean_section(),
-        reproducibility(),
         appendices(),
-        BIBLIOGRAPHY,
+        r'\end{document}'
     )
 
 
